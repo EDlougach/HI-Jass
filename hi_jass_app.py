@@ -159,7 +159,7 @@ class HIJassApp(ctk.CTk):
         self.profile_ax.plot(rho, temperature / np.max(temperature), label="Temperature")
         self.profile_ax.plot(rho, fast_ions / np.max(fast_ions), label="Fast ions")
         self.profile_ax.set_title("Normalized plasma and NBI profiles")
-        self.profile_ax.set_xlabel("Normalized radius $\rho$")
+        self.profile_ax.set_xlabel(r"Normalized radius $\rho$")
         self.profile_ax.set_ylabel("Normalized intensity")
         self.profile_ax.legend()
         self.profile_ax.grid(True, alpha=0.3)
@@ -193,5 +193,12 @@ class HIJassApp(ctk.CTk):
 
 
 if __name__ == "__main__":
-    app = HIJassApp()
-    app.mainloop()
+    try:
+        app = HIJassApp()
+        app.mainloop()
+    except Exception as exc:
+        if "DISPLAY" in str(exc) or "Tk" in str(type(exc)).lower() or "tkinter" in str(exc).lower():
+            print("HI-Jass requires a desktop session with a valid DISPLAY variable.")
+            print("Please run this app from a local desktop environment or a graphical SSH session.")
+        else:
+            raise
