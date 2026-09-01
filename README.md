@@ -17,6 +17,7 @@ This repository contains a lightweight desktop application for plasma and neutra
 - `hi_jass_app.py` – desktop GUI entry point
 - `hotjass_core.py` – numerical model and parameter definitions
 - `requirements.txt` – Python dependencies
+- `User_Manual.md` – user guide and two-beam calculation definitions
 
 ## Quick start
 
@@ -40,6 +41,9 @@ run_hi_jass.bat
 ```
 
 The GUI must be run in a normal Windows desktop session, not a headless terminal.
+
+See [User_Manual.md](User_Manual.md) for the two-beam slowing-down model, effective
+fast-ion quantities, density scans, and notation used by the application.
 
 ## GitHub setup
 

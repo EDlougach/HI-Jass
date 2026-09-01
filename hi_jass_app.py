@@ -25,12 +25,37 @@ class HIJassApp(ctk.CTk):
         "Pr_th, Pr_fast (isotropic)": ["Pr_th", "Pr_fast"],
         "beta_T": ["beta_T"],
     }
+    DISPLAY_GROUPS = {
+        "Tₑ, Tᵢ": "Te, Ti",
+        "Pₑ, Pᵢ, Pᵢₑ, Pshine-through": "P_e, P_i, Pi_e, P_shine-through",
+        "nᴅ, nₜ, nᵦ": "n_D, n_T, n_b",
+        "Pƒ,tot, Pƒ,th, Pƒ,b": "Pf_tot, Pf_th, Pf_b",
+        "⟨Efast⟩": "<E_fast>",
+        "τS, τE,e, τE,i, τIE": "tau_S, tauE_e, tauE_i, tau_IE",
+        "R = ufast / Uₜₕ": "R = U_fast / U_th",
+        "pₜₕ, pfast (isotropic)": "Pr_th, Pr_fast (isotropic)",
+        "βt": "beta_T",
+    }
     UNITS = {
         "Te": "keV", "Ti": "keV", "P_e": "MW", "P_i": "MW", "Pi_e": "MW",
         "P_shine-through": "MW", "n_D": "m^-3", "n_T": "m^-3", "n_b": "m^-3",
         "Pf_tot": "MW", "Pf_th": "MW", "Pf_b": "MW", "E_fast": "keV",
         "tau_S": "s", "tauE_e": "s", "tauE_i": "s", "tau_IE": "s", "R": "1",
         "Pr_th": "Pa", "Pr_fast": "Pa", "beta_T": "%",
+    }
+    LATEX_UNITS = {
+        "keV": r"\mathrm{keV}", "MW": r"\mathrm{MW}", "m^-3": r"\mathrm{m}^{-3}",
+        "s": r"\mathrm{s}", "Pa": r"\mathrm{Pa}", "%": r"\%", "1": "1",
+    }
+    LATEX_NAMES = {
+        "Te": r"$T_e$", "Ti": r"$T_i$", "P_e": r"$P_e$", "P_i": r"$P_i$",
+        "Pi_e": r"$P_{ie}$", "P_shine-through": r"$P_{shine}$",
+        "n_D": r"$n_D$", "n_T": r"$n_T$", "n_b": r"$n_{b0}$",
+        "Pf_tot": r"$P_{f,tot}$", "Pf_th": r"$P_{f,th}$", "Pf_b": r"$P_{f,b}$",
+        "E_fast": r"$\langle E_{fast}\rangle$", "tau_S": r"$\tau_S$",
+        "tauE_e": r"$\tau_{E,e}$", "tauE_i": r"$\tau_{E,i}$", "tau_IE": r"$\tau_{IE}$",
+        "R": r"$R = u_{fast}/U_t$", "Pr_th": r"$p_{th}$", "Pr_fast": r"$p_{fast}$",
+        "beta_T": r"$\beta_t$",
     }
 
     def __init__(self):
@@ -118,8 +143,8 @@ class HIJassApp(ctk.CTk):
         left = ctk.CTkFrame(frame, fg_color="transparent")
         left.grid(row=0, column=0, padx=10, pady=10, sticky="ns")
         ctk.CTkLabel(left, text="n_e scans", font=ctk.CTkFont(size=16, weight="bold")).pack(pady=8)
-        self.observable_var = ctk.StringVar(value="Te, Ti")
-        ctk.CTkOptionMenu(left, variable=self.observable_var, values=list(self.OBSERVABLES), command=lambda _: self._plot_results()).pack(pady=8)
+        self.observable_var = ctk.StringVar(value="Tₑ, Tᵢ")
+        ctk.CTkOptionMenu(left, variable=self.observable_var, values=list(self.DISPLAY_GROUPS), command=lambda _: self._plot_results()).pack(pady=8)
         self.result_text = ctk.CTkTextbox(left, width=270, height=420, wrap="word")
         self.result_text.pack(pady=10, fill="y")
         self.results_fig = Figure(figsize=(8, 6), dpi=100)
@@ -164,53 +189,54 @@ class HIJassApp(ctk.CTk):
         ti_profile = self.model.temperature_profile(rho, self.scan["Ti"][middle])
         p = self.model.plasma
         self.profile_ax.clear()
-        self.profile_ax.plot(rho, density / 1e20, label="n_e")
-        self.profile_ax.set(title="n_e(rho), p_n = %.2f" % p.density_peaking, xlabel="rho [1]", ylabel="n_e [10^20 m^-3]")
+        self.profile_ax.plot(rho, density / 1e20, label=r"$n_e$")
+        self.profile_ax.set(title=r"$n_e(\rho)$, $p_n = %.2f$" % p.density_peaking, xlabel=r"$\rho$ [1]", ylabel=r"$n_e$ [$10^{20}\,\mathrm{m}^{-3}$]")
         self.profile_ax.grid(alpha=0.3); self.profile_ax.legend()
         self.profile_ax2.clear()
-        self.profile_ax2.plot(rho, te_profile, label="Te"); self.profile_ax2.plot(rho, ti_profile, label="Ti")
-        self.profile_ax2.set(title="T_e(rho), T_i(rho), p_T = %.2f" % p.temp_peaking, xlabel="rho [1]", ylabel="T_e, T_i [keV]")
+        self.profile_ax2.plot(rho, te_profile, label=r"$T_e$"); self.profile_ax2.plot(rho, ti_profile, label=r"$T_i$")
+        self.profile_ax2.set(title=r"$T_e(\rho)$, $T_i(\rho)$, $p_T = %.2f$" % p.temp_peaking, xlabel=r"$\rho$ [1]", ylabel=r"$T_e$, $T_i$ [keV]")
         self.profile_ax2.grid(alpha=0.3); self.profile_ax2.legend()
         theta = np.linspace(0, 2 * np.pi, 400)
         self.shape_ax.clear()
         delta = np.clip(p.triangularity, -0.999, 0.999)
         self.shape_ax.plot(p.major_radius + p.minor_radius * np.cos(theta + np.arcsin(delta) * np.sin(theta)), p.elongation * p.minor_radius * np.sin(theta))
-        self.shape_ax.axvline(0.0, color="black", linestyle="--", linewidth=0.8, label="tokamak center R=0")
-        self.shape_ax.axvline(p.major_radius, color="tab:red", linestyle=":", linewidth=0.9, label="magnetic axis R0")
-        self.shape_ax.set(title="Shape: R0=%.2f m, a=%.2f m, k=%.2f, delta=%.2f" % (p.major_radius, p.minor_radius, p.elongation, p.triangularity), xlabel="R [m]", ylabel="Z [m]"); self.shape_ax.set_aspect("equal"); self.shape_ax.grid(alpha=0.3); self.shape_ax.legend(fontsize=7)
+        self.shape_ax.axvline(0.0, color="black", linestyle="--", linewidth=0.8, label=r"tokamak center $R=0$")
+        self.shape_ax.axvline(p.major_radius, color="tab:red", linestyle=":", linewidth=0.9, label=r"magnetic axis $R_0$")
+        self.shape_ax.set(title=r"Shape: $R_0=%.2f\,\mathrm{m}$, $a=%.2f\,\mathrm{m}$, $\kappa=%.2f$, $\delta=%.2f$" % (p.major_radius, p.minor_radius, p.elongation, p.triangularity), xlabel=r"$R$ [m]", ylabel=r"$Z$ [m]"); self.shape_ax.set_aspect("equal"); self.shape_ax.grid(alpha=0.3); self.shape_ax.legend(fontsize=7)
         self.formula_ax.clear(); self.formula_ax.axis("off")
         self.formula_ax.text(0, 0.85, "Profiles / 0D balance", fontsize=11, weight="bold")
-        self.formula_ax.text(0, 0.62, r"n(rho) = n_e0 (1 - rho^2)^(2 p_n)", fontsize=9)
-        self.formula_ax.text(0, 0.42, r"T(rho) = T_0 (1 - rho^2)^(2 p_T)", fontsize=9)
-        self.formula_ax.text(0, 0.22, "Te, Ti solved at each scanned n_e", fontsize=9)
+        self.formula_ax.text(0, 0.62, r"$n_e(\rho) = n_{e0}(1-\rho^2)^{2p_n}$", fontsize=9)
+        self.formula_ax.text(0, 0.42, r"$T_{e,i}(\rho) = T_{e0,i0}(1-\rho^2)^{2p_T}$", fontsize=9)
+        self.formula_ax.text(0, 0.22, r"$T_e$, $T_i$ solved at each scanned $n_e$", fontsize=9)
         self.profile_fig.tight_layout(); self.profile_canvas.draw()
         self._plot_results()
 
     def _plot_results(self):
         selected = self.observable_var.get()
-        keys = self.OBSERVABLES[selected]
+        keys = self.OBSERVABLES[self.DISPLAY_GROUPS[selected]]
         self.results_fig.clear()
         if len(keys) > 2:
             axes = self.results_fig.subplots(2, 2, squeeze=False).flat
             for axis, key in zip(axes, keys):
                 finite = np.isfinite(self.scan[key])
-                axis.plot(self.scan["n_e"][finite] / 1e20, self.scan[key][finite], marker="o", ms=3, label=key)
-                axis.set_title(f"{key} [{self.UNITS[key]}]")
-                axis.set_xlabel("n_e [10^20 m^-3]")
+                axis.plot(self.scan["n_e"][finite] / 1e20, self.scan[key][finite], marker="o", ms=3, label=self.LATEX_NAMES[key])
+                axis.set_title(f"{self.LATEX_NAMES[key]} [${self.LATEX_UNITS[self.UNITS[key]]}$]")
+                axis.set_xlabel(r"$n_e$ [$10^{20}\,\mathrm{m}^{-3}$]")
                 axis.grid(alpha=0.3)
                 axis.legend()
         else:
             self.results_ax = self.results_fig.add_subplot(111)
             for key in keys:
                 finite = np.isfinite(self.scan[key])
-                self.results_ax.plot(self.scan["n_e"][finite] / 1e20, self.scan[key][finite], marker="o", ms=3, label=f"{key} [{self.UNITS[key]}]")
-            self.results_ax.set_ylabel(", ".join(f"{key} [{self.UNITS[key]}]" for key in keys))
+                self.results_ax.plot(self.scan["n_e"][finite] / 1e20, self.scan[key][finite], marker="o", ms=3, label=f"{self.LATEX_NAMES[key]} [${self.LATEX_UNITS[self.UNITS[key]]}$]")
+            self.results_ax.set_xlabel(r"$n_e$ [$10^{20}\,\mathrm{m}^{-3}$]")
+            self.results_ax.set_ylabel(", ".join(f"{self.LATEX_NAMES[key]} [${self.LATEX_UNITS[self.UNITS[key]]}$]" for key in keys))
             self.results_ax.grid(alpha=0.3)
             self.results_ax.legend()
-        units = ", ".join(f"{key} [{self.UNITS[key]}]" for key in keys)
+        units = ", ".join(f"{self.LATEX_NAMES[key]} [${self.LATEX_UNITS[self.UNITS[key]]}$]" for key in keys)
         valid_min = self.scan["n_e_valid_min"][0]
         valid_max = self.scan["n_e_valid_max"][0]
-        self.results_fig.suptitle("HotJass scan: %s | valid n_e = [%.2e, %.2e] m^-3" % (units, valid_min, valid_max))
+        self.results_fig.suptitle(r"HotJass scan: %s | valid $n_e=[%.2e, %.2e]$ m$^{-3}$" % (units, valid_min, valid_max))
         self.results_fig.tight_layout()
         self.results_canvas.draw()
         self.result_text.delete("1.0", "end")
