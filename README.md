@@ -27,6 +27,20 @@ pip install -r requirements.txt
 python3 hi_jass_app.py
 ```
 
+### Windows
+
+Install Python 3.10 or newer from python.org, then double-click `run_hi_jass.bat`.
+The launcher creates `.venv`, installs the dependencies, and starts the GUI.
+
+From PowerShell or Command Prompt:
+
+```text
+cd path\to\HI-Jass
+run_hi_jass.bat
+```
+
+The GUI must be run in a normal Windows desktop session, not a headless terminal.
+
 ## GitHub setup
 
 From this folder:
