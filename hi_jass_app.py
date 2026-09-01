@@ -155,12 +155,12 @@ class HIJassApp(ctk.CTk):
         fast_ions = data["fast_ions"]
 
         self.profile_ax.clear()
-        self.profile_ax.plot(rho, density / np.max(density), label="Density")
-        self.profile_ax.plot(rho, temperature / np.max(temperature), label="Temperature")
+        self.profile_ax.plot(rho, density / self.model.plasma.central_density, label="Density")
+        self.profile_ax.plot(rho, temperature / self.model.plasma.central_temperature, label="Temperature")
         self.profile_ax.plot(rho, fast_ions / np.max(fast_ions), label="Fast ions")
-        self.profile_ax.set_title("Normalized plasma and NBI profiles")
+        self.profile_ax.set_title("Plasma and NBI profiles")
         self.profile_ax.set_xlabel(r"Normalized radius $\rho$")
-        self.profile_ax.set_ylabel("Normalized intensity")
+        self.profile_ax.set_ylabel("Relative profile amplitude")
         self.profile_ax.legend()
         self.profile_ax.grid(True, alpha=0.3)
         self.profile_canvas.draw()
@@ -183,6 +183,8 @@ class HIJassApp(ctk.CTk):
             "================",
             f"Line-average density: {summary['line_average_density']:.3e} m^-3",
             f"Central temperature: {summary['central_temperature_keV']:.2f} keV",
+            f"Density peaking: {summary['density_peaking']:.2f}",
+            f"Temperature peaking: {summary['temperature_peaking']:.2f}",
             f"Beam power to plasma: {summary['beam_power_to_plasma']:.2f} MW",
             f"Injected beam energy: {summary['injected_energy_keV']:.1f} keV",
             f"Toroidal field: {summary['toroidal_field_T']:.2f} T",

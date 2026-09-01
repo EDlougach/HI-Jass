@@ -73,6 +73,8 @@ class HotJassModel:
         return {
             "line_average_density": self.plasma.central_density * 0.65,
             "central_temperature_keV": self.plasma.central_temperature,
+            "density_peaking": self.plasma.density_peaking,
+            "temperature_peaking": self.plasma.temp_peaking,
             "beam_power_to_plasma": effective_power,
             "injected_energy_keV": self.nbi.beam_energy,
             "toroidal_field_T": self.plasma.toroidal_field,
