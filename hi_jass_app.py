@@ -99,8 +99,9 @@ class HIJassApp(ctk.CTk):
         frame.grid_columnconfigure(0, weight=1)
         frame.grid_rowconfigure(0, weight=1)
 
-        self.profile_fig = Figure(figsize=(5.8, 4.0), dpi=100)
-        self.profile_ax = self.profile_fig.add_subplot(111)
+        self.profile_fig = Figure(figsize=(5.8, 6.0), dpi=100)
+        self.profile_ax = self.profile_fig.add_subplot(211)
+        self.profile_ax2 = self.profile_fig.add_subplot(212, sharex=self.profile_ax)
         self.profile_canvas = FigureCanvasTkAgg(self.profile_fig, master=frame)
         self.profile_canvas.draw()
         self.profile_canvas.get_tk_widget().grid(row=0, column=0, padx=10, pady=10, sticky="nsew")
@@ -155,14 +156,22 @@ class HIJassApp(ctk.CTk):
         fast_ions = data["fast_ions"]
 
         self.profile_ax.clear()
-        self.profile_ax.plot(rho, density / self.model.plasma.central_density, label="Density")
-        self.profile_ax.plot(rho, temperature / self.model.plasma.central_temperature, label="Temperature")
-        self.profile_ax.plot(rho, fast_ions / np.max(fast_ions), label="Fast ions")
-        self.profile_ax.set_title("Plasma and NBI profiles")
-        self.profile_ax.set_xlabel(r"Normalized radius $\rho$")
-        self.profile_ax.set_ylabel("Relative profile amplitude")
-        self.profile_ax.legend()
+        self.profile_ax.plot(rho, density, label="Density", color="tab:blue")
+        self.profile_ax.axhline(0.0, color="black", lw=0.7, alpha=0.5)
+        self.profile_ax.set_title("Density profile")
+        self.profile_ax.set_ylabel("Density [m$^{-3}$]")
         self.profile_ax.grid(True, alpha=0.3)
+        self.profile_ax.legend(loc="upper right")
+
+        self.profile_ax2.clear()
+        self.profile_ax2.plot(rho, temperature, label="Temperature", color="tab:orange")
+        self.profile_ax2.plot(rho, fast_ions, label="Fast ions", color="tab:green", alpha=0.8)
+        self.profile_ax2.set_title("Temperature and NBI profiles")
+        self.profile_ax2.set_xlabel(r"Normalized radius $\rho$")
+        self.profile_ax2.set_ylabel("Temperature [keV] / fast-ion power")
+        self.profile_ax2.grid(True, alpha=0.3)
+        self.profile_ax2.legend(loc="upper right")
+
         self.profile_canvas.draw()
 
         self.geometry_ax.clear()
