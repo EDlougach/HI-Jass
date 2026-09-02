@@ -108,6 +108,119 @@ $$
 
 The underlying HotJass calculation still evaluates each beam separately before forming these combined diagnostics.
 
+## Electron-ion exchange time
+
+The electron-ion exchange time is based on the NRL Plasma Formulary thermal-equilibration rate. For each thermal ion species $s$ (D or T):
+
+$$
+\bar{\nu}_{ei,s} =
+1.8\times10^{-19}
+\frac{\sqrt{m_e m_s}\,Z_e^2 Z_s^2\,n_e\ln\Lambda}
+{\left(m_s T_e + m_e T_i\right)^{3/2}}
+$$
+
+In this practical-unit expression, masses are in grams, temperatures are in eV, and electron density is in $\mathrm{cm}^{-3}$. The model uses $Z_e=Z_s=1$ for hydrogenic D and T ions.
+
+For a D-T plasma, the effective exchange time is:
+
+$$
+τ_{IE} =
+\frac{n_D+n_T}
+{n_D\bar{\nu}_{ei,D}+n_T\bar{\nu}_{ei,T}}
+$$
+
+For a single thermal ion species, this reduces to:
+
+$$
+τ_{IE} = \frac{1}{\bar{\nu}_{ei}}
+$$
+
+The equivalent energy-over-power form used by the application is:
+
+$$
+τ_{IE} =
+\frac{\frac{3}{2}(n_D+n_T)|T_i-T_e|(10^3e)V}
+{|P_{ie}|}
+$$
+
+where $V$ is the plasma volume and $e=1.602176634\times10^{-19}\,\mathrm{J/eV}$. The exchange power is:
+
+$$
+P_{ie} = -P_{ei} =
+-\frac{3}{2}V(T_e-T_i)
+\left(n_D\bar{\nu}_{ei,D}+n_T\bar{\nu}_{ei,T}\right)(10^3e)
+$$
+
+The absolute values make $\tau_{IE}$ positive regardless of whether electrons heat ions ($T_e>T_i$) or ions heat electrons ($T_i>T_e$).
+
+## Fusion power
+
+The total fusion power is the sum of the thermal D-T and beam-target contributions:
+
+$$
+P_f = P_{f,\mathrm{thermal}} + P_{f,\mathrm{beam}}
+$$
+
+### Thermal D-T fusion
+
+The thermal contribution is calculated from the thermal deuterium and tritium densities and the ion-temperature-dependent Bosch-Hale reactivity:
+
+$$
+P_{f,\mathrm{thermal}} =
+n_{D0}n_{T0}\langle\sigma v\rangle_{DT}(T_i)V E_f
+$$
+
+Here $n_{D0}$ and $n_{T0}$ are the thermal species densities, $V$ is the plasma volume, and:
+
+$$
+E_f = 17.6\,\mathrm{MeV} = 17.6\times10^6 e
+$$
+
+The Bosch-Hale thermal reactivity is evaluated at $T_i$, because the relative velocity is that of the thermal ions, not the electrons.
+
+### Beam-target fusion
+
+Each useful beam is evaluated separately against the stationary thermal ions of the other D-T species:
+
+$$
+P_{f,\mathrm{beam}} =
+\sum_j V E_f\int_0^{E_{b,j}}
+n_{\mathrm{target},j}f_j(E)[\sigma v]_j(E)\,dE
+$$
+
+The beam slowing-down distribution is normalized to the fast-ion density of that beam:
+
+$$
+f_j(E) \propto
+\frac{\sqrt{E}}{E^{3/2}+E_{c,j}^{3/2}},
+\qquad
+\int_0^{E_{b,j}}f_j(E)\,dE=n_{b0,j}
+$$
+
+The beam-target reactivity is:
+
+$$
+[\sigma v]_j(E)=\sigma_{DT}(E)v_j(E),
+\qquad
+v_j(E)=\sqrt{\frac{2E}{m_j}}
+$$
+
+For a D beam, $n_{\mathrm{target},j}=n_{T0}$. For a T beam, $n_{\mathrm{target},j}=n_{D0}$. The beam fast-ion density is obtained from the useful beam power:
+
+$$
+n_{b0,j} =
+\frac{P_{\mathrm{useful},j}\tau_{S,j}}
+{E_{b,j}(10^3e)V}
+$$
+
+The input shine-through fraction is used to determine captured beam power; the plotted $P_{\mathrm{shine}}$ is then the derived shine-through power from the scan. Charge-exchange and other configured losses similarly reduce the useful power before calculating $n_{b0,j}$.
+
+### Current model limitations
+
+- The beam-target integral uses stationary target ions, so the solved $T_i$ is not included in that reaction integral.
+- D-D beam-target reactions are not included.
+- Each included D-T reaction is assigned $17.6\,\mathrm{MeV}$ of fusion energy.
+
 ## Density scan
 
 The Plasma tab defines the requested scan range with `n_e_min` and `n_e_max`. The Results tab reports the physically valid interval separately. Points below the HotJass charge-neutrality feasibility limit are not assigned physical output values and are omitted from plots.

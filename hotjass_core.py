@@ -18,8 +18,8 @@ class PlasmaParams:
     central_density: float = 1.5e20
     n_e_min: float = 1.0e19
     n_e_max: float = 2.0e20
-    density_peaking: float = 1.0
-    temp_peaking: float = 1.0
+    density_peaking: float = 0.0
+    temp_peaking: float = 0.0
     effective_charge: float = 2.0
     toroidal_field: float = 1.5
     plasma_current: float = 1.5e6
@@ -144,13 +144,7 @@ class HotJassModel:
         return central_temperature * (1.0 - rho ** 2) ** exponent
 
     def fast_ion_profile(self, rho: np.ndarray) -> np.ndarray:
-        total = np.zeros_like(rho)
-        for beam in self.beams:
-            width = max(beam.beam_width, 1e-3)
-            shift = beam.beam_shift
-            gaussian = np.exp(-0.5 * ((rho - shift) / width) ** 2)
-            total += beam.power_MW * gaussian / (np.sqrt(2.0 * np.pi) * width)
-        return total
+        return np.full_like(rho, sum(beam.power_MW for beam in self.beams), dtype=float)
 
     def plasma_volume(self) -> float:
         return TokamakGeometry(

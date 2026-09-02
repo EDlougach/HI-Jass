@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from tkinter import filedialog
 from typing import Dict
 
 import customtkinter as ctk
@@ -14,6 +15,40 @@ matplotlib.use("TkAgg")
 
 
 class HIJassApp(ctk.CTk):
+    PLASMA_PRESETS = {
+        "ITER": {
+            "major_radius": 6.2, "minor_radius": 2.0, "elongation": 1.85,
+            "triangularity": 0.33, "effective_charge": 1.7, "toroidal_field": 5.3,
+            "plasma_current_MA": 15.0, "n_e_min": 5.0e19, "n_e_max": 1.5e20,
+            "density_peaking": 0.0, "temp_peaking": 0.0,
+            "deuterium_fraction": 0.5, "tritium_fraction": 0.5,
+            "tauE_e": 3.7, "tauE_i": 3.7,
+        },
+        "JET": {
+            "major_radius": 2.96, "minor_radius": 1.25, "elongation": 1.7,
+            "triangularity": 0.32, "effective_charge": 1.5, "toroidal_field": 3.45,
+            "plasma_current_MA": 4.0, "n_e_min": 2.0e19, "n_e_max": 1.0e20,
+            "density_peaking": 0.0, "temp_peaking": 0.0,
+            "deuterium_fraction": 0.5, "tritium_fraction": 0.5,
+            "tauE_e": 1.5, "tauE_i": 1.5,
+        },
+        "ST40": {
+            "major_radius": 0.45, "minor_radius": 0.30, "elongation": 1.8,
+            "triangularity": 0.4, "effective_charge": 1.5, "toroidal_field": 3.0,
+            "plasma_current_MA": 2.0, "n_e_min": 1.0e19, "n_e_max": 1.0e20,
+            "density_peaking": 0.0, "temp_peaking": 0.0,
+            "deuterium_fraction": 0.5, "tritium_fraction": 0.5,
+            "tauE_e": 0.01, "tauE_i": 0.01,
+        },
+        "T-15MD": {
+            "major_radius": 1.5, "minor_radius": 0.67, "elongation": 1.8,
+            "triangularity": 0.3, "effective_charge": 1.5, "toroidal_field": 2.0,
+            "plasma_current_MA": 2.0, "n_e_min": 1.0e19, "n_e_max": 1.0e20,
+            "density_peaking": 0.0, "temp_peaking": 0.0,
+            "deuterium_fraction": 0.5, "tritium_fraction": 0.5,
+            "tauE_e": 0.1, "tauE_i": 0.1,
+        },
+    }
     OBSERVABLES = {
         "Te, Ti": ["Te", "Ti"],
         "P_e, P_i, Pi_e, P_shine-through": ["P_e", "P_i", "Pi_e", "P_shine-through"],
@@ -64,17 +99,19 @@ class HIJassApp(ctk.CTk):
         self.geometry("1280x850")
         self.minsize(1050, 700)
         self.model = HotJassModel()
+        self.active_device = "Default"
         self.scan = self.model.density_scan()
         self.grid_columnconfigure(0, weight=1)
         self.grid_rowconfigure(0, weight=1)
         self.tabview = ctk.CTkTabview(self)
         self.tabview.grid(row=0, column=0, padx=18, pady=18, sticky="nsew")
-        for name in ("Plasma", "NBI", "Profiles/Shape", "Results"):
+        for name in ("Plasma", "NBI", "Profiles/Shape", "Results", "Summary"):
             self.tabview.add(name)
         self._build_plasma_tab()
         self._build_nbi_tab()
         self._build_profiles_tab()
         self._build_results_tab()
+        self._build_summary_tab()
         self._run_model()
 
     def _entry_group(self, frame, fields, start_row=0, inactive=()):
@@ -94,22 +131,49 @@ class HIJassApp(ctk.CTk):
     def _build_plasma_tab(self):
         frame = self.tabview.tab("Plasma")
         frame.grid_columnconfigure(0, weight=1)
-        ctk.CTkLabel(frame, text="Low-aspect HotJass case", font=ctk.CTkFont(size=16, weight="bold")).grid(row=0, column=0, columnspan=2, padx=12, pady=(14, 4), sticky="w")
+        frame.grid_columnconfigure(1, weight=1)
+        frame.grid_columnconfigure(2, weight=1)
+        self.plasma_title = ctk.CTkLabel(frame, text="Default", font=ctk.CTkFont(size=16, weight="bold"))
+        self.plasma_title.grid(row=0, column=0, columnspan=2, padx=12, pady=(8, 2), sticky="w")
+        preset_frame = ctk.CTkFrame(frame, fg_color="transparent")
+        preset_frame.grid(row=0, column=2, rowspan=17, padx=(12, 12), pady=8, sticky="nsew")
+        preset_frame.grid_rowconfigure(0, weight=1)
+        preset_stack = ctk.CTkFrame(preset_frame, fg_color="transparent")
+        preset_stack.grid(row=0, column=0, sticky="ew")
+        preset_stack.grid_columnconfigure(0, weight=1)
+        for row, name in enumerate(self.PLASMA_PRESETS):
+            ctk.CTkButton(preset_stack, text=name, command=lambda preset=name: self._apply_plasma_preset(preset)).grid(row=row, column=0, padx=4, pady=9, sticky="ew")
         fields = [
             ("R0 [m]", "major_radius", 0.65), ("a [m]", "minor_radius", 0.35),
             ("Elongation k", "elongation", 2.2), ("Triangularity delta", "triangularity", -0.35),
             ("Zeff", "effective_charge", 2.0), ("B0 [T]", "toroidal_field", 1.5),
-            ("Ip [MA]", "plasma_current_MA", 1.5), ("Density peaking", "density_peaking", 1.0),
-            ("Temperature peaking", "temp_peaking", 1.0),
+            ("Ip [MA]", "plasma_current_MA", 1.5),
+            ("Density peaking", "density_peaking", 0.0),
+            ("Temperature peaking", "temp_peaking", 0.0),
             ("n_e_min [m^-3]", "n_e_min", 1.0e19), ("n_e_max [m^-3]", "n_e_max", 2.0e20),
             ("D fraction", "deuterium_fraction", 0.5), ("T fraction", "tritium_fraction", 0.5),
             ("tauE_e [s]", "tauE_e", 0.02), ("tauE_i [s]", "tauE_i", 0.05),
         ]
         self.plasma_entries = self._entry_group(frame, fields, 1, inactive=("density_peaking", "temp_peaking"))
-        ctk.CTkLabel(frame, text="Te and Ti are calculated from the 0D balance and shown in Profiles/Shape and Results.", text_color="gray").grid(row=16, column=0, columnspan=2, padx=12, pady=(10, 4), sticky="w")
+        for entry in self.plasma_entries.values():
+            entry.configure(width=100)
+            entry.grid_configure(sticky="w")
+        ctk.CTkLabel(frame, text="Te and Ti are calculated from the 0D balance and shown in Profiles/Shape and Results.", text_color="gray").grid(row=16, column=0, columnspan=2, padx=12, pady=(6, 2), sticky="w")
         self.alpha_var = ctk.BooleanVar(value=False)
-        ctk.CTkCheckBox(frame, text="Include alpha heating (not in reference solver)", variable=self.alpha_var, state="disabled", text_color="gray").grid(row=17, column=0, columnspan=2, padx=12, pady=8, sticky="w")
-        ctk.CTkButton(frame, text="Apply plasma settings", command=self._apply_plasma_settings).grid(row=18, column=0, columnspan=2, padx=12, pady=16, sticky="ew")
+        ctk.CTkCheckBox(frame, text="Include alpha heating (not in reference solver)", variable=self.alpha_var, state="disabled", text_color="gray").grid(row=17, column=0, columnspan=2, padx=12, pady=4, sticky="w")
+        ctk.CTkButton(preset_stack, text="Apply", command=self._apply_plasma_settings).grid(row=4, column=0, padx=4, pady=(22, 4), sticky="ew")
+
+    def _apply_plasma_preset(self, name):
+        for attr, value in self.PLASMA_PRESETS[name].items():
+            entry = self.plasma_entries[attr]
+            was_disabled = entry.cget("state") == "disabled"
+            if was_disabled:
+                entry.configure(state="normal")
+            entry.delete(0, "end")
+            entry.insert(0, str(value))
+            if was_disabled:
+                entry.configure(state="disabled")
+        self._apply_plasma_settings(name)
 
     def _build_nbi_tab(self):
         frame = self.tabview.tab("NBI")
@@ -152,7 +216,22 @@ class HIJassApp(ctk.CTk):
         self.results_canvas = FigureCanvasTkAgg(self.results_fig, master=frame)
         self.results_canvas.get_tk_widget().grid(row=0, column=1, padx=10, pady=10, sticky="nsew")
 
-    def _apply_plasma_settings(self):
+    def _build_summary_tab(self):
+        frame = self.tabview.tab("Summary")
+        frame.grid_columnconfigure(0, weight=1)
+        frame.grid_columnconfigure(1, weight=0)
+        frame.grid_rowconfigure(0, weight=1)
+        self.summary_fig = Figure(figsize=(11, 8), dpi=100)
+        self.summary_canvas = FigureCanvasTkAgg(self.summary_fig, master=frame)
+        self.summary_canvas.get_tk_widget().grid(row=0, column=0, padx=(10, 4), pady=10, sticky="nsew")
+        tools = ctk.CTkFrame(frame, width=150)
+        tools.grid(row=0, column=1, padx=(4, 10), pady=10, sticky="ns")
+        tools.grid_propagate(False)
+        ctk.CTkLabel(tools, text="Export", font=ctk.CTkFont(size=15, weight="bold")).pack(pady=(14, 12))
+        ctk.CTkButton(tools, text="Save image", command=lambda: self._save_summary("image")).pack(fill="x", padx=10, pady=5)
+        ctk.CTkButton(tools, text="Save PDF", command=lambda: self._save_summary("pdf")).pack(fill="x", padx=10, pady=5)
+
+    def _apply_plasma_settings(self, device_name="Default"):
         for attr, entry in self.plasma_entries.items():
             try:
                 value = float(entry.get())
@@ -167,7 +246,36 @@ class HIJassApp(ctk.CTk):
         if total > 0:
             self.model.plasma.deuterium_fraction /= total
             self.model.plasma.tritium_fraction /= total
+        self.active_device = device_name
+        self.plasma_title.configure(text=device_name)
         self._run_model()
+
+    def _summary_parameters(self):
+        p = self.model.plasma
+        lines = [
+            f"Device: {self.active_device}    R0={p.major_radius:.3g} m    a={p.minor_radius:.3g} m    "
+            f"k={p.elongation:.3g}    delta={p.triangularity:.3g}\n"
+            f"B0={p.toroidal_field:.3g} T    Ip={p.plasma_current / 1e6:.3g} MA    "
+            f"Zeff={p.effective_charge:.3g}    ne=[{p.n_e_min:.3g}, {p.n_e_max:.3g}] m^-3\n"
+            f"D/T={p.deuterium_fraction:.3g}/{p.tritium_fraction:.3g}    "
+            f"tauE,e={p.tauE_e:.3g} s    tauE,i={p.tauE_i:.3g} s",
+        ]
+        for index, beam in enumerate(self.model.beams, start=1):
+            lines.append(
+                f"NBI-{index}: {beam.species.upper()}    P={beam.power_MW:.3g} MW    "
+                f"E={beam.beam_energy_keV:.3g} keV"
+            )
+        return "\n".join(lines)
+
+    def _save_summary(self, file_type):
+        extension = ".pdf" if file_type == "pdf" else ".png"
+        file_path = filedialog.asksaveasfilename(
+            title="Save HI-Jass summary",
+            defaultextension=extension,
+            filetypes=[("PDF file", "*.pdf")] if file_type == "pdf" else [("PNG image", "*.png"), ("JPEG image", "*.jpg")],
+        )
+        if file_path:
+            self.summary_fig.savefig(file_path, bbox_inches="tight")
 
     def _apply_nbi_settings(self):
         for index, entries in self.nbi_entries.items():
@@ -200,9 +308,8 @@ class HIJassApp(ctk.CTk):
         self.shape_ax.clear()
         delta = np.clip(p.triangularity, -0.999, 0.999)
         self.shape_ax.plot(p.major_radius + p.minor_radius * np.cos(theta + np.arcsin(delta) * np.sin(theta)), p.elongation * p.minor_radius * np.sin(theta))
-        self.shape_ax.axvline(0.0, color="black", linestyle="--", linewidth=0.8, label=r"tokamak center $R=0$")
-        self.shape_ax.axvline(p.major_radius, color="tab:red", linestyle=":", linewidth=0.9, label=r"magnetic axis $R_0$")
-        self.shape_ax.set(title=r"Shape: $R_0=%.2f\,\mathrm{m}$, $a=%.2f\,\mathrm{m}$, $\kappa=%.2f$, $\delta=%.2f$" % (p.major_radius, p.minor_radius, p.elongation, p.triangularity), xlabel=r"$R$ [m]", ylabel=r"$Z$ [m]"); self.shape_ax.set_aspect("equal"); self.shape_ax.grid(alpha=0.3); self.shape_ax.legend(fontsize=7)
+        self.shape_ax.plot(p.major_radius, 0.0, marker="+", color="tab:red", markersize=9, markeredgewidth=1.5)
+        self.shape_ax.set(title=r"Shape: $R_0=%.2f\,\mathrm{m}$, $a=%.2f\,\mathrm{m}$, $\kappa=%.2f$, $\delta=%.2f$" % (p.major_radius, p.minor_radius, p.elongation, p.triangularity), xlabel=r"$R$ [m]", ylabel=r"$Z$ [m]"); self.shape_ax.set_aspect("equal"); self.shape_ax.grid(alpha=0.3)
         self.formula_ax.clear(); self.formula_ax.axis("off")
         self.formula_ax.text(0, 0.85, "Profiles / 0D balance", fontsize=11, weight="bold")
         self.formula_ax.text(0, 0.62, r"$n_e(\rho) = n_{e0}(1-\rho^2)^{2p_n}$", fontsize=9)
@@ -210,6 +317,45 @@ class HIJassApp(ctk.CTk):
         self.formula_ax.text(0, 0.22, r"$T_e$, $T_i$ solved at each scanned $n_e$", fontsize=9)
         self.profile_fig.tight_layout(); self.profile_canvas.draw()
         self._plot_results()
+        self._update_summary()
+
+    def _update_summary(self):
+        self.summary_fig.clear()
+        axes = self.summary_fig.subplots(3, 4, squeeze=False)
+        p = self.model.plasma
+        density_axis = self.scan["n_e"] / 1e20
+        panels = [
+            ("Geometry [m]", lambda axis: (axis.plot(p.major_radius + p.minor_radius * np.cos(np.linspace(0, 2 * np.pi, 400) + np.arcsin(np.clip(p.triangularity, -0.999, 0.999)) * np.sin(np.linspace(0, 2 * np.pi, 400))), p.elongation * p.minor_radius * np.sin(np.linspace(0, 2 * np.pi, 400))), axis.plot(p.major_radius, 0.0, marker="+", color="tab:red", markersize=8, markeredgewidth=1.4))),
+            ("Temperature [keV]", lambda axis: (axis.plot(density_axis, self.scan["Te"], label=r"$T_e$"), axis.plot(density_axis, self.scan["Ti"], label=r"$T_i$"))),
+            ("Heating [MW]", lambda axis: (axis.plot(density_axis, self.scan["P_e"], label=r"$P_e$"), axis.plot(density_axis, self.scan["P_i"], label=r"$P_i$"))),
+            (r"$P_{ie}$ [MW]", lambda axis: axis.plot(density_axis, self.scan["Pi_e"])),
+            (r"$P_{shine}$ [MW]", lambda axis: axis.plot(density_axis, self.scan["P_shine-through"])),
+            (r"Species density [$\mathrm{m}^{-3}$]", lambda axis: (axis.plot(density_axis, self.scan["n_D"], label=r"$n_D$"), axis.plot(density_axis, self.scan["n_T"], label=r"$n_T$"), axis.plot(density_axis, self.scan["n_b"], label=r"$n_b$"))),
+            ("Fusion power [MW]", lambda axis: (axis.plot(density_axis, self.scan["Pf_tot"], label=r"$P_{f,tot}$"), axis.plot(density_axis, self.scan["Pf_th"], label=r"$P_{f,th}$"), axis.plot(density_axis, self.scan["Pf_b"], label=r"$P_{f,b}$"))),
+            ("Times [s]", lambda axis: (axis.plot(density_axis, self.scan["tau_S"], label=r"$\tau_S$"), axis.plot(density_axis, self.scan["tau_IE"], label=r"$\tau_{IE}$"))),
+            ("<E_fast> [keV]", lambda axis: axis.plot(density_axis, self.scan["E_fast"])),
+            ("R = U_fast / U_th [1]", lambda axis: axis.plot(density_axis, self.scan["R"])),
+            ("Pressure [Pa]", lambda axis: (axis.plot(density_axis, self.scan["Pr_th"], label=r"$p_{th}$"), axis.plot(density_axis, self.scan["Pr_fast"], label=r"$p_{fast}$"))),
+            ("Toroidal beta [%]", lambda axis: axis.plot(density_axis, self.scan["beta_T"])),
+        ]
+        for axis, (subtitle, draw) in zip(axes.flat, panels):
+            draw(axis)
+            axis.set_title(subtitle, fontsize=9)
+            axis.grid(alpha=0.25)
+            axis.tick_params(labelsize=7)
+            if subtitle == "Geometry [m]":
+                axis.set_aspect("equal")
+            else:
+                axis.set_xlabel(r"$n_e$ [$10^{20}\,\mathrm{m}^{-3}$]", fontsize=7)
+            if subtitle in ("Temperature [keV]",):
+                axis.legend(fontsize=6)
+            elif subtitle in ("Heating [MW]", r"Species density [$\mathrm{m}^{-3}$]", "Fusion power [MW]", "Times [s]", "Pressure [Pa]"):
+                axis.legend(fontsize=6, ncol=2)
+        for axis in axes.flat[len(panels):]:
+            axis.set_visible(False)
+        self.summary_fig.text(0.02, 0.01, self._summary_parameters(), fontsize=7, va="bottom", family="monospace")
+        self.summary_fig.subplots_adjust(left=0.06, right=0.98, top=0.96, bottom=0.16, wspace=0.28, hspace=0.4)
+        self.summary_canvas.draw()
 
     def _plot_results(self):
         selected = self.observable_var.get()
@@ -236,7 +382,7 @@ class HIJassApp(ctk.CTk):
         units = ", ".join(f"{self.LATEX_NAMES[key]} [${self.LATEX_UNITS[self.UNITS[key]]}$]" for key in keys)
         valid_min = self.scan["n_e_valid_min"][0]
         valid_max = self.scan["n_e_valid_max"][0]
-        self.results_fig.suptitle(r"HotJass scan: %s | valid $n_e=[%.2e, %.2e]$ m$^{-3}$" % (units, valid_min, valid_max))
+        self.results_fig.suptitle(r"%s | valid $n_e=[%.2e, %.2e]$ m$^{-3}$" % (units, valid_min, valid_max))
         self.results_fig.tight_layout()
         self.results_canvas.draw()
         self.result_text.delete("1.0", "end")
