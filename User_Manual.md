@@ -60,6 +60,60 @@ $$
  n_{b0} = \sum_j n_{b0,j}
 $$
 
+## Density peaking and shine-through
+
+The density peaking input defines the analytic electron-density profile:
+
+$$
+n_e(\rho)=n_{e0}(1-\rho^2)^{2p_n},
+\qquad 0\leq\rho\leq1
+$$
+
+Shine-through uses the density along the beam chord rather than assuming that
+the central density applies everywhere. Each NBI supplies a tangent point
+$(R_t,Z_t)$ in the NBI tab. The straight tangential chord at that point is
+intersected with the shaped plasma cross-section, and the optical depth is
+evaluated as:
+
+$$
+	au_b = \sigma_{\mathrm{stop}}(E_b/A_b)
+\int_{\mathrm{chord}} n_e(\rho(s))\,ds
+$$
+
+and the captured and shine-through fractions are:
+
+$$
+f_{\mathrm{capt},b}=1-e^{-\tau_b},
+\qquad
+f_{\mathrm{shine},b}=e^{-\tau_b}.
+$$
+
+The chord is evaluated numerically using the local cylindrical radius along
+the tangent path and the plasma elongation. With $p_n=0$, the density is
+uniform along the computed chord; with $p_n>0$, the profile is integrated
+point by point. A tangent point outside the plasma produces zero captured
+power.
+
+### Shine-through model selection
+
+Each NBI has a three-way shine-through selector:
+
+- **Riviere**: the existing Riviere-type analytic stopping cross-section fit.
+- **Janev/Suzuki**: the Janev-Boley-Post analytic fit from the supplied paper,
+	Nuclear Fusion 29 (1989) 2125, Eqs. (23)-(26), using the published Table III
+	coefficients and the carbon-impurity coefficients from Table IV. It models
+	total effective stopping, including the paper's density, electron-temperature
+	and $Z_{\mathrm{eff}}$ dependence. The fit is published for
+	$100\leq E\leq10^4$ keV/u, $10^{12}\leq n_e\leq10^{15}$ cm$^{-3}$ and
+	$1\leq T_e\leq50$ keV; inputs outside these ranges are clipped to the
+	nearest validity boundary.
+- **Manual**: the entered manual shine-through fraction is used directly;
+	captured power is $(1-f_{\mathrm{shine}})P_{NB}$.
+
+The selected calculated stopping model is also used by the optional
+first-orbit-loss attenuation weighting. The Manual mode bypasses the
+cross-section calculation for shine-through.
+
 ## Mean fast-ion energy
 
 Each beam has its own steady-state slowing-down distribution:
@@ -215,11 +269,28 @@ $$
 
 The input shine-through fraction is used to determine captured beam power; the plotted $P_{\mathrm{shine}}$ is then the derived shine-through power from the scan. Charge-exchange and other configured losses similarly reduce the useful power before calculating $n_{b0,j}$.
 
+When profile peaking is nonzero, the fusion post-processing uses volume
+integrals. The thermal contribution becomes:
+
+$$
+P_{f,\mathrm{thermal}}=V E_f\left\langle
+n_D(\rho)n_T(\rho)\langle\sigma v\rangle_{DT}[T_i(\rho)]\right\rangle_V.
+$$
+
+The beam-target contribution similarly uses the local target density and the
+local slowing-down distribution evaluated with $T_e(\rho)$. Pressure and
+thermal-energy diagnostics use the corresponding volume-averaged $nT$
+profiles. The electron and ion power-balance solve remains a 0D central-value
+solve; peaking changes those temperatures only indirectly through the
+profile-aware shine-through and captured beam power.
+
 ### Current model limitations
 
 - The beam-target integral uses stationary target ions, so the solved $T_i$ is not included in that reaction integral.
 - D-D beam-target reactions are not included.
 - Each included D-T reaction is assigned $17.6\,\mathrm{MeV}$ of fusion energy.
+- The radial volume weighting uses the model's elliptical flux-surface
+	approximation and does not yet solve a 2D equilibrium.
 
 ## Density scan
 

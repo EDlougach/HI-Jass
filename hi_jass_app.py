@@ -148,17 +148,18 @@ class HIJassApp(ctk.CTk):
             ("Elongation k", "elongation", 2.2), ("Triangularity delta", "triangularity", -0.35),
             ("Zeff", "effective_charge", 2.0), ("B0 [T]", "toroidal_field", 1.5),
             ("Ip [MA]", "plasma_current_MA", 1.5),
-            ("Density peaking", "density_peaking", 0.0),
-            ("Temperature peaking", "temp_peaking", 0.0),
-            ("n_e_min [m^-3]", "n_e_min", 1.0e19), ("n_e_max [m^-3]", "n_e_max", 2.0e20),
+            ("Density peaking", "density_peaking", 0.1),
+            ("Temperature peaking", "temp_peaking", 1.0),
+            ("n_e_min [m^-3]", "n_e_min", 1.0e19), ("n_e_max [m^-3]", "n_e_max", 1.0e20),
             ("D fraction", "deuterium_fraction", 0.5), ("T fraction", "tritium_fraction", 0.5),
             ("tauE_e [s]", "tauE_e", 0.02), ("tauE_i [s]", "tauE_i", 0.05),
         ]
-        self.plasma_entries = self._entry_group(frame, fields, 1, inactive=("density_peaking", "temp_peaking"))
+        self.plasma_entries = self._entry_group(frame, fields, 1)
         for entry in self.plasma_entries.values():
             entry.configure(width=100)
             entry.grid_configure(sticky="w")
-        ctk.CTkLabel(frame, text="Te and Ti are calculated from the 0D balance and shown in Profiles/Shape and Results.", text_color="gray").grid(row=16, column=0, columnspan=2, padx=12, pady=(6, 2), sticky="w")
+        self.plasma_status = ctk.CTkLabel(frame, text="Te and Ti are calculated from the 0D balance and shown in Profiles/Shape and Results.", text_color="gray")
+        self.plasma_status.grid(row=16, column=0, columnspan=2, padx=12, pady=(6, 2), sticky="w")
         self.alpha_var = ctk.BooleanVar(value=False)
         ctk.CTkCheckBox(frame, text="Include alpha heating (not in reference solver)", variable=self.alpha_var, state="disabled", text_color="gray").grid(row=17, column=0, columnspan=2, padx=12, pady=4, sticky="w")
         ctk.CTkButton(preset_stack, text="Apply", command=self._apply_plasma_settings).grid(row=4, column=0, padx=4, pady=(22, 4), sticky="ew")
@@ -179,14 +180,35 @@ class HIJassApp(ctk.CTk):
         frame = self.tabview.tab("NBI")
         frame.grid_columnconfigure(0, weight=1)
         self.nbi_entries = {}
+        self.shine_model_vars = {}
+        self.manual_shine_labels = {}
         for column, (title, species, power, energy) in enumerate((("NBI-1", "D", 5.0, 120.0), ("NBI-2", "T", 5.0, 180.0))):
             pane = ctk.CTkFrame(frame, fg_color="transparent")
             pane.grid(row=0, column=column, padx=10, pady=10, sticky="nsew")
             frame.grid_columnconfigure(column, weight=1)
             ctk.CTkLabel(pane, text=title, font=ctk.CTkFont(size=16, weight="bold")).grid(row=0, column=0, columnspan=2, pady=8, sticky="w")
-            fields = [("Species", "species", species), ("P_NB [MW]", "power_MW", power), ("E_b [keV]", "beam_energy_keV", energy), ("Width", "beam_width", 0.35), ("Shift", "beam_shift", 0.12), ("Angle [deg]", "injection_angle_deg", 25.0), ("Shine-through", "shine_through_fraction", 0.08)]
-            self.nbi_entries[column] = self._entry_group(pane, fields, 1, inactive=("beam_width", "beam_shift", "injection_angle_deg", "shine_through_fraction"))
+            fields = [("Species", "species", species), ("P_NB [MW]", "power_MW", power), ("E_b [keV]", "beam_energy_keV", energy), ("Width", "beam_width", 0.35), ("Shift", "beam_shift", 0.12), ("Angle [deg]", "injection_angle_deg", 25.0), ("Tangent R_t [m]", "tangent_R_m", self.model.plasma.major_radius), ("Tangent Z_t [m]", "tangent_Z_m", 0.0), ("Manual shine-through fraction", "manual_shine_through_fraction", 0.01)]
+            self.nbi_entries[column] = self._entry_group(pane, fields, 1, inactive=("beam_width", "beam_shift", "injection_angle_deg", "manual_shine_through_fraction"))
+            self.manual_shine_labels[column] = pane.grid_slaves(row=9, column=0)[0]
+            self.shine_model_vars[column] = ctk.StringVar(value="Manual")
+            ctk.CTkLabel(pane, text="Shine-through model", anchor="w").grid(row=10, column=0, padx=12, pady=(10, 2), sticky="ew")
+            model_button = ctk.CTkSegmentedButton(
+                pane, values=("Riviere", "Janev", "Manual"), variable=self.shine_model_vars[column],
+                command=lambda value, beam_index=column: self._set_shine_model(beam_index, value),
+            )
+            model_button.grid(row=10, column=1, padx=12, pady=(10, 2), sticky="ew")
+            self._set_shine_model(column, "Manual")
         ctk.CTkButton(frame, text="Apply NBI settings", command=self._apply_nbi_settings).grid(row=1, column=0, columnspan=2, padx=12, pady=18, sticky="ew")
+
+    def _set_shine_model(self, index, model_name):
+        entry = self.nbi_entries[index]["manual_shine_through_fraction"]
+        label = self.manual_shine_labels[index]
+        if model_name == "Manual":
+            entry.configure(state="normal", text_color="black")
+            label.configure(text_color="black")
+        else:
+            entry.configure(state="disabled", text_color="gray")
+            label.configure(text_color="gray")
 
     def _build_profiles_tab(self):
         frame = self.tabview.tab("Profiles/Shape")
@@ -232,6 +254,7 @@ class HIJassApp(ctk.CTk):
         ctk.CTkButton(tools, text="Save PDF", command=lambda: self._save_summary("pdf")).pack(fill="x", padx=10, pady=5)
 
     def _apply_plasma_settings(self, device_name="Default"):
+        invalid_fields = []
         for attr, entry in self.plasma_entries.items():
             try:
                 value = float(entry.get())
@@ -240,7 +263,12 @@ class HIJassApp(ctk.CTk):
                     attr = "plasma_current"
                 setattr(self.model.plasma, attr, value)
             except ValueError:
-                pass
+                invalid_fields.append(attr)
+        if self.model.plasma.n_e_min <= 0.0 or self.model.plasma.n_e_max <= self.model.plasma.n_e_min:
+            invalid_fields.append("n_e range")
+        if invalid_fields:
+            self.plasma_status.configure(text="Invalid value(s): " + ", ".join(invalid_fields), text_color="red")
+            return
         self.model.plasma.alpha_heating = self.alpha_var.get()
         total = self.model.plasma.deuterium_fraction + self.model.plasma.tritium_fraction
         if total > 0:
@@ -249,6 +277,7 @@ class HIJassApp(ctk.CTk):
         self.active_device = device_name
         self.plasma_title.configure(text=device_name)
         self._run_model()
+        self.plasma_status.configure(text="Plasma settings applied", text_color="black")
 
     def _summary_parameters(self):
         p = self.model.plasma
@@ -286,6 +315,12 @@ class HIJassApp(ctk.CTk):
                     setattr(beam, attr, float(value))
                 except ValueError:
                     setattr(beam, attr, value.upper())
+            model_name = self.shine_model_vars[index].get()
+            beam.shine_through_model = {
+                "Riviere": "riviere",
+                "Janev": "janev_suzuki",
+                "Manual": "manual",
+            }[model_name]
         self._run_model()
 
     def _run_model(self):

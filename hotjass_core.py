@@ -17,9 +17,9 @@ class PlasmaParams:
     triangularity: float = -0.35
     central_density: float = 1.5e20
     n_e_min: float = 1.0e19
-    n_e_max: float = 2.0e20
-    density_peaking: float = 0.0
-    temp_peaking: float = 0.0
+    n_e_max: float = 1.0e20
+    density_peaking: float = 0.1
+    temp_peaking: float = 1.0
     effective_charge: float = 2.0
     toroidal_field: float = 1.5
     plasma_current: float = 1.5e6
@@ -39,6 +39,10 @@ class BeamParams:
     beam_shift: float = 0.12
     injection_angle_deg: float = 25.0
     shine_through_fraction: float = 0.08
+    tangent_R_m: float | None = None
+    tangent_Z_m: float = 0.0
+    shine_through_model: str = "manual"
+    manual_shine_through_fraction: float = 0.01
 
 
 class HotJassModel:
@@ -71,8 +75,17 @@ class HotJassModel:
             Zeff=self.plasma.effective_charge,
             mix_D=self.plasma.deuterium_fraction,
             mix_T=self.plasma.tritium_fraction,
+            density_peaking=self.plasma.density_peaking,
+            temperature_peaking=self.plasma.temp_peaking,
         )
-        beams = [BeamSpec(beam.beam_energy_keV, beam.power_MW * 1.0e6, beam.species.upper()) for beam in self.beams]
+        beams = [
+            BeamSpec(
+                beam.beam_energy_keV, beam.power_MW * 1.0e6, beam.species.upper(),
+                beam.tangent_R_m, beam.tangent_Z_m,
+                beam.shine_through_model, beam.manual_shine_through_fraction,
+            )
+            for beam in self.beams
+        ]
         points = [solve_operating_point(float(density), beams, max(self.plasma.tauE_e, 1.0e-6), config, max(self.plasma.tauE_i, 1.0e-6)) for density in densities]
 
         def values(attribute: str, scale: float = 1.0, infeasible: float = np.nan) -> np.ndarray:
@@ -95,7 +108,14 @@ class HotJassModel:
             weighted_tau = 0.0
             for beam in beams:
                 useful = beam.P_NB_W * captured_power_fraction(
-                    float(density), beam.Eb_keV, beam.species, 2.0 * self.plasma.minor_radius
+                    float(density), beam.Eb_keV, beam.species, 2.0 * self.plasma.minor_radius,
+                    self.plasma.density_peaking, geometry=TokamakGeometry(
+                        self.plasma.major_radius, self.plasma.minor_radius, self.plasma.elongation,
+                        self.plasma.triangularity,
+                    ), tangent_R_m=beam.tangent_R_m, tangent_Z_m=beam.tangent_Z_m,
+                    model=beam.shine_through_model,
+                    manual_shine_through_fraction=beam.manual_shine_through_fraction,
+                    Zeff=self.plasma.effective_charge,
                 )
                 tau = thermalization_time(float(density), float(point.Te_keV), beam.Eb_keV, beam.species)
                 weighted_tau += useful * tau
@@ -176,7 +196,7 @@ class HotJassModel:
     def summary(self) -> Dict[str, float]:
         power = self.power_balance()
         scan = self.density_scan(np.array([self.plasma.central_density]))
-        effective_power = sum(b.power_MW * (1.0 - b.shine_through_fraction) for b in self.beams)
+        effective_power = power["electron_power_MW"] + power["ion_power_MW"]
         return {
             "line_average_density": self.plasma.central_density * 0.65,
             "central_temperature_e_keV": float(scan["Te"][0]),

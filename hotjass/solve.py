@@ -27,6 +27,10 @@ class BeamSpec:
     Eb_keV: float
     P_NB_W: float
     species: str = "D"  # "D" or "T" -- which ion species this beam injects
+    tangent_R_m: float | None = None
+    tangent_Z_m: float = 0.0
+    shine_through_model: str = "manual"
+    manual_shine_through_fraction: float = 0.01
 
 
 @dataclass
@@ -37,6 +41,8 @@ class TokamakConfig:
     Zeff: float = 1.0
     mix_D: float = 0.5
     mix_T: float = 0.5
+    density_peaking: float = 0.0
+    temperature_peaking: float = 0.0
     fast_ion_mean_pitch2: float = 1.0 / 3.0
     enable_orbit_loss: bool = False
     orbit_loss_co_current: bool = True
@@ -464,7 +470,13 @@ def solve_operating_point(
     P_orbit_loss_w = 0.0
     P_useful_w = 0.0
     for beam in beams:
-        f_capt = physics.captured_power_fraction(ne0_m3, beam.Eb_keV, beam.species, path_length_m)
+        f_capt = physics.captured_power_fraction(
+            ne0_m3, beam.Eb_keV, beam.species, path_length_m, config.density_peaking,
+            geometry=config.geometry, tangent_R_m=beam.tangent_R_m, tangent_Z_m=beam.tangent_Z_m,
+            model=beam.shine_through_model,
+            manual_shine_through_fraction=beam.manual_shine_through_fraction,
+            Zeff=config.Zeff,
+        )
         f_capture_list.append(f_capt)
         P_NB_total_w += beam.P_NB_W
         P_capt_i = f_capt * beam.P_NB_W
@@ -481,6 +493,8 @@ def solve_operating_point(
                 ne0_m3, beam.Eb_keV, beam.species, path_length_m, config.geometry.minor_radius, orbit_width_m,
                 co_current=config.orbit_loss_co_current,
                 include_larmor_loss=config.include_larmor_loss, larmor_radius_m_value=larmor_radius_m_value,
+                stopping_model=beam.shine_through_model,
+                Zeff=config.Zeff,
             )
         else:
             f_orbit = 0.0
@@ -490,7 +504,14 @@ def solve_operating_point(
 
         P_useful_i = P_after_orbit_i * (1.0 - config.cx_loss_fraction)
         P_useful_w += P_useful_i
-        useful_beams.append(BeamSpec(Eb_keV=beam.Eb_keV, P_NB_W=P_useful_i, species=beam.species))
+        useful_beams.append(
+            BeamSpec(
+                Eb_keV=beam.Eb_keV, P_NB_W=P_useful_i, species=beam.species,
+                tangent_R_m=beam.tangent_R_m, tangent_Z_m=beam.tangent_Z_m,
+                shine_through_model=beam.shine_through_model,
+                manual_shine_through_fraction=beam.manual_shine_through_fraction,
+            )
+        )
     P_shine_w = P_NB_total_w - P_capt_w
     P_cx_loss_w = P_capt_w - P_orbit_loss_w - P_useful_w
 
@@ -564,7 +585,9 @@ def solve_operating_point(
     nD0 = config.mix_D * n_thermal
     nT0 = config.mix_T * n_thermal
 
-    pf_thermal = physics.thermal_fusion_power(nD0, nT0, Ti_keV, V)
+    pf_thermal = physics.thermal_fusion_power(
+        nD0, nT0, Ti_keV, V, config.density_peaking, config.temperature_peaking
+    )
     pf_beam = 0.0
     for beam in useful_beams:
         # Per-beam fast-ion density, recomputed (cheap) rather than stored,
@@ -575,7 +598,10 @@ def solve_operating_point(
         tau_s = physics.thermalization_time(ne0_m3, Te_keV, beam.Eb_keV, beam.species)
         nb0_i = beam.P_NB_W * tau_s / (beam.Eb_keV * 1e3 * physics.E_CHARGE * V)
         target_n = nT0 if beam.species == "D" else nD0
-        pf_beam += physics.beam_target_fusion_power(nb0_i, target_n, Te_keV, beam.Eb_keV, V, beam.species)
+        pf_beam += physics.beam_target_fusion_power(
+            nb0_i, target_n, Te_keV, beam.Eb_keV, V, beam.species,
+            ne0_m3, config.density_peaking, config.temperature_peaking,
+        )
     pf_total = pf_thermal + pf_beam
 
     # Diagnostics -- reported, never enforced (see TokamakConfig docstring).
@@ -592,6 +618,7 @@ def solve_operating_point(
         avg_fast_energy = 0.0
     pressure_pa = physics.compute_pressure(
         ne0_m3, n_thermal, nb0_total, Te_keV, Ti_keV, config.fast_ion_mean_pitch2, avg_fast_energy,
+        config.density_peaking, config.temperature_peaking,
     )
     beta_t = physics.compute_beta_t(pressure_pa, config.Bt0)
     # Second bounding case, always computed (not config-gated): pitch2=1.0, a purely parallel/passing
@@ -600,9 +627,12 @@ def solve_operating_point(
     # pitch2 -- no new physics, and Te/Ti/n_thermal etc. don't depend on this choice at all.
     pressure_anisotropic_pa = physics.compute_pressure(
         ne0_m3, n_thermal, nb0_total, Te_keV, Ti_keV, 1.0, avg_fast_energy,
+        config.density_peaking, config.temperature_peaking,
     )
     beta_t_anisotropic = physics.compute_beta_t(pressure_anisotropic_pa, config.Bt0)
-    u_thermal = physics.thermal_energy_density(ne0_m3, n_thermal, Te_keV, Ti_keV)
+    u_thermal = physics.thermal_energy_density(
+        ne0_m3, n_thermal, Te_keV, Ti_keV, config.density_peaking, config.temperature_peaking
+    )
     u_fast = physics.fast_ion_energy_density(nb0_total, avg_fast_energy)
     R = u_fast / u_thermal if u_thermal > 0.0 else float("inf")
 

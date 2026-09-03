@@ -256,16 +256,26 @@ def electron_heating_fraction(x: float) -> float:
     return 1.0 - ion_heating_fraction(x)
 
 
+def profile_volume_average(values: np.ndarray, rho: np.ndarray) -> float:
+    """Volume-average a flux-surface quantity using dV/V = 2*rho*d rho."""
+    return 2.0 * _trapezoidal_integral(rho, rho * values)
+
+
 def compute_pressure(
     ne0: float, n_thermal: float, n_fast: float, Te_keV: float, Ti_keV: float,
     fast_ion_mean_pitch2: float, average_fast_energy_keV_value: float,
+    density_peaking: float = 0.0, temperature_peaking: float = 0.0,
 ) -> float:
     """Total plasma pressure p_e + p_i + p_fast [Pa]. p_fast uses the
     anisotropic pitch correction p_fast=(1-<zeta^2>)*u_fast (isotropic
     default <zeta^2>=1/3 recovers p_fast=(2/3)*u_fast).
     """
-    p_e = ne0 * Te_keV * 1e3 * E_CHARGE
-    p_i = n_thermal * Ti_keV * 1e3 * E_CHARGE
+    rho = np.linspace(0.0, 1.0, 201)
+    density_profile = np.maximum(1.0 - rho**2, 0.0) ** (2.0 * max(density_peaking, 0.0))
+    temperature_profile = np.maximum(1.0 - rho**2, 0.0) ** (2.0 * max(temperature_peaking, 0.0))
+    profile_average = profile_volume_average(density_profile * temperature_profile, rho)
+    p_e = ne0 * Te_keV * profile_average * 1e3 * E_CHARGE
+    p_i = n_thermal * Ti_keV * profile_average * 1e3 * E_CHARGE
     u_fast = n_fast * average_fast_energy_keV_value * 1e3 * E_CHARGE
     p_fast = (1.0 - fast_ion_mean_pitch2) * u_fast
     return p_e + p_i + p_fast
@@ -276,9 +286,14 @@ def compute_beta_t(pressure_pa: float, Bt0: float) -> float:
     return pressure_pa / max(magnetic_pressure, 1e-12)
 
 
-def thermal_energy_density(ne0: float, n_thermal: float, Te_keV: float, Ti_keV: float) -> float:
+def thermal_energy_density(
+    ne0: float, n_thermal: float, Te_keV: float, Ti_keV: float,
+    density_peaking: float = 0.0, temperature_peaking: float = 0.0,
+) -> float:
     """U_t = (3/2)*(ne*Te + n_thermal*Ti) [J/m^3]."""
-    return 1.5 * (ne0 * Te_keV + n_thermal * Ti_keV) * 1e3 * E_CHARGE
+    rho = np.linspace(0.0, 1.0, 201)
+    profile = np.maximum(1.0 - rho**2, 0.0) ** (2.0 * max(density_peaking + temperature_peaking, 0.0))
+    return 1.5 * (ne0 * Te_keV + n_thermal * Ti_keV) * profile_volume_average(profile, rho) * 1e3 * E_CHARGE
 
 
 def fast_ion_energy_density(nb0: float, average_fast_energy_keV_value: float) -> float:
@@ -302,7 +317,10 @@ def alpha_heating_power(pf_total_w: float, F_alpha: float = F_ALPHA) -> float:
     return F_alpha * (E_ALPHA_MEV / E_FUSION_MEV) * pf_total_w
 
 
-def thermal_fusion_power(nD0: float, nT0: float, Ti_keV: float, volume_m3: float) -> float:
+def thermal_fusion_power(
+    nD0: float, nT0: float, Ti_keV: float, volume_m3: float,
+    density_peaking: float = 0.0, temperature_peaking: float = 0.0,
+) -> float:
     """Thermal D-T fusion power [W]. IMPORTANT: the temperature argument is
     T_i (ion temperature -- Bosch-Hale reactivity depends on relative ion
     velocities), not T_e. The predecessor project's equivalent method took
@@ -314,8 +332,12 @@ def thermal_fusion_power(nD0: float, nT0: float, Ti_keV: float, volume_m3: float
     """
     if nD0 <= 0.0 or nT0 <= 0.0:
         return 0.0
-    reactivity = bosch_hale_dt_reactivity(Ti_keV)
-    return nD0 * nT0 * reactivity * volume_m3 * E_FUSION_J
+    rho = np.linspace(0.0, 1.0, 401)
+    density_profile = np.maximum(1.0 - rho**2, 0.0) ** (2.0 * max(density_peaking, 0.0))
+    temperature_profile = np.maximum(1.0 - rho**2, 0.0) ** (2.0 * max(temperature_peaking, 0.0))
+    reactivity = bosch_hale_dt_reactivity(Ti_keV * temperature_profile)
+    volume_average_rate = profile_volume_average(density_profile**2 * reactivity, rho)
+    return nD0 * nT0 * volume_average_rate * volume_m3 * E_FUSION_J
 
 
 _BEAM_MASS_NUMBER = {"D": 2.0, "T": 3.0}
@@ -362,6 +384,53 @@ def beam_stopping_cross_section_m2(energy_per_amu_keV: float) -> float:
     return sigma_cm2 * 1e-4  # cm^2 -> m^2
 
 
+def janev_suzuki_stopping_cross_section_m2(
+    energy_per_amu_keV: float, ne_cm3: float = 1.0e14,
+    Te_keV: float = 10.0, Zeff: float = 2.0,
+) -> float:
+    """Janev-Boley-Post (1989) analytic beam-stopping fit, Eq. (23).
+
+    The fit is valid for 100 <= E <= 1e4 keV/u, 1e12 <= ne <= 1e15 cm^-3,
+    and 1 <= Te <= 50 keV. The current model uses the paper's carbon-
+    impurity coefficients (Z=6) to represent its carbon-like Zeff model.
+    """
+    energy = min(max(float(energy_per_amu_keV), 100.0), 1.0e4)
+    density = min(max(float(ne_cm3), 1.0e12), 1.0e15)
+    temperature = min(max(float(Te_keV), 1.0), 50.0)
+    log_energy = math.log(energy)
+    log_density = math.log(density / 1.0e13)
+    log_temperature = math.log(temperature)
+    a = (
+        (1, 1, 1, 4.40), (1, 1, 2, -2.49e-2), (1, 2, 1, 7.46e-2),
+        (1, 2, 2, 2.27e-3), (1, 3, 1, 3.16e-3), (1, 3, 2, -2.78e-5),
+        (2, 1, 1, 2.30e-1), (2, 1, 2, -1.15e-2), (2, 2, 1, -2.55e-3),
+        (2, 2, 2, -6.20e-4), (2, 3, 1, 1.32e-3), (2, 3, 2, 3.38e-5),
+    )
+    b_carbon = (
+        (1, 1, 1, -1.49), (1, 1, 2, -1.54e-2), (1, 2, 1, -1.19e-1),
+        (1, 2, 2, -1.50e-2), (2, 1, 1, 5.18e-1), (2, 1, 2, 7.18e-3),
+        (2, 2, 1, 2.92e-2), (2, 2, 2, 3.66e-3), (3, 1, 1, -3.36e-2),
+        (3, 1, 2, 3.41e-4), (3, 2, 1, -1.79e-3), (3, 2, 2, -2.04e-4),
+    )
+    s1 = sum(value * log_energy ** (i - 1) * log_density ** (j - 1) * log_temperature ** (k - 1) for i, j, k, value in a)
+    sz = sum(value * log_energy ** (i - 1) * log_density ** (j - 1) * log_temperature ** (k - 1) for i, j, k, value in b_carbon)
+    sigma_cm2 = math.exp(min(s1, 700.0)) / energy * (1.0 + max(Zeff - 1.0, 0.0) * sz) * 1.0e-16
+    return max(sigma_cm2, 0.0) * 1.0e-4
+
+
+def stopping_cross_section_m2(
+    energy_per_amu_keV: float, model: str = "riviere", ne_cm3: float = 1.0e14,
+    Te_keV: float = 10.0, Zeff: float = 2.0,
+) -> float:
+    """Select the neutral-beam stopping cross-section model."""
+    normalized_model = model.strip().lower().replace("/", "_").replace("-", "_")
+    if normalized_model == "riviere":
+        return beam_stopping_cross_section_m2(energy_per_amu_keV)
+    if normalized_model in ("janev_suzuki", "janev_suzuki_approximation"):
+        return janev_suzuki_stopping_cross_section_m2(energy_per_amu_keV, ne_cm3, Te_keV, Zeff)
+    raise ValueError(f"Unknown shine-through model {model!r}")
+
+
 def tangential_path_length(minor_radius_m: float) -> float:
     """Chord length through the plasma for tangential injection aimed at
     tangency radius R_t = R_0 (through the magnetic axis) -- PPPL-1280
@@ -374,17 +443,67 @@ def tangential_path_length(minor_radius_m: float) -> float:
     return 2.0 * minor_radius_m
 
 
-def captured_power_fraction(ne0: float, Eb_keV: float, species: str, path_length_m: float) -> float:
+def captured_power_fraction(
+    ne0: float,
+    Eb_keV: float,
+    species: str,
+    path_length_m: float,
+    density_peaking: float = 0.0,
+    n_samples: int = 201,
+    geometry: TokamakGeometry | None = None,
+    tangent_R_m: float | None = None,
+    tangent_Z_m: float = 0.0,
+    model: str = "riviere",
+    manual_shine_through_fraction: float | None = None,
+    Zeff: float = 2.0,
+    Te_keV: float = 10.0,
+) -> float:
     """Fraction of injected neutral-beam power actually absorbed by the
     plasma (1 - shine-through), under Beer-Lambert attenuation of the
     neutral beam flux (PPPL-1280 Eq. 4.1: I(x)=I(0)*exp(-x/lambda_t)) along
-    a straight chord of length path_length_m. Depends only on ne0 and the
-    beam's own energy/species -- NOT on T_e -- so it can be evaluated before
-    the T_e solve.
+    a straight chord of length path_length_m. If geometry and tangent
+    coordinates are supplied, the path length and density column are obtained
+    from the toroidal tangent chord at (R_t, Z_t). For a peaked profile, the
+    optical depth is integrated along the chord using
+    n_e(rho)=ne0*(1-rho^2)^(2*density_peaking), with rho running from -1 to
+    1 across the central chord. Depends only on density, beam energy/species,
+    path length, and profile shape -- NOT on T_e -- so it can be evaluated
+    before the T_e solve.
     """
+    normalized_model = model.strip().lower().replace("/", "_").replace("-", "_")
+    if normalized_model == "manual":
+        if manual_shine_through_fraction is None:
+            raise ValueError("Manual shine-through mode requires manual_shine_through_fraction")
+        return 1.0 - min(max(float(manual_shine_through_fraction), 0.0), 1.0)
     A = beam_mass_number(species)
-    sigma_m2 = beam_stopping_cross_section_m2(Eb_keV / A)
-    optical_depth = ne0 * sigma_m2 * path_length_m
+    sigma_m2 = stopping_cross_section_m2(
+        Eb_keV / A, normalized_model, ne0 * 1e-6, Te_keV, Zeff
+    )
+    if geometry is not None:
+        R_t = geometry.major_radius if tangent_R_m is None else tangent_R_m
+        z_normalized = tangent_Z_m / max(geometry.elongation * geometry.minor_radius, 1e-12)
+        if abs(z_normalized) >= 1.0:
+            return 0.0
+        radial_half_width = geometry.minor_radius * math.sqrt(1.0 - z_normalized**2)
+        outer_R = geometry.major_radius + radial_half_width
+        y_squared = outer_R**2 - R_t**2
+        if y_squared <= 0.0:
+            return 0.0
+        half_chord = math.sqrt(y_squared)
+        y = np.linspace(-half_chord, half_chord, max(int(n_samples), 3))
+        cylindrical_R = np.sqrt(R_t**2 + y**2)
+        rho_squared = ((cylindrical_R - geometry.major_radius) / geometry.minor_radius) ** 2 + z_normalized**2
+        rho = np.sqrt(np.maximum(rho_squared, 0.0))
+        profile = np.maximum(1.0 - rho**2, 0.0) ** (2.0 * max(density_peaking, 0.0))
+        column_density = ne0 * _trapezoidal_integral(y, profile)
+        optical_depth = sigma_m2 * column_density
+    elif density_peaking == 0.0:
+        optical_depth = ne0 * sigma_m2 * path_length_m
+    else:
+        rho = np.linspace(-1.0, 1.0, max(int(n_samples), 3))
+        profile = np.maximum(1.0 - rho**2, 0.0) ** (2.0 * density_peaking)
+        column_density = ne0 * path_length_m * _trapezoidal_integral(rho, profile) / 2.0
+        optical_depth = sigma_m2 * column_density
     return 1.0 - math.exp(-optical_depth)
 
 
@@ -630,6 +749,7 @@ def first_orbit_loss_fraction(
     ne0: float, Eb_keV: float, species: str, path_length_m: float,
     minor_radius_m: float, orbit_width_m: float, co_current: bool = True,
     include_larmor_loss: bool = False, larmor_radius_m_value: float = 0.0,
+    stopping_model: str = "riviere", Zeff: float = 2.0, Te_keV: float = 10.0,
 ) -> float:
     """Fraction of CAPTURED (post shine-through) beam ions promptly lost to
     first-orbit loss -- born close enough to the LCFS that their passing-
@@ -680,7 +800,7 @@ def first_orbit_loss_fraction(
     as L_i(x) or the beam-target fusion integral already in this module.
     """
     A = beam_mass_number(species)
-    sigma_m2 = beam_stopping_cross_section_m2(Eb_keV / A)
+    sigma_m2 = stopping_cross_section_m2(Eb_keV / A, stopping_model, ne0 * 1e-6, Te_keV, Zeff)
     x = np.linspace(0.0, path_length_m, 501)
     density = np.exp(-ne0 * sigma_m2 * x)
     rho = np.abs(x - minor_radius_m) / minor_radius_m
@@ -699,6 +819,7 @@ def first_orbit_loss_fraction(
 
 def beam_target_fusion_power(
     nb0: float, n_target0: float, Te_keV: float, Eb_keV: float, volume_m3: float, species: str = "D",
+    ne0: float | None = None, density_peaking: float = 0.0, temperature_peaking: float = 0.0,
 ) -> float:
     """Beam-target fusion power [W]: a fast beam ion (given species, D or T)
     slowing down through a stationary (T_i=0) target-ion population of the
@@ -720,8 +841,22 @@ def beam_target_fusion_power(
     an inherited gap from the predecessor project, live from day one here.
     """
     energies = np.linspace(1.0e-3, Eb_keV, 601)
-    distribution = slowing_down_distribution(Te_keV, nb0, Eb_keV, energies, species)
     sigma_v = beam_target_reactivity_spectrum(energies, species)
-    reaction_density = n_target0 * distribution * sigma_v
-    reaction_rate = volume_m3 * _trapezoidal_integral(energies, reaction_density)
-    return reaction_rate * E_FUSION_J
+    if ne0 is None or (density_peaking == 0.0 and temperature_peaking == 0.0):
+        distribution = slowing_down_distribution(Te_keV, nb0, Eb_keV, energies, species)
+        reaction_rate = volume_m3 * _trapezoidal_integral(energies, n_target0 * distribution * sigma_v)
+        return reaction_rate * E_FUSION_J
+
+    rho = np.linspace(0.0, 1.0, 121)
+    density_profile = np.maximum(1.0 - rho**2, 0.0) ** (2.0 * max(density_peaking, 0.0))
+    temperature_profile = np.maximum(1.0 - rho**2, 0.0) ** (2.0 * max(temperature_peaking, 0.0))
+    reference_tau = thermalization_time(ne0, Te_keV, Eb_keV, species)
+    radial_rate = np.zeros_like(rho)
+    for index, (density_factor, temperature_factor) in enumerate(zip(density_profile, temperature_profile)):
+        local_ne = ne0 * density_factor
+        local_te = Te_keV * temperature_factor
+        local_tau = thermalization_time(float(local_ne), float(local_te), Eb_keV, species)
+        local_nb = nb0 * local_tau / max(reference_tau, 1e-30)
+        distribution = slowing_down_distribution(float(local_te), local_nb, Eb_keV, energies, species)
+        radial_rate[index] = n_target0 * density_factor * _trapezoidal_integral(energies, distribution * sigma_v)
+    return volume_m3 * profile_volume_average(radial_rate, rho) * E_FUSION_J
