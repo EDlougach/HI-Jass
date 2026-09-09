@@ -5,6 +5,7 @@ from typing import Dict, List
 
 import numpy as np
 
+from hotjass import physics
 from hotjass.physics import TokamakGeometry, captured_power_fraction, equipartition_power_w, thermalization_time
 from hotjass.solve import BeamSpec, TokamakConfig, solve_operating_point
 
@@ -27,7 +28,14 @@ class PlasmaParams:
     tritium_fraction: float = 0.5
     tauE_e: float = 0.02
     tauE_i: float = 0.05
-    alpha_heating: bool = False
+    alpha_heating: bool = False  # fusion alpha self-heating fed back into the T_e/T_i balance
+    f_alpha: float = 1.0  # fraction of alpha power confined & thermalised
+    tau_Ee_mode: str = "fixed"
+    tau_Ei_mode: str = "fixed"
+    enable_orbit_loss: bool = False
+    orbit_loss_co_current: bool = True
+    cx_loss_fraction: float = 0.0
+    enable_equipartition: bool = False
 
 
 @dataclass
@@ -43,6 +51,7 @@ class BeamParams:
     tangent_Z_m: float = 0.0
     shine_through_model: str = "manual"
     manual_shine_through_fraction: float = 0.01
+    co_current: bool = True  # this beamline's injection direction (co- vs counter-Ip)
 
 
 class HotJassModel:
@@ -58,6 +67,77 @@ class HotJassModel:
     def rho_grid(self, n_points: int = 200) -> np.ndarray:
         return np.linspace(0.0, 1.0, n_points)
 
+    def _tokamak_config(self) -> TokamakConfig:
+        return TokamakConfig(
+            geometry=TokamakGeometry(
+                self.plasma.major_radius, self.plasma.minor_radius,
+                self.plasma.elongation, self.plasma.triangularity,
+            ),
+            Bt0=self.plasma.toroidal_field,
+            Ip_MA=self.plasma.plasma_current / 1.0e6,
+            Zeff=self.plasma.effective_charge,
+            mix_D=self.plasma.deuterium_fraction,
+            mix_T=self.plasma.tritium_fraction,
+            density_peaking=self.plasma.density_peaking,
+            temperature_peaking=self.plasma.temp_peaking,
+            tau_Ee_mode=self.plasma.tau_Ee_mode,
+            tau_Ei_mode=self.plasma.tau_Ei_mode,
+            enable_orbit_loss=self.plasma.enable_orbit_loss,
+            orbit_loss_co_current=self.plasma.orbit_loss_co_current,
+            cx_loss_fraction=self.plasma.cx_loss_fraction,
+            enable_equipartition=self.plasma.enable_equipartition,
+            enable_alpha_heating=self.plasma.alpha_heating,
+            f_alpha=self.plasma.f_alpha,
+        )
+
+    def _solve_point(self, ne_m3: float, beams, tau_e: float, tau_i: float, config: TokamakConfig):
+        """One operating point, with a fixed-point on fusion alpha heating when
+        config.enable_alpha_heating: P_alpha = f_alpha*(E_alpha/E_fus)*P_fusion is
+        split electron/ion by the alpha slowing-down fraction and fed back through
+        solve_operating_point's extra source terms. Under-relaxed Picard; the
+        alpha-off path is a single plain solve_operating_point call.
+        """
+        op = solve_operating_point(ne_m3, beams, tau_e, config, tau_i)
+        if not (config.enable_alpha_heating and op.feasible):
+            return op
+        ratio = config.f_alpha * (physics.E_ALPHA_MEV / physics.E_FUSION_MEV)
+        p_alpha = 0.0
+        for _ in range(30):
+            target = ratio * op.pf_total_w
+            step = 0.5 * (target - p_alpha)
+            if abs(step) <= 1.0e-3 * max(target, 1.0e-9):
+                break
+            p_alpha += step
+            le = physics.alpha_electron_heating_fraction(max(op.Te_keV, 1.0e-3))
+            trial = solve_operating_point(
+                ne_m3, beams, tau_e, config, tau_i,
+                extra_e_source_w=le * p_alpha, extra_i_source_w=(1.0 - le) * p_alpha,
+            )
+            if not trial.feasible:
+                return trial
+            op = trial
+        return op
+
+    def _beam_specs(self) -> List[BeamSpec]:
+        return [
+            BeamSpec(
+                beam.beam_energy_keV, beam.power_MW * 1.0e6, beam.species.upper(),
+                beam.tangent_R_m, beam.tangent_Z_m,
+                beam.shine_through_model, beam.manual_shine_through_fraction,
+                bool(beam.co_current),
+            )
+            for beam in self.beams
+        ]
+
+    def operating_point(self, n_e: float | None = None):
+        """Solve one self-consistent operating point (default: at central_density)."""
+        density = self.plasma.central_density if n_e is None else float(n_e)
+        return self._solve_point(
+            density, self._beam_specs(),
+            max(self.plasma.tauE_e, 1.0e-6), max(self.plasma.tauE_i, 1.0e-6),
+            self._tokamak_config(),
+        )
+
     def density_profile(self, rho: np.ndarray) -> np.ndarray:
         exponent = 2.0 * self.plasma.density_peaking
         return self.plasma.central_density * (1.0 - rho ** 2) ** exponent
@@ -68,25 +148,11 @@ class HotJassModel:
             n_e if n_e is not None else np.linspace(self.plasma.n_e_min, self.plasma.n_e_max, 21), dtype=float
         )
         volume = self.plasma_volume()
-        config = TokamakConfig(
-            geometry=TokamakGeometry(self.plasma.major_radius, self.plasma.minor_radius, self.plasma.elongation, self.plasma.triangularity),
-            Bt0=self.plasma.toroidal_field,
-            Ip_MA=self.plasma.plasma_current / 1.0e6,
-            Zeff=self.plasma.effective_charge,
-            mix_D=self.plasma.deuterium_fraction,
-            mix_T=self.plasma.tritium_fraction,
-            density_peaking=self.plasma.density_peaking,
-            temperature_peaking=self.plasma.temp_peaking,
-        )
-        beams = [
-            BeamSpec(
-                beam.beam_energy_keV, beam.power_MW * 1.0e6, beam.species.upper(),
-                beam.tangent_R_m, beam.tangent_Z_m,
-                beam.shine_through_model, beam.manual_shine_through_fraction,
-            )
-            for beam in self.beams
-        ]
-        points = [solve_operating_point(float(density), beams, max(self.plasma.tauE_e, 1.0e-6), config, max(self.plasma.tauE_i, 1.0e-6)) for density in densities]
+        config = self._tokamak_config()
+        beams = self._beam_specs()
+        tau_e = max(self.plasma.tauE_e, 1.0e-6)
+        tau_i = max(self.plasma.tauE_i, 1.0e-6)
+        points = [self._solve_point(float(density), beams, tau_e, tau_i, config) for density in densities]
 
         def values(attribute: str, scale: float = 1.0, infeasible: float = np.nan) -> np.ndarray:
             return np.asarray([getattr(point, attribute) * scale if point.feasible else infeasible for point in points], dtype=float)
@@ -146,6 +212,7 @@ class HotJassModel:
         result = {
             "n_e": densities, "Te": te, "Ti": ti, "P_e": p_e, "P_i": p_i,
                 "Pi_e": p_ie_values * 1.0e-6, "P_shine-through": values("P_shine_w", 1.0e-6),
+                "P_alpha": values("P_alpha_w", 1.0e-6),
                 "n_D": values("nD0_m3"), "n_T": values("nT0_m3"), "n_b": values("nb0_m3"),
                 "Pf_tot": values("pf_total_w", 1.0e-6), "Pf_th": values("pf_thermal_w", 1.0e-6), "Pf_b": values("pf_beam_w", 1.0e-6),
                 "E_fast": avg_energy, "tau_S": tau_s_values,

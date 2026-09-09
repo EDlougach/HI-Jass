@@ -31,6 +31,8 @@ class BeamSpec:
     tangent_Z_m: float = 0.0
     shine_through_model: str = "manual"
     manual_shine_through_fraction: float = 0.01
+    co_current: bool = True  # per-beamline injection direction (co- vs counter-Ip);
+    #   used for first-orbit loss instead of the (now-legacy) config.orbit_loss_co_current
 
 
 @dataclass
@@ -75,6 +77,16 @@ class TokamakConfig:
     # first-orbit-loss result unaffected unless explicitly enabled.
     cx_loss_fraction: float = 0.0
     enable_equipartition: bool = False
+    # Fusion alpha self-heating. When enable_alpha_heating is True the caller
+    # (hotjass_core) closes a fixed-point P_alpha = f_alpha*(3.5/17.6)*P_fusion,
+    # feeding P_alpha back into the T_e/T_i balance via solve_operating_point's
+    # extra_e_source_w/extra_i_source_w (split electron/ion by the alpha
+    # slowing-down fraction, physics.alpha_electron_heating_fraction). f_alpha is
+    # the fraction of alpha power confined and thermalised (1.0 = fully confined).
+    # solve_operating_point itself never iterates -- it just accepts the two extra
+    # source terms. Default False -> byte-identical to the alpha-free result.
+    enable_alpha_heating: bool = False
+    f_alpha: float = 1.0
     tau_Ee_mode: str = "fixed"
     tau_Ei_mode: str = "fixed"
     # Physics-based confinement-time scalings (docs/model.md), replacing the
@@ -161,6 +173,10 @@ class OperatingPoint:
     P_e_w: float = 0.0
     P_i_w: float = 0.0
     P_ei_w: float = 0.0  # equipartition power, electrons->ions (can be negative); 0 unless config.enable_equipartition
+    P_alpha_w: float = 0.0  # fusion alpha heating power actually folded into the T_e/T_i balance
+    #   (0 unless the caller ran the alpha fixed-point -- solve_operating_point only sees it via
+    #   extra_e_source_w/extra_i_source_w; the Picard loop that closes P_alpha ~ 0.2*P_fus lives
+    #   in hotjass_core so solve_operating_point itself stays a single non-iterative solve)
     Le: list[float] = field(default_factory=list)  # per-beam electron-heating fraction
     Li: list[float] = field(default_factory=list)  # per-beam ion-heating fraction
     P_NB_total_w: float = 0.0  # sum of injected (pre-shine-through) beam power, echoed for reference
@@ -206,10 +222,14 @@ def _n_sum_for_ne(ne0_m3: float, Zeff: float) -> float:
     return ne0_m3 / alpha_e
 
 
-def _solve_te_keV(ne0_m3: float, beams: list[BeamSpec], tau_E_s: float, volume_m3: float) -> float:
+def _solve_te_keV(ne0_m3: float, beams: list[BeamSpec], tau_E_s: float, volume_m3: float,
+                  extra_e_source_w: float = 0.0) -> float:
     """Step 1: solve the electron power balance
-        (3/2)*ne0*Te*(1e3*e)*V/tau_E = sum_i Le(Eb_i/Ec_i(Te)) * P_NB_i
-    for Te alone (proof of a unique root: docs/model.md). Ec is now PER BEAM
+        (3/2)*ne0*Te*(1e3*e)*V/tau_E = sum_i Le(Eb_i/Ec_i(Te)) * P_NB_i + P_extra_e
+    for Te alone (proof of a unique root: docs/model.md). extra_e_source_w is a
+    Te-independent additive electron source (fusion alpha heating, closed by the
+    caller's fixed-point) -- adding a positive constant to the RHS only shifts the
+    unique root up, so the monotonicity argument is unaffected. Ec is now PER BEAM
     (critical_energy_keV depends on the beam's own species/mass -- Phase 2,
     D+T beams) rather than shared -- the monotonicity proof is unaffected,
     since each Ec_i(Te) is still individually strictly increasing in Te, so
@@ -220,7 +240,7 @@ def _solve_te_keV(ne0_m3: float, beams: list[BeamSpec], tau_E_s: float, volume_m
 
     def residual(Te_keV: float) -> float:
         lhs = 1.5 * ne0_m3 * Te_keV * 1e3 * physics.E_CHARGE * volume_m3 / tau_E_s
-        rhs = 0.0
+        rhs = extra_e_source_w
         for beam in beams:
             Ec = physics.critical_energy_keV(Te_keV, beam.species)
             x = beam.Eb_keV / max(Ec, 1e-12)
@@ -247,7 +267,7 @@ def _solve_te_keV(ne0_m3: float, beams: list[BeamSpec], tau_E_s: float, volume_m
 
 def _solve_te_ti_coupled_keV(
     ne0_m3: float, useful_beams: list[BeamSpec], tau_Ee_s: float, tau_Ei_s: float, volume_m3: float,
-    config: TokamakConfig,
+    config: TokamakConfig, extra_e_source_w: float = 0.0, extra_i_source_w: float = 0.0,
 ) -> tuple[float, float, float, float, list[float], list[float], float, float, float]:
     """Coupled electron/ion power balance with equipartition
     (config.enable_equipartition):
@@ -309,7 +329,7 @@ def _solve_te_ti_coupled_keV(
     def solve_ti(Te_keV: float, n_thermal_eff: float, P_i_beam: float) -> float:
         def residual(Ti_keV: float) -> float:
             lhs = 1.5 * n_thermal_eff * Ti_keV * 1e3 * physics.E_CHARGE * volume_m3 / tau_Ei_s
-            rhs = P_i_beam + p_ei(Te_keV, Ti_keV, n_thermal_eff)
+            rhs = P_i_beam + p_ei(Te_keV, Ti_keV, n_thermal_eff) + extra_i_source_w
             return lhs - rhs
 
         lo, hi = 1.0e-4, max(Te_keV * 2.0, 1.0)
@@ -332,7 +352,7 @@ def _solve_te_ti_coupled_keV(
         Ti_keV = solve_ti(Te_keV, n_thermal_eff, P_i_beam)
         P_ei = p_ei(Te_keV, Ti_keV, n_thermal_eff)
         lhs = 1.5 * ne0_m3 * Te_keV * 1e3 * physics.E_CHARGE * volume_m3 / tau_Ee_s
-        rhs = P_e_beam - P_ei
+        rhs = P_e_beam - P_ei + extra_e_source_w
         return (lhs - rhs), Ti_keV, n_thermal, nb0, P_e_beam, P_i_beam, Le_list, Li_list, P_ei
 
     lo, hi = 1.0e-3, 1.0
@@ -426,6 +446,8 @@ def solve_operating_point(
     tau_E_s: float,
     config: TokamakConfig,
     tau_Ei_s: float | None = None,
+    extra_e_source_w: float = 0.0,
+    extra_i_source_w: float = 0.0,
 ) -> OperatingPoint:
     """The full steps 0-7 cascade (docs/model.md) at one scanned n_e0.
 
@@ -489,11 +511,17 @@ def solve_operating_point(
                 elongation=config.geometry.elongation, species=beam.species,
             )
             larmor_radius_m_value = physics.larmor_radius_m(Eb_keV=beam.Eb_keV, Bt_T=config.Bt0, species=beam.species)
+            # first_orbit_loss_fraction needs an attenuation SHAPE for the birth
+            # profile; "manual" shine-through only fixes a fraction, not a shape,
+            # so fall back to the standard Riviere shape in that case.
+            orbit_stopping_model = (
+                "riviere" if beam.shine_through_model == "manual" else beam.shine_through_model
+            )
             f_orbit = physics.first_orbit_loss_fraction(
                 ne0_m3, beam.Eb_keV, beam.species, path_length_m, config.geometry.minor_radius, orbit_width_m,
-                co_current=config.orbit_loss_co_current,
+                co_current=getattr(beam, "co_current", config.orbit_loss_co_current),
                 include_larmor_loss=config.include_larmor_loss, larmor_radius_m_value=larmor_radius_m_value,
-                stopping_model=beam.shine_through_model,
+                stopping_model=orbit_stopping_model,
                 Zeff=config.Zeff,
             )
         else:
@@ -537,9 +565,10 @@ def solve_operating_point(
         # pure BEAM heating split -- P_ei_w is the separate equipartition
         # exchange) all come out of one nested-bisection call.
         Te_keV, Ti_keV, n_thermal, nb0_total, Le_list, Li_list, P_e_w, P_i_w, P_ei_w = \
-            _solve_te_ti_coupled_keV(ne0_m3, useful_beams, tau_E_s, tau_Ei_s, V, config)
+            _solve_te_ti_coupled_keV(ne0_m3, useful_beams, tau_E_s, tau_Ei_s, V, config,
+                                     extra_e_source_w, extra_i_source_w)
     else:
-        Te_keV = _solve_te_keV(ne0_m3, useful_beams, tau_E_s, V)
+        Te_keV = _solve_te_keV(ne0_m3, useful_beams, tau_E_s, V, extra_e_source_w)
 
         Le_list = []
         Li_list = []
@@ -564,7 +593,8 @@ def solve_operating_point(
     if n_thermal <= 0.0:
         return OperatingPoint(
             ne0_m3=ne0_m3, feasible=False, Te_keV=Te_keV, nb0_m3=nb0_total,
-            P_e_w=P_e_w, P_i_w=P_i_w, P_ei_w=P_ei_w, Le=Le_list, Li=Li_list,
+            P_e_w=P_e_w, P_i_w=P_i_w, P_ei_w=P_ei_w, P_alpha_w=extra_e_source_w + extra_i_source_w,
+            Le=Le_list, Li=Li_list,
             tau_E_s=tau_E_s, tau_Ei_s=tau_Ei_s,
             P_NB_total_w=P_NB_total_w, P_shine_w=P_shine_w, P_capt_w=P_capt_w, f_capture=f_capture_list,
             P_orbit_loss_w=P_orbit_loss_w, f_orbit_loss=f_orbit_loss_list,
@@ -577,10 +607,11 @@ def solve_operating_point(
         )
 
     if not config.enable_equipartition:
+        P_i_total_w = P_i_w + extra_i_source_w
         if config.tau_Ei_mode == "neoclassical":
-            Ti_keV, tau_Ei_s = _solve_ti_neoclassical_keV(P_i_w, n_thermal, V, config)
+            Ti_keV, tau_Ei_s = _solve_ti_neoclassical_keV(P_i_total_w, n_thermal, V, config)
         else:
-            Ti_keV = P_i_w * tau_Ei_s / (1.5 * n_thermal * 1e3 * physics.E_CHARGE * V)
+            Ti_keV = P_i_total_w * tau_Ei_s / (1.5 * n_thermal * 1e3 * physics.E_CHARGE * V)
 
     nD0 = config.mix_D * n_thermal
     nT0 = config.mix_T * n_thermal
@@ -640,7 +671,8 @@ def solve_operating_point(
         ne0_m3=ne0_m3, feasible=True, Te_keV=Te_keV, Ti_keV=Ti_keV,
         nb0_m3=nb0_total, nD0_m3=nD0, nT0_m3=nT0, n_thermal_m3=n_thermal,
         n_thermal_fraction=n_thermal / n_sum,
-        P_e_w=P_e_w, P_i_w=P_i_w, P_ei_w=P_ei_w, Le=Le_list, Li=Li_list,
+        P_e_w=P_e_w, P_i_w=P_i_w, P_ei_w=P_ei_w, P_alpha_w=extra_e_source_w + extra_i_source_w,
+        Le=Le_list, Li=Li_list,
         P_NB_total_w=P_NB_total_w, P_shine_w=P_shine_w, P_capt_w=P_capt_w, f_capture=f_capture_list,
         P_orbit_loss_w=P_orbit_loss_w, f_orbit_loss=f_orbit_loss_list,
         P_cx_loss_w=P_cx_loss_w, P_useful_w=P_useful_w,

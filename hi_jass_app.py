@@ -1,54 +1,147 @@
+"""HI-Jass desktop GUI -- v1 layout (sidebar inputs + tabbed results + run modes).
+
+Same 0-D physics as before (hotjass_core / hotjass.solve); the interface is
+reorganised per docs/HI-Jass-GUI.pdf section 8: a collapsible input rail on the
+left, a run-mode toggle (Operating point / Scan), and a tabbed results area on
+the right that surfaces quantities the solver already computes (power balance,
+fast-ion f(E), assumptions/validity) alongside the legacy density scans.
+"""
+
 from __future__ import annotations
 
-from tkinter import filedialog
-from typing import Dict
+import dataclasses
+import json
+import queue
+import subprocess
+import threading
+import traceback
+from datetime import datetime
+from pathlib import Path
+from tkinter import filedialog, messagebox
 
 import customtkinter as ctk
 import matplotlib
 import numpy as np
-from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg
+from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg, NavigationToolbar2Tk
 from matplotlib.figure import Figure
+from matplotlib.sankey import Sankey
 
+from hotjass import physics
 from hotjass_core import HotJassModel
 
 matplotlib.use("TkAgg")
 
+SETTINGS_PATH = Path.home() / ".hi_jass" / "settings.json"
+
+CONFINEMENT_MODES = {
+    "Fixed tauE (input)": ("fixed", "fixed"),
+    "Kaye NSTX L-mode": ("kaye_nstx_lmode", "kaye_nstx_lmode"),
+    "Kaye e / neoclassical i": ("kaye_nstx_lmode", "neoclassical"),
+    "Fixed e / neoclassical i": ("fixed", "neoclassical"),
+}
+SHINE_LABEL_TO_MODEL = {"Riviere": "riviere", "Janev": "janev_suzuki", "Manual": "manual"}
+SHINE_MODEL_TO_LABEL = {v: k for k, v in SHINE_LABEL_TO_MODEL.items()}
+
+
+@dataclasses.dataclass
+class Result:
+    ok: bool
+    error: str = ""
+    op: object = None
+    scan: dict = None
+    summary: dict = None
+    volume_m3: float = 0.0
+
+
+class CollapsibleSection(ctk.CTkFrame):
+    """A titled frame whose body can be folded away by clicking the header."""
+
+    def __init__(self, master, title: str, expanded: bool = True):
+        super().__init__(master, fg_color=("gray92", "gray17"))
+        self.grid_columnconfigure(0, weight=1)
+        self._expanded = expanded
+        self._title = title
+        self.header = ctk.CTkButton(
+            self, text=self._label(), anchor="w", fg_color="transparent",
+            text_color=("gray10", "gray90"), hover_color=("gray85", "gray25"),
+            command=self.toggle,
+        )
+        self.header.grid(row=0, column=0, sticky="ew", padx=2, pady=(2, 0))
+        self.body = ctk.CTkFrame(self, fg_color="transparent")
+        self.body.grid_columnconfigure(1, weight=1)
+        if self._expanded:
+            self.body.grid(row=1, column=0, sticky="ew", padx=6, pady=6)
+
+    def _label(self) -> str:
+        return ("▾  " if self._expanded else "▸  ") + self._title
+
+    def toggle(self):
+        self._expanded = not self._expanded
+        self.header.configure(text=self._label())
+        if self._expanded:
+            self.body.grid(row=1, column=0, sticky="ew", padx=6, pady=6)
+        else:
+            self.body.grid_remove()
+
 
 class HIJassApp(ctk.CTk):
     PLASMA_PRESETS = {
+        "DANTE": {
+            "major_radius": 0.65, "minor_radius": 0.35, "elongation": 2.2,
+            "triangularity": -0.35, "effective_charge": 2.0, "toroidal_field": 1.5,
+            "plasma_current_MA": 1.5, "central_density": 1.5e20,
+            "n_e_min": 1.0e19, "n_e_max": 1.0e20, "density_peaking": 0.1, "temp_peaking": 1.0,
+            "deuterium_fraction": 0.5, "tritium_fraction": 0.5, "tauE_e": 0.02, "tauE_i": 0.05,
+        },
         "ITER": {
             "major_radius": 6.2, "minor_radius": 2.0, "elongation": 1.85,
             "triangularity": 0.33, "effective_charge": 1.7, "toroidal_field": 5.3,
-            "plasma_current_MA": 15.0, "n_e_min": 5.0e19, "n_e_max": 1.5e20,
-            "density_peaking": 0.0, "temp_peaking": 0.0,
-            "deuterium_fraction": 0.5, "tritium_fraction": 0.5,
-            "tauE_e": 3.7, "tauE_i": 3.7,
+            "plasma_current_MA": 15.0, "central_density": 1.0e20,
+            "n_e_min": 5.0e19, "n_e_max": 1.5e20, "density_peaking": 0.0, "temp_peaking": 0.0,
+            "deuterium_fraction": 0.5, "tritium_fraction": 0.5, "tauE_e": 3.7, "tauE_i": 3.7,
         },
         "JET": {
             "major_radius": 2.96, "minor_radius": 1.25, "elongation": 1.7,
             "triangularity": 0.32, "effective_charge": 1.5, "toroidal_field": 3.45,
-            "plasma_current_MA": 4.0, "n_e_min": 2.0e19, "n_e_max": 1.0e20,
-            "density_peaking": 0.0, "temp_peaking": 0.0,
-            "deuterium_fraction": 0.5, "tritium_fraction": 0.5,
-            "tauE_e": 1.5, "tauE_i": 1.5,
+            "plasma_current_MA": 4.0, "central_density": 6.0e19,
+            "n_e_min": 2.0e19, "n_e_max": 1.0e20, "density_peaking": 0.0, "temp_peaking": 0.0,
+            "deuterium_fraction": 0.5, "tritium_fraction": 0.5, "tauE_e": 1.5, "tauE_i": 1.5,
         },
         "ST40": {
             "major_radius": 0.45, "minor_radius": 0.30, "elongation": 1.8,
             "triangularity": 0.4, "effective_charge": 1.5, "toroidal_field": 3.0,
-            "plasma_current_MA": 2.0, "n_e_min": 1.0e19, "n_e_max": 1.0e20,
-            "density_peaking": 0.0, "temp_peaking": 0.0,
-            "deuterium_fraction": 0.5, "tritium_fraction": 0.5,
-            "tauE_e": 0.01, "tauE_i": 0.01,
+            "plasma_current_MA": 2.0, "central_density": 5.0e19,
+            "n_e_min": 1.0e19, "n_e_max": 1.0e20, "density_peaking": 0.0, "temp_peaking": 0.0,
+            "deuterium_fraction": 0.5, "tritium_fraction": 0.5, "tauE_e": 0.01, "tauE_i": 0.01,
         },
         "T-15MD": {
             "major_radius": 1.5, "minor_radius": 0.67, "elongation": 1.8,
             "triangularity": 0.3, "effective_charge": 1.5, "toroidal_field": 2.0,
-            "plasma_current_MA": 2.0, "n_e_min": 1.0e19, "n_e_max": 1.0e20,
-            "density_peaking": 0.0, "temp_peaking": 0.0,
-            "deuterium_fraction": 0.5, "tritium_fraction": 0.5,
-            "tauE_e": 0.1, "tauE_i": 0.1,
+            "plasma_current_MA": 2.0, "central_density": 5.0e19,
+            "n_e_min": 1.0e19, "n_e_max": 1.0e20, "density_peaking": 0.0, "temp_peaking": 0.0,
+            "deuterium_fraction": 0.5, "tritium_fraction": 0.5, "tauE_e": 0.1, "tauE_i": 0.1,
         },
     }
+
+    PLASMA_FIELDS = [
+        ("R0 [m]", "major_radius", 0.65),
+        ("a [m]", "minor_radius", 0.35),
+        ("Elongation kappa", "elongation", 2.2),
+        ("Triangularity delta", "triangularity", -0.35),
+        ("Z_eff", "effective_charge", 2.0),
+        ("B0 [T]", "toroidal_field", 1.5),
+        ("Ip [MA]", "plasma_current_MA", 1.5),
+        ("Density peaking", "density_peaking", 0.1),
+        ("Temperature peaking", "temp_peaking", 1.0),
+        ("Central n_e [m^-3]", "central_density", 1.5e20),
+        ("Scan n_e min [m^-3]", "n_e_min", 1.0e19),
+        ("Scan n_e max [m^-3]", "n_e_max", 1.0e20),
+        ("D fraction", "deuterium_fraction", 0.5),
+        ("T fraction", "tritium_fraction", 0.5),
+        ("tauE,e [s]", "tauE_e", 0.02),
+        ("tauE,i [s]", "tauE_i", 0.05),
+    ]
+
     OBSERVABLES = {
         "Te, Ti": ["Te", "Ti"],
         "P_e, P_i, Pi_e, P_shine-through": ["P_e", "P_i", "Pi_e", "P_shine-through"],
@@ -60,15 +153,17 @@ class HIJassApp(ctk.CTk):
         "Pr_th, Pr_fast (isotropic)": ["Pr_th", "Pr_fast"],
         "beta_T": ["beta_T"],
     }
+    EQUIP_SENSITIVE = {"Tₑ, Tᵢ", "Pₑ, Pᵢ, Pᵢₑ, Pshine", "τS, τE,e, τE,i, τIE"}
+    ALPHA_SENSITIVE = EQUIP_SENSITIVE | {"Pƒ,tot, Pƒ,th, Pƒ,b", "pₜₕ, pfast", "βt", "R = ufast / Uₜₕ"}
     DISPLAY_GROUPS = {
         "Tₑ, Tᵢ": "Te, Ti",
-        "Pₑ, Pᵢ, Pᵢₑ, Pshine-through": "P_e, P_i, Pi_e, P_shine-through",
+        "Pₑ, Pᵢ, Pᵢₑ, Pshine": "P_e, P_i, Pi_e, P_shine-through",
         "nᴅ, nₜ, nᵦ": "n_D, n_T, n_b",
         "Pƒ,tot, Pƒ,th, Pƒ,b": "Pf_tot, Pf_th, Pf_b",
         "⟨Efast⟩": "<E_fast>",
         "τS, τE,e, τE,i, τIE": "tau_S, tauE_e, tauE_i, tau_IE",
         "R = ufast / Uₜₕ": "R = U_fast / U_th",
-        "pₜₕ, pfast (isotropic)": "Pr_th, Pr_fast (isotropic)",
+        "pₜₕ, pfast": "Pr_th, Pr_fast (isotropic)",
         "βt": "beta_T",
     }
     UNITS = {
@@ -93,349 +188,918 @@ class HIJassApp(ctk.CTk):
         "beta_T": r"$\beta_t$",
     }
 
+    DASH_ROWS = [
+        ("Feasibility", "feasibility"),
+        ("T_e [keV]", "Te"), ("T_i [keV]", "Ti"),
+        ("n_e0 [m^-3]", "ne0"), ("n_b0 [m^-3]", "nb0"),
+        ("P_NB injected [MW]", "P_NB"), ("P shine-through [MW]", "P_shine"),
+        ("P captured [MW]", "P_capt"), ("P first-orbit loss [MW]", "P_orbit"),
+        ("P charge-exchange loss [MW]", "P_cx"), ("P useful (to plasma) [MW]", "P_useful"),
+        ("  -> electrons P_e [MW]", "P_e"), ("  -> ions P_i [MW]", "P_i"),
+        ("P_ei equipartition (e->i) [MW]", "P_ei"),
+        ("P_alpha self-heating [MW]", "P_alpha"),
+        ("P_heat total (useful + alpha) [MW]", "P_heat"),
+        ("P_fusion total [MW]", "Pf_tot"), ("  thermal [MW]", "Pf_th"),
+        ("  beam-target [MW]", "Pf_b"), ("Q = P_fus / P_NB", "Q"),
+        ("<E_fast> [keV]", "E_fast"), ("beta_t [%]", "beta_t"),
+        ("Dominant loss", "dominant"),
+    ]
+
     def __init__(self):
         super().__init__()
         self.title("HI-Jass")
-        self.geometry("1280x850")
-        self.minsize(1050, 700)
+        self.geometry("1360x880")
+        self.minsize(1100, 720)
+
         self.model = HotJassModel()
-        self.active_device = "Default"
-        self.scan = self.model.density_scan()
-        self.grid_columnconfigure(0, weight=1)
+        self.active_device = "DANTE"
+        self.mode = "Operating point"
+        self.last_result: Result | None = None
+        self._result_queue: queue.Queue[Result] = queue.Queue()
+        self._running = False
+        self._last_infeasible_key: str | None = None
+        self._saved = self._load_settings()
+
+        self.grid_columnconfigure(1, weight=1)
         self.grid_rowconfigure(0, weight=1)
-        self.tabview = ctk.CTkTabview(self)
-        self.tabview.grid(row=0, column=0, padx=18, pady=18, sticky="nsew")
-        for name in ("Plasma", "NBI", "Profiles/Shape", "Results", "Summary"):
-            self.tabview.add(name)
-        self._build_plasma_tab()
-        self._build_nbi_tab()
-        self._build_profiles_tab()
-        self._build_results_tab()
-        self._build_summary_tab()
-        self._run_model()
 
-    def _entry_group(self, frame, fields, start_row=0, inactive=()):
-        entries = {}
-        for row, (label, attr, default) in enumerate(fields, start_row):
-            label_widget = ctk.CTkLabel(frame, text=label, anchor="w")
-            label_widget.grid(row=row, column=0, padx=12, pady=5, sticky="ew")
-            entry = ctk.CTkEntry(frame)
-            entry.insert(0, str(default))
-            entry.grid(row=row, column=1, padx=12, pady=5, sticky="ew")
-            if attr in inactive:
-                entry.configure(state="disabled")
-                label_widget.configure(text_color="gray")
-            entries[attr] = entry
-        return entries
+        self._build_rail()
+        self._build_results()
 
-    def _build_plasma_tab(self):
-        frame = self.tabview.tab("Plasma")
-        frame.grid_columnconfigure(0, weight=1)
+        saved_mode = self._saved.get("_mode")
+        if saved_mode in ("Operating point", "Scan"):
+            self.mode_toggle.set(saved_mode)
+        self._set_mode(self.mode_toggle.get())
+
+        self.protocol("WM_DELETE_WINDOW", self._on_close)
+        self.after(150, self._run)
+
+    # ------------------------------------------------------------------ rail
+    def _build_rail(self):
+        rail = ctk.CTkScrollableFrame(self, width=350, label_text="Inputs")
+        rail.grid(row=0, column=0, sticky="nsw", padx=(10, 6), pady=10)
+        rail.grid_columnconfigure(0, weight=1)
+        self.rail = rail
+        self.entries: dict[str, ctk.CTkEntry] = {}
+
+        run_bar = ctk.CTkFrame(rail, fg_color="transparent")
+        run_bar.grid(row=0, column=0, sticky="ew", pady=(0, 8))
+        run_bar.grid_columnconfigure(0, weight=1)
+        self.mode_toggle = ctk.CTkSegmentedButton(
+            run_bar, values=["Operating point", "Scan"], command=self._set_mode,
+        )
+        self.mode_toggle.set(self.mode)
+        self.mode_toggle.grid(row=0, column=0, sticky="ew")
+        self.run_btn = ctk.CTkButton(run_bar, text="▶  Run", command=self._run)
+        self.run_btn.grid(row=1, column=0, sticky="ew", pady=(6, 0))
+        self.status = ctk.CTkLabel(run_bar, text="Ready", anchor="w", text_color="gray")
+        self.status.grid(row=2, column=0, sticky="ew", pady=(4, 0))
+
+        row = 1
+        presets = CollapsibleSection(rail, "Presets", expanded=True)
+        presets.grid(row=row, column=0, sticky="ew", pady=4)
+        for i, name in enumerate(self.PLASMA_PRESETS):
+            ctk.CTkButton(
+                presets.body, text=name, width=70,
+                command=lambda n=name: self._apply_preset(n),
+            ).grid(row=i // 3, column=i % 3, padx=3, pady=3, sticky="ew")
+        row += 1
+
+        plasma = CollapsibleSection(rail, "Plasma", expanded=True)
+        plasma.grid(row=row, column=0, sticky="ew", pady=4)
+        self._add_entries(plasma.body, "plasma", self._plasma_defaults())
+        row += 1
+
+        for beam_index in (0, 1):
+            beam = self.model.beams[beam_index]
+            section = CollapsibleSection(rail, f"NBI-{beam_index + 1}", expanded=beam_index == 0)
+            section.grid(row=row, column=0, sticky="ew", pady=4)
+            self._add_entries(section.body, f"beam{beam_index}", [
+                ("Species", "species", beam.species),
+                ("P_NB [MW]", "power_MW", beam.power_MW),
+                ("E_b [keV]", "beam_energy_keV", beam.beam_energy_keV),
+                ("Tangent R_t [m]", "tangent_R_m", self.model.plasma.major_radius),
+                ("Tangent Z_t [m]", "tangent_Z_m", beam.tangent_Z_m),
+                ("Manual shine-through frac", "manual_shine_through_fraction",
+                 beam.manual_shine_through_fraction),
+            ])
+            var = ctk.StringVar(value=self._saved.get(f"beam{beam_index}._shine",
+                                                      SHINE_MODEL_TO_LABEL.get(beam.shine_through_model, "Riviere")))
+            setattr(self, f"shine_var_{beam_index}", var)
+            r = len(section.body.grid_slaves()) // 2
+            ctk.CTkLabel(section.body, text="Shine-through model", anchor="w").grid(
+                row=r, column=0, padx=8, pady=(8, 2), sticky="w")
+            ctk.CTkSegmentedButton(
+                section.body, values=list(SHINE_LABEL_TO_MODEL), variable=var,
+            ).grid(row=r, column=1, padx=8, pady=(8, 2), sticky="ew")
+            dir_var = ctk.StringVar(value=self._saved.get(
+                f"beam{beam_index}._dir", "co" if beam.co_current else "counter"))
+            setattr(self, f"beam_dir_var_{beam_index}", dir_var)
+            ctk.CTkLabel(section.body, text="Injection vs Ip", anchor="w").grid(
+                row=r + 1, column=0, padx=8, pady=(6, 2), sticky="w")
+            ctk.CTkSegmentedButton(
+                section.body, values=["co", "counter"], variable=dir_var,
+            ).grid(row=r + 1, column=1, padx=8, pady=(6, 2), sticky="ew")
+            row += 1
+
+        models = CollapsibleSection(rail, "Models", expanded=False)
+        models.grid(row=row, column=0, sticky="ew", pady=4)
+        ctk.CTkLabel(models.body, text="Confinement", anchor="w").grid(
+            row=0, column=0, padx=8, pady=4, sticky="w")
+        self.confinement_var = ctk.StringVar(
+            value=self._saved.get("_confinement", "Fixed tauE (input)"))
+        ctk.CTkOptionMenu(
+            models.body, values=list(CONFINEMENT_MODES), variable=self.confinement_var,
+        ).grid(row=0, column=1, padx=8, pady=4, sticky="ew")
+        self.orbit_var = ctk.BooleanVar(value=self._saved.get("_orbit_loss", False))
+        ctk.CTkCheckBox(
+            models.body, text="First-orbit loss (direction set per NBI)", variable=self.orbit_var,
+        ).grid(row=1, column=0, columnspan=2, padx=8, pady=4, sticky="w")
+        self._add_entries(models.body, "models", [
+            ("CX loss fraction (0-1)", "cx_loss_fraction",
+             self._saved.get("models.cx_loss_fraction", 0.0)),
+        ], start_row=2)
+        self.equip_var = ctk.BooleanVar(value=self._saved.get("_equipartition", False))
+        ctk.CTkCheckBox(
+            models.body, text="e-i equipartition (couple Te, Ti)", variable=self.equip_var,
+        ).grid(row=3, column=0, columnspan=2, padx=8, pady=4, sticky="w")
+        self.alpha_var = ctk.BooleanVar(value=self._saved.get("_alpha_heating", False))
+        ctk.CTkCheckBox(
+            models.body, text="alpha self-heating (P_a into Te, Ti)", variable=self.alpha_var,
+        ).grid(row=4, column=0, columnspan=2, padx=8, pady=4, sticky="w")
+        self._add_entries(models.body, "models", [
+            ("f_alpha (confined fraction 0-1)", "f_alpha", self._saved.get("models.f_alpha", 1.0)),
+        ], start_row=5)
+
+    def _plasma_defaults(self):
+        preset = {**{f: d for _, f, d in self.PLASMA_FIELDS}}
+        return [(label, field, preset[field]) for label, field, _ in self.PLASMA_FIELDS]
+
+    def _add_entries(self, parent, prefix, fields, start_row=0):
+        for offset, (label, field, default) in enumerate(fields):
+            row = start_row + offset
+            ctk.CTkLabel(parent, text=label, anchor="w").grid(
+                row=row, column=0, padx=8, pady=3, sticky="w")
+            entry = ctk.CTkEntry(parent, width=120)
+            key = f"{prefix}.{field}"
+            entry.insert(0, str(self._saved.get(key, default)))
+            entry.grid(row=row, column=1, padx=8, pady=3, sticky="ew")
+            self.entries[key] = entry
+
+    # --------------------------------------------------------------- results
+    def _build_results(self):
+        container = ctk.CTkFrame(self, fg_color="transparent")
+        container.grid(row=0, column=1, sticky="nsew", padx=(6, 10), pady=10)
+        container.grid_columnconfigure(0, weight=1)
+        container.grid_rowconfigure(0, weight=1)
+
+        self.tv_op = ctk.CTkTabview(container)
+        self.tv_scan = ctk.CTkTabview(container)
+        for tv in (self.tv_op, self.tv_scan):
+            tv.grid(row=0, column=0, sticky="nsew")
+
+        for name in ("Dashboard", "Power flow", "Fast ions", "Profiles", "Assumptions"):
+            self.tv_op.add(name)
+        for name in ("Scan", "Summary"):
+            self.tv_scan.add(name)
+
+        self._build_dashboard(self.tv_op.tab("Dashboard"))
+        pf_tab = self.tv_op.tab("Power flow")
+        pf_bar = ctk.CTkFrame(pf_tab, fg_color="transparent")
+        pf_bar.pack(fill="x", pady=(2, 0))
+        ctk.CTkLabel(pf_bar, text="View:").pack(side="left", padx=(4, 6))
+        self.pf_view_var = ctk.StringVar(value="all")
+        ctk.CTkSegmentedButton(
+            pf_bar, values=["all", "waterfall", "sankey", "pie"], variable=self.pf_view_var,
+            command=lambda _: self._render_powerflow(self.last_result) if self.last_result else None,
+        ).pack(side="left")
+        self.pf_fig, self.pf_canvas, holder = self._plot_area(pf_tab, figsize=(9.5, 6.2))
+        holder.pack(fill="both", expand=True)
+        self.fi_fig, self.fi_canvas, holder = self._plot_area(self.tv_op.tab("Fast ions"))
+        holder.pack(fill="both", expand=True)
+        self.prof_fig, self.prof_canvas, holder = self._plot_area(self.tv_op.tab("Profiles"))
+        holder.pack(fill="both", expand=True)
+        self._build_assumptions(self.tv_op.tab("Assumptions"))
+        self._build_scan(self.tv_scan.tab("Scan"))
+        self.sum_fig, self.sum_canvas, holder = self._plot_area(self.tv_scan.tab("Summary"), figsize=(11, 8))
+        holder.pack(fill="both", expand=True)
+
+        export = ctk.CTkFrame(container, fg_color="transparent")
+        export.grid(row=1, column=0, sticky="ew", pady=(6, 0))
+        ctk.CTkLabel(export, text="Export:").pack(side="left", padx=(4, 8))
+        ctk.CTkButton(export, text="Summary PNG", width=110,
+                      command=lambda: self._export_summary("png")).pack(side="left", padx=4)
+        ctk.CTkButton(export, text="Summary PDF", width=110,
+                      command=lambda: self._export_summary("pdf")).pack(side="left", padx=4)
+        ctk.CTkButton(export, text="Run record (JSON)", width=150,
+                      command=self._export_json).pack(side="left", padx=4)
+
+    def _plot_area(self, parent, figsize=(7.5, 5.5)):
+        """Build a figure + canvas + toolbar inside a holder frame.
+
+        The holder is returned unplaced; the caller pack()s or grid()s it.
+        """
+        holder = ctk.CTkFrame(parent, fg_color="transparent")
+        fig = Figure(figsize=figsize, dpi=100)
+        canvas = FigureCanvasTkAgg(fig, master=holder)
+        toolbar = NavigationToolbar2Tk(canvas, holder, pack_toolbar=False)
+        toolbar.update()
+        toolbar.pack(side="bottom", fill="x")
+        canvas.get_tk_widget().pack(side="top", fill="both", expand=True)
+        return fig, canvas, holder
+
+    def _build_dashboard(self, parent):
+        frame = ctk.CTkScrollableFrame(parent)
+        frame.pack(fill="both", expand=True)
         frame.grid_columnconfigure(1, weight=1)
-        frame.grid_columnconfigure(2, weight=1)
-        self.plasma_title = ctk.CTkLabel(frame, text="Default", font=ctk.CTkFont(size=16, weight="bold"))
-        self.plasma_title.grid(row=0, column=0, columnspan=2, padx=12, pady=(8, 2), sticky="w")
-        preset_frame = ctk.CTkFrame(frame, fg_color="transparent")
-        preset_frame.grid(row=0, column=2, rowspan=17, padx=(12, 12), pady=8, sticky="nsew")
-        preset_frame.grid_rowconfigure(0, weight=1)
-        preset_stack = ctk.CTkFrame(preset_frame, fg_color="transparent")
-        preset_stack.grid(row=0, column=0, sticky="ew")
-        preset_stack.grid_columnconfigure(0, weight=1)
-        for row, name in enumerate(self.PLASMA_PRESETS):
-            ctk.CTkButton(preset_stack, text=name, command=lambda preset=name: self._apply_plasma_preset(preset)).grid(row=row, column=0, padx=4, pady=9, sticky="ew")
-        fields = [
-            ("R0 [m]", "major_radius", 0.65), ("a [m]", "minor_radius", 0.35),
-            ("Elongation k", "elongation", 2.2), ("Triangularity delta", "triangularity", -0.35),
-            ("Zeff", "effective_charge", 2.0), ("B0 [T]", "toroidal_field", 1.5),
-            ("Ip [MA]", "plasma_current_MA", 1.5),
-            ("Density peaking", "density_peaking", 0.1),
-            ("Temperature peaking", "temp_peaking", 1.0),
-            ("n_e_min [m^-3]", "n_e_min", 1.0e19), ("n_e_max [m^-3]", "n_e_max", 1.0e20),
-            ("D fraction", "deuterium_fraction", 0.5), ("T fraction", "tritium_fraction", 0.5),
-            ("tauE_e [s]", "tauE_e", 0.02), ("tauE_i [s]", "tauE_i", 0.05),
-        ]
-        self.plasma_entries = self._entry_group(frame, fields, 1)
-        for entry in self.plasma_entries.values():
-            entry.configure(width=100)
-            entry.grid_configure(sticky="w")
-        self.plasma_status = ctk.CTkLabel(frame, text="Te and Ti are calculated from the 0D balance and shown in Profiles/Shape and Results.", text_color="gray")
-        self.plasma_status.grid(row=16, column=0, columnspan=2, padx=12, pady=(6, 2), sticky="w")
-        self.alpha_var = ctk.BooleanVar(value=False)
-        ctk.CTkCheckBox(frame, text="Include alpha heating (not in reference solver)", variable=self.alpha_var, state="disabled", text_color="gray").grid(row=17, column=0, columnspan=2, padx=12, pady=4, sticky="w")
-        ctk.CTkButton(preset_stack, text="Apply", command=self._apply_plasma_settings).grid(row=4, column=0, padx=4, pady=(22, 4), sticky="ew")
+        self.dash_values: dict[str, ctk.CTkLabel] = {}
+        for row, (label, key) in enumerate(self.DASH_ROWS):
+            ctk.CTkLabel(frame, text=label, anchor="w").grid(
+                row=row, column=0, padx=10, pady=3, sticky="w")
+            value = ctk.CTkLabel(frame, text="—", anchor="w",
+                                 font=ctk.CTkFont(size=13, weight="bold"))
+            value.grid(row=row, column=1, padx=10, pady=3, sticky="w")
+            self.dash_values[key] = value
 
-    def _apply_plasma_preset(self, name):
-        for attr, value in self.PLASMA_PRESETS[name].items():
-            entry = self.plasma_entries[attr]
-            was_disabled = entry.cget("state") == "disabled"
-            if was_disabled:
-                entry.configure(state="normal")
-            entry.delete(0, "end")
-            entry.insert(0, str(value))
-            if was_disabled:
-                entry.configure(state="disabled")
-        self._apply_plasma_settings(name)
+    def _build_assumptions(self, parent):
+        self.assump_box = ctk.CTkTextbox(parent, wrap="word", font=ctk.CTkFont(family="monospace", size=12))
+        self.assump_box.pack(fill="both", expand=True, padx=6, pady=6)
 
-    def _build_nbi_tab(self):
-        frame = self.tabview.tab("NBI")
-        frame.grid_columnconfigure(0, weight=1)
-        self.nbi_entries = {}
-        self.shine_model_vars = {}
-        self.manual_shine_labels = {}
-        for column, (title, species, power, energy) in enumerate((("NBI-1", "D", 5.0, 120.0), ("NBI-2", "T", 5.0, 180.0))):
-            pane = ctk.CTkFrame(frame, fg_color="transparent")
-            pane.grid(row=0, column=column, padx=10, pady=10, sticky="nsew")
-            frame.grid_columnconfigure(column, weight=1)
-            ctk.CTkLabel(pane, text=title, font=ctk.CTkFont(size=16, weight="bold")).grid(row=0, column=0, columnspan=2, pady=8, sticky="w")
-            fields = [("Species", "species", species), ("P_NB [MW]", "power_MW", power), ("E_b [keV]", "beam_energy_keV", energy), ("Width", "beam_width", 0.35), ("Shift", "beam_shift", 0.12), ("Angle [deg]", "injection_angle_deg", 25.0), ("Tangent R_t [m]", "tangent_R_m", self.model.plasma.major_radius), ("Tangent Z_t [m]", "tangent_Z_m", 0.0), ("Manual shine-through fraction", "manual_shine_through_fraction", 0.01)]
-            self.nbi_entries[column] = self._entry_group(pane, fields, 1, inactive=("beam_width", "beam_shift", "injection_angle_deg", "manual_shine_through_fraction"))
-            self.manual_shine_labels[column] = pane.grid_slaves(row=9, column=0)[0]
-            self.shine_model_vars[column] = ctk.StringVar(value="Manual")
-            ctk.CTkLabel(pane, text="Shine-through model", anchor="w").grid(row=10, column=0, padx=12, pady=(10, 2), sticky="ew")
-            model_button = ctk.CTkSegmentedButton(
-                pane, values=("Riviere", "Janev", "Manual"), variable=self.shine_model_vars[column],
-                command=lambda value, beam_index=column: self._set_shine_model(beam_index, value),
-            )
-            model_button.grid(row=10, column=1, padx=12, pady=(10, 2), sticky="ew")
-            self._set_shine_model(column, "Manual")
-        ctk.CTkButton(frame, text="Apply NBI settings", command=self._apply_nbi_settings).grid(row=1, column=0, columnspan=2, padx=12, pady=18, sticky="ew")
+    def _build_scan(self, parent):
+        parent.grid_columnconfigure(1, weight=1)
+        parent.grid_rowconfigure(0, weight=1)
+        left = ctk.CTkFrame(parent, fg_color="transparent")
+        left.grid(row=0, column=0, sticky="ns", padx=6, pady=6)
+        ctk.CTkLabel(left, text="n_e scan", font=ctk.CTkFont(size=15, weight="bold")).pack(pady=6)
+        self.observable_var = ctk.StringVar(value=list(self.DISPLAY_GROUPS)[0])
+        ctk.CTkOptionMenu(left, variable=self.observable_var, values=list(self.DISPLAY_GROUPS),
+                          command=lambda _: self._render_scan_plot()).pack(pady=6)
+        self.scan_equip_label = ctk.CTkLabel(
+            left, text="", anchor="w", justify="left", wraplength=270,
+            font=ctk.CTkFont(size=12, weight="bold"))
+        self.scan_equip_label.pack(pady=(0, 0), fill="x", padx=6)
+        self.scan_alpha_label = ctk.CTkLabel(
+            left, text="", anchor="w", justify="left", wraplength=270,
+            font=ctk.CTkFont(size=12, weight="bold"))
+        self.scan_alpha_label.pack(pady=(0, 4), fill="x", padx=6)
+        self.scan_text = ctk.CTkTextbox(left, width=280, height=410, wrap="word")
+        self.scan_text.pack(pady=8, fill="y")
+        self.scan_fig, self.scan_canvas, holder = self._plot_area(parent, figsize=(8, 6))
+        holder.grid(row=0, column=1, sticky="nsew", padx=6, pady=6)
 
-    def _set_shine_model(self, index, model_name):
-        entry = self.nbi_entries[index]["manual_shine_through_fraction"]
-        label = self.manual_shine_labels[index]
-        if model_name == "Manual":
-            entry.configure(state="normal", text_color="black")
-            label.configure(text_color="black")
+    # ----------------------------------------------------------------- modes
+    def _set_mode(self, mode: str):
+        self.mode = mode
+        if mode == "Scan":
+            self.tv_op.grid_remove()
+            self.tv_scan.grid()
         else:
-            entry.configure(state="disabled", text_color="gray")
-            label.configure(text_color="gray")
+            self.tv_scan.grid_remove()
+            self.tv_op.grid()
 
-    def _build_profiles_tab(self):
-        frame = self.tabview.tab("Profiles/Shape")
-        frame.grid_columnconfigure(0, weight=1)
-        frame.grid_rowconfigure(0, weight=1)
-        self.profile_fig = Figure(figsize=(7, 6), dpi=100)
-        self.profile_ax = self.profile_fig.add_subplot(221)
-        self.profile_ax2 = self.profile_fig.add_subplot(222)
-        self.shape_ax = self.profile_fig.add_subplot(223)
-        self.formula_ax = self.profile_fig.add_subplot(224)
-        self.profile_canvas = FigureCanvasTkAgg(self.profile_fig, master=frame)
-        self.profile_canvas.get_tk_widget().grid(row=0, column=0, padx=10, pady=10, sticky="nsew")
-
-    def _build_results_tab(self):
-        frame = self.tabview.tab("Results")
-        frame.grid_columnconfigure(1, weight=1)
-        frame.grid_rowconfigure(0, weight=1)
-        left = ctk.CTkFrame(frame, fg_color="transparent")
-        left.grid(row=0, column=0, padx=10, pady=10, sticky="ns")
-        ctk.CTkLabel(left, text="n_e scans", font=ctk.CTkFont(size=16, weight="bold")).pack(pady=8)
-        self.observable_var = ctk.StringVar(value="Tₑ, Tᵢ")
-        ctk.CTkOptionMenu(left, variable=self.observable_var, values=list(self.DISPLAY_GROUPS), command=lambda _: self._plot_results()).pack(pady=8)
-        self.result_text = ctk.CTkTextbox(left, width=270, height=420, wrap="word")
-        self.result_text.pack(pady=10, fill="y")
-        self.results_fig = Figure(figsize=(8, 6), dpi=100)
-        self.results_ax = self.results_fig.add_subplot(111)
-        self.results_canvas = FigureCanvasTkAgg(self.results_fig, master=frame)
-        self.results_canvas.get_tk_widget().grid(row=0, column=1, padx=10, pady=10, sticky="nsew")
-
-    def _build_summary_tab(self):
-        frame = self.tabview.tab("Summary")
-        frame.grid_columnconfigure(0, weight=1)
-        frame.grid_columnconfigure(1, weight=0)
-        frame.grid_rowconfigure(0, weight=1)
-        self.summary_fig = Figure(figsize=(11, 8), dpi=100)
-        self.summary_canvas = FigureCanvasTkAgg(self.summary_fig, master=frame)
-        self.summary_canvas.get_tk_widget().grid(row=0, column=0, padx=(10, 4), pady=10, sticky="nsew")
-        tools = ctk.CTkFrame(frame, width=150)
-        tools.grid(row=0, column=1, padx=(4, 10), pady=10, sticky="ns")
-        tools.grid_propagate(False)
-        ctk.CTkLabel(tools, text="Export", font=ctk.CTkFont(size=15, weight="bold")).pack(pady=(14, 12))
-        ctk.CTkButton(tools, text="Save image", command=lambda: self._save_summary("image")).pack(fill="x", padx=10, pady=5)
-        ctk.CTkButton(tools, text="Save PDF", command=lambda: self._save_summary("pdf")).pack(fill="x", padx=10, pady=5)
-
-    def _apply_plasma_settings(self, device_name="Default"):
-        invalid_fields = []
-        for attr, entry in self.plasma_entries.items():
+    # ------------------------------------------------------------- run/solve
+    def _apply_inputs(self) -> list[str]:
+        errors: list[str] = []
+        plasma = self.model.plasma
+        for label, field, _ in self.PLASMA_FIELDS:
+            raw = self.entries[f"plasma.{field}"].get()
             try:
-                value = float(entry.get())
-                if attr == "plasma_current_MA":
-                    value *= 1.0e6
-                    attr = "plasma_current"
-                setattr(self.model.plasma, attr, value)
+                value = float(raw)
             except ValueError:
-                invalid_fields.append(attr)
-        if self.model.plasma.n_e_min <= 0.0 or self.model.plasma.n_e_max <= self.model.plasma.n_e_min:
-            invalid_fields.append("n_e range")
-        if invalid_fields:
-            self.plasma_status.configure(text="Invalid value(s): " + ", ".join(invalid_fields), text_color="red")
-            return
-        self.model.plasma.alpha_heating = self.alpha_var.get()
-        total = self.model.plasma.deuterium_fraction + self.model.plasma.tritium_fraction
-        if total > 0:
-            self.model.plasma.deuterium_fraction /= total
-            self.model.plasma.tritium_fraction /= total
-        self.active_device = device_name
-        self.plasma_title.configure(text=device_name)
-        self._run_model()
-        self.plasma_status.configure(text="Plasma settings applied", text_color="black")
+                errors.append(label)
+                continue
+            if field == "plasma_current_MA":
+                plasma.plasma_current = value * 1.0e6
+            else:
+                setattr(plasma, field, value)
+        if plasma.n_e_min <= 0 or plasma.n_e_max <= plasma.n_e_min:
+            errors.append("scan n_e range")
+        if plasma.central_density <= 0:
+            errors.append("central n_e")
 
-    def _summary_parameters(self):
+        ee_mode, ei_mode = CONFINEMENT_MODES[self.confinement_var.get()]
+        plasma.tau_Ee_mode, plasma.tau_Ei_mode = ee_mode, ei_mode
+        plasma.enable_orbit_loss = bool(self.orbit_var.get())
+        plasma.enable_equipartition = bool(self.equip_var.get())
+        if plasma.enable_equipartition and plasma.tau_Ei_mode == "neoclassical":
+            errors.append("equipartition + neoclassical ion (unsupported together)")
+        plasma.alpha_heating = bool(self.alpha_var.get())
+        try:
+            plasma.f_alpha = min(max(float(self.entries["models.f_alpha"].get()), 0.0), 1.0)
+        except ValueError:
+            errors.append("f_alpha")
+        try:
+            cx = float(self.entries["models.cx_loss_fraction"].get())
+            plasma.cx_loss_fraction = min(max(cx, 0.0), 1.0)
+        except ValueError:
+            errors.append("CX loss fraction")
+
+        total = plasma.deuterium_fraction + plasma.tritium_fraction
+        if total > 0:
+            plasma.deuterium_fraction /= total
+            plasma.tritium_fraction /= total
+
+        for beam_index, beam in enumerate(self.model.beams):
+            prefix = f"beam{beam_index}"
+            beam.species = self.entries[f"{prefix}.species"].get().strip().upper() or "D"
+            for field in ("power_MW", "beam_energy_keV", "tangent_R_m", "tangent_Z_m",
+                          "manual_shine_through_fraction"):
+                try:
+                    setattr(beam, field, float(self.entries[f"{prefix}.{field}"].get()))
+                except ValueError:
+                    errors.append(f"NBI-{beam_index + 1} {field}")
+            beam.shine_through_model = SHINE_LABEL_TO_MODEL[
+                getattr(self, f"shine_var_{beam_index}").get()]
+            beam.co_current = getattr(self, f"beam_dir_var_{beam_index}").get() == "co"
+        return errors
+
+    def _run(self):
+        errors = self._apply_inputs()
+        if errors:
+            self.status.configure(text="Invalid: " + ", ".join(errors), text_color="#c0504d")
+            return
+        if self._running:
+            return
+        self._running = True
+        self.status.configure(text="Running…", text_color="gray")
+        self.run_btn.configure(state="disabled")
+        threading.Thread(target=self._worker, daemon=True).start()
+        self.after(80, self._poll_result)
+
+    def _worker(self):
+        try:
+            model = self.model
+            scan = model.density_scan()
+            op = model.operating_point()
+            summary = model.summary()
+            result = Result(
+                ok=True, op=op, scan=scan, summary=summary,
+                volume_m3=model.plasma_volume(),
+            )
+        except Exception as exc:  # surface, don't crash the UI thread
+            result = Result(ok=False, error=f"{type(exc).__name__}: {exc}\n\n{traceback.format_exc()}")
+        self._result_queue.put(result)
+
+    def _poll_result(self):
+        try:
+            result = self._result_queue.get_nowait()
+        except queue.Empty:
+            self.after(80, self._poll_result)
+            return
+        self._running = False
+        self._render(result)
+
+    def _render(self, result: Result):
+        self.run_btn.configure(state="normal")
+        if not result.ok:
+            self.status.configure(text="Error — see Assumptions tab", text_color="#c0504d")
+            self.assump_box.delete("1.0", "end")
+            self.assump_box.insert("end", result.error)
+            return
+        self.last_result = result
+        self.scan = result.scan
+        op = result.op
+        self.status.configure(
+            text="Done" if op.feasible else "Done — infeasible operating point (see details)",
+            text_color="gray" if op.feasible else "#c0504d",
+        )
+        if not op.feasible:
+            reason = op.infeasible_reason or (
+                "The solver returned an infeasible operating point but gave no detail "
+                "(e.g. an inner temperature root-find failed to converge). Try a larger "
+                "tau_E, lower beam power, or a higher central n_e.")
+            if reason != self._last_infeasible_key:
+                self._last_infeasible_key = reason
+                messagebox.showwarning(
+                    "HI-Jass — infeasible operating point",
+                    "No self-consistent operating point at the central density:\n\n"
+                    + reason + "\n\n(Full text is also on the Assumptions tab.)",
+                    parent=self)
+        else:
+            self._last_infeasible_key = None
+        self._render_dashboard(result)
+        self._render_powerflow(result)
+        self._render_fastions(result)
+        self._render_profiles(result)
+        self.assump_box.delete("1.0", "end")
+        self.assump_box.insert("end", self._assess(self.model, result.op))
+        eq_on = self.model.plasma.enable_equipartition
+        self.scan_equip_label.configure(
+            text=("●  e-i equipartition: ON  (Te, Ti coupled)" if eq_on
+                  else "○  e-i equipartition: off  (Te, Ti independent)"),
+            text_color=("#2f7d32" if eq_on else "gray"))
+        al_on = self.model.plasma.alpha_heating
+        self.scan_alpha_label.configure(
+            text=(f"●  alpha self-heating: ON  (f_alpha={self.model.plasma.f_alpha:.2g})" if al_on
+                  else "○  alpha self-heating: off"),
+            text_color=("#2f7d32" if al_on else "gray"))
+        self._render_scan_plot()
+        self._render_summary(result)
+
+    # --------------------------------------------------------------- renders
+    @staticmethod
+    def _fmt(value, spec="{:.3g}"):
+        if value is None or (isinstance(value, float) and not np.isfinite(value)):
+            return "—"
+        return spec.format(value)
+
+    def _render_dashboard(self, result: Result):
+        op = result.op
+        mw = 1.0e-6
+        P_NB = op.P_NB_total_w * mw
+        losses = {
+            "shine-through": op.P_shine_w * mw,
+            "first-orbit": op.P_orbit_loss_w * mw,
+            "charge-exchange": op.P_cx_loss_w * mw,
+        }
+        dominant_name = max(losses, key=losses.get)
+        dominant_mw = losses[dominant_name]
+        pct = 100.0 * dominant_mw / P_NB if P_NB > 0 else 0.0
+        values = {
+            "Te": self._fmt(op.Te_keV), "Ti": self._fmt(op.Ti_keV),
+            "ne0": self._fmt(op.ne0_m3, "{:.3e}"), "nb0": self._fmt(op.nb0_m3, "{:.3e}"),
+            "P_NB": self._fmt(P_NB), "P_shine": self._fmt(op.P_shine_w * mw),
+            "P_capt": self._fmt(op.P_capt_w * mw), "P_orbit": self._fmt(op.P_orbit_loss_w * mw),
+            "P_cx": self._fmt(op.P_cx_loss_w * mw), "P_useful": self._fmt(op.P_useful_w * mw),
+            "P_e": self._fmt(op.P_e_w * mw), "P_i": self._fmt(op.P_i_w * mw),
+            "P_ei": self._fmt(op.P_ei_w * mw) if self.model.plasma.enable_equipartition else "off",
+            "P_alpha": self._fmt(op.P_alpha_w * mw) if self.model.plasma.alpha_heating else "off",
+            "P_heat": self._fmt((op.P_useful_w + op.P_alpha_w) * mw),
+            "Pf_tot": self._fmt(op.pf_total_w * mw), "Pf_th": self._fmt(op.pf_thermal_w * mw),
+            "Pf_b": self._fmt(op.pf_beam_w * mw),
+            "Q": self._fmt(op.pf_total_w / op.P_NB_total_w if op.P_NB_total_w else None, "{:.3g}"),
+            "E_fast": self._fmt(op.avg_fast_energy_keV),
+            "beta_t": self._fmt(op.beta_t * 100.0),
+            "dominant": f"{dominant_name}: {dominant_mw:.2f} MW ({pct:.0f}% of P_NB)",
+        }
+        for key, text in values.items():
+            self.dash_values[key].configure(text=text, text_color=("gray10", "gray90"))
+        badge = self.dash_values["feasibility"]
+        if op.feasible:
+            badge.configure(text="FEASIBLE", text_color="#2f7d32")
+        else:
+            badge.configure(text="INFEASIBLE", text_color="#c0504d")
+
+    def _render_powerflow(self, result: Result):
+        op = result.op
+        mw = 1.0e-6
+        v = {
+            "P_inj": op.P_NB_total_w * mw, "shine": op.P_shine_w * mw,
+            "orbit": op.P_orbit_loss_w * mw, "cx": op.P_cx_loss_w * mw,
+            "P_use": op.P_useful_w * mw, "P_e": op.P_e_w * mw, "P_i": op.P_i_w * mw,
+        }
+        view = self.pf_view_var.get()
+        fig = self.pf_fig
+        fig.clear()
+        drawers = {"waterfall": self._pf_waterfall, "sankey": self._pf_sankey, "pie": self._pf_pie}
+        if view == "all":
+            gs = fig.add_gridspec(2, 2)
+            self._pf_waterfall(fig.add_subplot(gs[0, 0]), v)
+            self._pf_pie(fig.add_subplot(gs[0, 1]), v)
+            self._pf_sankey(fig.add_subplot(gs[1, :]), v)
+        else:
+            drawers.get(view, self._pf_waterfall)(fig.add_subplot(111), v)
+        closure = v["P_inj"] - (v["shine"] + v["orbit"] + v["cx"] + v["P_e"] + v["P_i"])
+        fig.suptitle(f"NBI power-flow audit   (closure error {closure:+.3f} MW)", fontsize=11)
+        fig.tight_layout(rect=(0, 0, 1, 0.93))
+        self.pf_canvas.draw_idle()
+
+    @staticmethod
+    def _pf_waterfall(ax, v):
+        P_inj, shine, orbit, cx = v["P_inj"], v["shine"], v["orbit"], v["cx"]
+        P_use, P_e, P_i = v["P_use"], v["P_e"], v["P_i"]
+        bars = [
+            (0.0, P_inj, "#3b6fb0"),
+            (P_inj - shine, shine, "#c0504d"),
+            (P_inj - shine - orbit, orbit, "#c0504d"),
+            (P_use, cx, "#c0504d"),
+            (0.0, P_use, "#4f9d5d"),
+            (0.0, P_e, "#3fa7a7"),
+            (0.0, P_i, "#e0913a"),
+        ]
+        labels = ["$P_{inj}$", "shine-\nthrough", "first-\norbit", "CX\nloss",
+                  "$P_{useful}$", "electrons", "ions"]
+        for i, (bottom, height, color) in enumerate(bars):
+            ax.bar(i, max(height, 0.0), bottom=bottom, width=0.62, color=color,
+                   edgecolor="black", linewidth=0.5)
+            ax.text(i, bottom + max(height, 0.0) + 0.02 * max(P_inj, 1e-9),
+                    f"{height:.2f}", ha="center", va="bottom", fontsize=8)
+        ax.set_xticks(range(len(bars)))
+        ax.set_xticklabels(labels, fontsize=8)
+        ax.set_ylabel("power [MW]")
+        ax.set_title("Waterfall", fontsize=10)
+        ax.grid(axis="y", alpha=0.3)
+
+    @staticmethod
+    def _pf_pie(ax, v):
+        P_inj = v["P_inj"]
+        wedges = [v["shine"], v["orbit"], v["cx"], v["P_e"], v["P_i"]]
+        names = ["shine-through", "first-orbit", "charge-exchange", "electron heating", "ion heating"]
+        colors = ["#c0504d", "#b03a37", "#d98b88", "#3fa7a7", "#e0913a"]
+        keep = [(w, n, c) for w, n, c in zip(wedges, names, colors) if w > 1e-9]
+        if keep:
+            ws, ns, cs = zip(*keep)
+            ax.pie(ws, labels=[f"{n}\n{w:.2f} MW" for n, w in zip(ns, ws)],
+                   colors=cs, autopct="%1.0f%%", textprops={"fontsize": 8}, startangle=90)
+        ax.set_title(f"Split of $P_{{inj}}$ = {P_inj:.2f} MW", fontsize=10)
+
+    @staticmethod
+    def _pf_sankey(ax, v):
+        ax.axis("off")
+        ax.set_title("Sankey", fontsize=10, pad=2)
+        P_inj = v["P_inj"]
+        if P_inj <= 1e-9:
+            ax.text(0.5, 0.5, "no injected power", ha="center", va="center", fontsize=9)
+            return
+        raw = [("shine-through", v["shine"], 1), ("first-orbit", v["orbit"], 1),
+               ("CX loss", v["cx"], 1), ("electrons", v["P_e"], 0), ("ions", v["P_i"], -1)]
+        outs = [(n, w, o) for n, w, o in raw if w > 1e-3 * P_inj]
+        resid = P_inj - sum(w for _, w, _ in outs)
+        if abs(resid) > 1e-3 * P_inj:
+            outs.append(("closure", resid, -1))
+        flows = [P_inj] + [-w for _, w, _ in outs]
+        labels = ["$P_{inj}$"] + [f"{n}\n{w:.2f}" for n, w, _ in outs]
+        orientations = [0] + [o for _, _, o in outs]
+        pathlengths = [0.35]
+        up = 0
+        for _, _, o in outs:
+            pathlengths.append(0.08 + 0.33 * up if o == 1 else 0.35)
+            up += o == 1
+        try:
+            sankey = Sankey(ax=ax, unit=" MW", format="%.2f", scale=1.0 / P_inj,
+                            gap=0.5, radius=0.08, shoulder=0.03)
+            sankey.add(flows=flows, labels=labels, orientations=orientations,
+                       pathlengths=pathlengths, facecolor="#3b6fb0", edgecolor="black", lw=0.6)
+            for bunch in sankey.finish():
+                for text in bunch.texts + [bunch.text]:
+                    text.set_fontsize(7)
+        except Exception:
+            ax.text(0.5, 0.5, "Sankey unavailable\nfor this operating point",
+                    ha="center", va="center", fontsize=9)
+
+    def _render_fastions(self, result: Result):
+        op = result.op
+        model = self.model
+        volume = result.volume_m3
+        fig = self.fi_fig
+        fig.clear()
+        ax = fig.add_subplot(111)
+        te = op.Te_keV or 1e-3
+        any_curve = False
+        for i, beam in enumerate(model.beams):
+            species = beam.species.upper()
+            eb = beam.beam_energy_keV
+            f_capt = op.f_capture[i] if op.f_capture else 1.0
+            f_orbit = op.f_orbit_loss[i] if op.f_orbit_loss else 0.0
+            p_use = beam.power_MW * 1e6 * f_capt * (1.0 - f_orbit) * (1.0 - model.plasma.cx_loss_fraction)
+            tau_s = physics.thermalization_time(op.ne0_m3, te, eb, species)
+            nb0_i = p_use * tau_s / (eb * 1e3 * physics.E_CHARGE * max(volume, 1e-9))
+            grid = np.linspace(1e-3, eb, 400)
+            fE = physics.slowing_down_distribution(te, nb0_i, eb, grid, species)
+            mean_e = physics.average_fast_energy_keV(te, eb, species)
+            ax.plot(grid, fE, label=f"NBI-{i + 1} {species} {eb:.0f} keV   "
+                    fr"$\langle E\rangle$={mean_e:.0f} keV,  $\tau_s$={tau_s:.3g} s")
+            any_curve = True
+        ax.set_xlabel("E [keV]")
+        ax.set_ylabel(r"$f(E)$ [$\mathrm{m}^{-3}\,\mathrm{keV}^{-1}$]")
+        ax.set_title("Per-beam steady-state slowing-down distribution")
+        ax.grid(alpha=0.3)
+        if any_curve:
+            ax.legend(fontsize=8)
+        fig.tight_layout()
+        self.fi_canvas.draw_idle()
+
+    def _render_profiles(self, result: Result):
+        model = self.model
+        op = result.op
+        plasma = model.plasma
+        rho = model.rho_grid()
+        density = model.density_profile(rho)
+        te_profile = model.temperature_profile(rho, op.Te_keV or 0.0)
+        ti_profile = model.temperature_profile(rho, op.Ti_keV or 0.0)
+
+        fig = self.prof_fig
+        fig.clear()
+        ax_n = fig.add_subplot(221)
+        ax_n.plot(rho, density / 1e20, label=r"$n_e$")
+        ax_n.set(title=r"$n_e(\rho)$, $p_n=%.2f$" % plasma.density_peaking,
+                 xlabel=r"$\rho$", ylabel=r"$n_e$ [$10^{20}\,\mathrm{m}^{-3}$]")
+        ax_n.grid(alpha=0.3)
+        ax_n.legend()
+
+        ax_t = fig.add_subplot(222)
+        ax_t.plot(rho, te_profile, label=r"$T_e$")
+        ax_t.plot(rho, ti_profile, label=r"$T_i$")
+        ax_t.set(title=r"$T_e(\rho),\ T_i(\rho)$, $p_T=%.2f$" % plasma.temp_peaking,
+                 xlabel=r"$\rho$", ylabel=r"$T$ [keV]")
+        ax_t.grid(alpha=0.3)
+        ax_t.legend()
+
+        ax_s = fig.add_subplot(223)
+        theta = np.linspace(0, 2 * np.pi, 400)
+        delta = np.clip(plasma.triangularity, -0.999, 0.999)
+        ax_s.plot(plasma.major_radius + plasma.minor_radius * np.cos(theta + np.arcsin(delta) * np.sin(theta)),
+                  plasma.elongation * plasma.minor_radius * np.sin(theta))
+        ax_s.plot(plasma.major_radius, 0.0, marker="+", color="tab:red", markersize=9, markeredgewidth=1.5)
+        ax_s.set(title=r"Shape: $R_0=%.2f$, $a=%.2f$, $\kappa=%.2f$, $\delta=%.2f$"
+                 % (plasma.major_radius, plasma.minor_radius, plasma.elongation, plasma.triangularity),
+                 xlabel=r"$R$ [m]", ylabel=r"$Z$ [m]")
+        ax_s.set_aspect("equal")
+        ax_s.grid(alpha=0.3)
+
+        ax_f = fig.add_subplot(224)
+        ax_f.axis("off")
+        ax_f.text(0, 0.85, "Profiles / 0-D balance", fontsize=11, weight="bold")
+        ax_f.text(0, 0.60, r"$n_e(\rho)=n_{e0}(1-\rho^2)^{2p_n}$", fontsize=9)
+        ax_f.text(0, 0.40, r"$T_{e,i}(\rho)=T_{e0,i0}(1-\rho^2)^{2p_T}$", fontsize=9)
+        ax_f.text(0, 0.20, r"$T_e$, $T_i$ solved at the central $n_e$", fontsize=9)
+
+        fig.tight_layout()
+        self.prof_canvas.draw_idle()
+
+    def _render_scan_plot(self):
+        if not getattr(self, "scan", None):
+            return
+        selected = self.observable_var.get()
+        keys = self.OBSERVABLES[self.DISPLAY_GROUPS[selected]]
+        fig = self.scan_fig
+        fig.clear()
+        density_axis = self.scan["n_e"] / 1e20
+        if len(keys) > 2:
+            axes = fig.subplots(2, 2, squeeze=False).flat
+            for ax, key in zip(axes, keys):
+                finite = np.isfinite(self.scan[key])
+                ax.plot(density_axis[finite], self.scan[key][finite], marker="o", ms=3,
+                        label=self.LATEX_NAMES[key])
+                ax.set_title(f"{self.LATEX_NAMES[key]} [${self.LATEX_UNITS[self.UNITS[key]]}$]")
+                ax.set_xlabel(r"$n_e$ [$10^{20}\,\mathrm{m}^{-3}$]")
+                ax.grid(alpha=0.3)
+                ax.legend()
+        else:
+            ax = fig.add_subplot(111)
+            for key in keys:
+                finite = np.isfinite(self.scan[key])
+                ax.plot(density_axis[finite], self.scan[key][finite], marker="o", ms=3,
+                        label=f"{self.LATEX_NAMES[key]} [${self.LATEX_UNITS[self.UNITS[key]]}$]")
+            ax.set_xlabel(r"$n_e$ [$10^{20}\,\mathrm{m}^{-3}$]")
+            ax.grid(alpha=0.3)
+            ax.legend()
+        vmin = self.scan["n_e_valid_min"][0]
+        vmax = self.scan["n_e_valid_max"][0]
+        plasma = self.model.plasma
+        equip_on = plasma.enable_equipartition
+        alpha_on = plasma.alpha_heating
+        eq_sensitive = selected in self.EQUIP_SENSITIVE
+        al_sensitive = selected in self.ALPHA_SENSITIVE
+        suptitle = r"valid $n_e=[%.2e, %.2e]$ m$^{-3}$" % (vmin, vmax)
+        tags = []
+        if eq_sensitive:
+            tags.append("equipartition ON (Te, Ti coupled)" if equip_on else "equipartition off")
+        if al_sensitive:
+            tags.append(f"alpha self-heating ON (f={plasma.f_alpha:.2g})" if alpha_on
+                        else "alpha self-heating off")
+        if tags:
+            suptitle += "\n" + " | ".join(tags)
+        fig.suptitle(suptitle, fontsize=10)
+        fig.tight_layout()
+        self.scan_canvas.draw_idle()
+
+        self.scan_text.delete("1.0", "end")
+        eq_tag = "ON (Te,Ti coupled)" if equip_on else "off"
+        al_tag = f"ON (f={plasma.f_alpha:.2g})" if alpha_on else "off"
+        self.scan_text.insert("end", f"e-i equipartition: {eq_tag}"
+                              f"{'  <- affects this group' if eq_sensitive else ''}\n")
+        self.scan_text.insert("end", f"alpha self-heating: {al_tag}"
+                              f"{'  <- affects this group' if al_sensitive else ''}\n\n")
+        self.scan_text.insert("end", "Requested n_e: %.3e .. %.3e m^-3\n"
+                              % (self.model.plasma.n_e_min, self.model.plasma.n_e_max))
+        self.scan_text.insert("end", "Valid range: %.3e .. %.3e m^-3\n\n" % (vmin, vmax))
+        for key in keys:
+            vals = self.scan[key][np.isfinite(self.scan[key])]
+            if vals.size:
+                self.scan_text.insert("end", f"{key} [{self.UNITS[key]}]: {vals.min():.4g} .. {vals.max():.4g}\n")
+            else:
+                self.scan_text.insert("end", f"{key} [{self.UNITS[key]}]: no feasible values\n")
+
+    def _render_summary(self, result: Result):
+        scan = result.scan
+        plasma = self.model.plasma
+        fig = self.sum_fig
+        fig.clear()
+        axes = fig.subplots(3, 4, squeeze=False)
+        density_axis = scan["n_e"] / 1e20
+        theta = np.linspace(0, 2 * np.pi, 400)
+        delta = np.clip(plasma.triangularity, -0.999, 0.999)
+        panels = [
+            ("Geometry [m]", lambda ax: (
+                ax.plot(plasma.major_radius + plasma.minor_radius * np.cos(theta + np.arcsin(delta) * np.sin(theta)),
+                        plasma.elongation * plasma.minor_radius * np.sin(theta)),
+                ax.plot(plasma.major_radius, 0.0, marker="+", color="tab:red", markersize=8))),
+            ("Temperature [keV]", lambda ax: (ax.plot(density_axis, scan["Te"], label=r"$T_e$"),
+                                              ax.plot(density_axis, scan["Ti"], label=r"$T_i$"))),
+            ("Heating [MW]", lambda ax: (ax.plot(density_axis, scan["P_e"], label=r"$P_e$"),
+                                         ax.plot(density_axis, scan["P_i"], label=r"$P_i$"))),
+            (r"$P_{ie}$ [MW]", lambda ax: ax.plot(density_axis, scan["Pi_e"])),
+            (r"$P_{shine}$ [MW]", lambda ax: ax.plot(density_axis, scan["P_shine-through"])),
+            (r"Species n [$\mathrm{m}^{-3}$]", lambda ax: (ax.plot(density_axis, scan["n_D"], label=r"$n_D$"),
+                                                           ax.plot(density_axis, scan["n_T"], label=r"$n_T$"),
+                                                           ax.plot(density_axis, scan["n_b"], label=r"$n_b$"))),
+            ("Fusion power [MW]", lambda ax: (ax.plot(density_axis, scan["Pf_tot"], label=r"$P_{f,tot}$"),
+                                              ax.plot(density_axis, scan["Pf_th"], label=r"$P_{f,th}$"),
+                                              ax.plot(density_axis, scan["Pf_b"], label=r"$P_{f,b}$"))),
+            ("Times [s]", lambda ax: (ax.plot(density_axis, scan["tau_S"], label=r"$\tau_S$"),
+                                      ax.plot(density_axis, scan["tau_IE"], label=r"$\tau_{IE}$"))),
+            ("<E_fast> [keV]", lambda ax: ax.plot(density_axis, scan["E_fast"])),
+            ("R = U_fast / U_th", lambda ax: ax.plot(density_axis, scan["R"])),
+            ("Pressure [Pa]", lambda ax: (ax.plot(density_axis, scan["Pr_th"], label=r"$p_{th}$"),
+                                          ax.plot(density_axis, scan["Pr_fast"], label=r"$p_{fast}$"))),
+            ("Toroidal beta [%]", lambda ax: ax.plot(density_axis, scan["beta_T"])),
+        ]
+        for ax, (title, draw) in zip(axes.flat, panels):
+            draw(ax)
+            ax.set_title(title, fontsize=9)
+            ax.grid(alpha=0.25)
+            ax.tick_params(labelsize=7)
+            if title == "Geometry [m]":
+                ax.set_aspect("equal")
+            else:
+                ax.set_xlabel(r"$n_e$ [$10^{20}\,\mathrm{m}^{-3}$]", fontsize=7)
+            if title in ("Temperature [keV]", "Heating [MW]", r"Species n [$\mathrm{m}^{-3}$]",
+                         "Fusion power [MW]", "Times [s]", "Pressure [Pa]"):
+                ax.legend(fontsize=6, ncol=2)
+        fig.text(0.02, 0.005, self._summary_parameters(), fontsize=7, va="bottom", family="monospace")
+        fig.subplots_adjust(left=0.06, right=0.98, top=0.95, bottom=0.19, wspace=0.3, hspace=0.42)
+        self.sum_canvas.draw_idle()
+
+    # --------------------------------------------------------------- helpers
+    def _assess(self, model: HotJassModel, op) -> str:
+        plasma = model.plasma
+        aspect = plasma.major_radius / max(plasma.minor_radius, 1e-6)
+        lines = ["ASSUMPTIONS & VALIDITY", "=" * 40, ""]
+        lines.append(f"Device: {self.active_device}    aspect ratio A = R0/a = {aspect:.2f}")
+        lines.append(f"Confinement model: {self.confinement_var.get()}")
+        lines.append(f"  tau_Ee_mode = {plasma.tau_Ee_mode}, tau_Ei_mode = {plasma.tau_Ei_mode}")
+        if plasma.tau_Ee_mode == "fixed":
+            lines.append(f"  fixed tauE,e = {plasma.tauE_e:.4g} s")
+        if plasma.tau_Ei_mode == "fixed":
+            lines.append(f"  fixed tauE,i = {plasma.tauE_i:.4g} s")
+        dirs = ", ".join(f"NBI-{i + 1} {'co' if b.co_current else 'counter'}-current"
+                         for i, b in enumerate(model.beams))
+        lines.append(f"First-orbit loss: {'ON' if plasma.enable_orbit_loss else 'off'}  ({dirs})")
+        lines.append(f"CX loss fraction: {plasma.cx_loss_fraction:.3g} (flat efficiency knob)")
+        lines.append(f"e-i equipartition: {'ON (coupled Te/Ti solve)' if plasma.enable_equipartition else 'off (decoupled Te, Ti)'}")
+        if plasma.alpha_heating:
+            lines.append(f"Alpha self-heating: ON  (f_alpha={plasma.f_alpha:.3g}; "
+                         f"P_a = f_alpha*(3.5/17.6)*P_fus, fixed-point, e/i split by slowing-down)")
+        else:
+            lines.append("Alpha self-heating: off")
+        lines.append("")
+        lines.append("Per-beam shine-through model:")
+        for i, beam in enumerate(model.beams):
+            e_per_amu = beam.beam_energy_keV / physics.beam_mass_number(beam.species.upper())
+            lines.append(f"  NBI-{i + 1}: {beam.shine_through_model}   E/A = {e_per_amu:.0f} keV/amu")
+            if beam.shine_through_model == "janev_suzuki" and not (100.0 <= e_per_amu <= 1.0e4):
+                lines.append("    ! Janev-Suzuki fit valid 100-1e4 keV/amu; input clipped.")
+        lines.append("")
+        lines.append("Fit ranges / notes:")
+        lines.append("  Bosch-Hale DT reactivity valid Ti = 0.2-100 keV.")
+        lines.append("  Riviere / Janev-Suzuki stopping: order-of-magnitude fits (see physics.py).")
+        if plasma.tau_Ee_mode.startswith("kaye"):
+            lines.append("  Kaye NSTX L-mode: an ST-appropriate fit (A ~ 1.3-1.5 dataset).")
+        if plasma.tau_Ei_mode == "neoclassical":
+            lines.append("  Neoclassical ion transport has no anomalous channel -> Ti can be")
+            lines.append("  large / implausible; treat as a lower bound on ion transport.")
+        if aspect < 2.0 and plasma.tau_Ee_mode == "fixed":
+            lines.append("  A < 2: conventional-aspect confinement scalings (IPB98) would be")
+            lines.append("  extrapolating here; a fixed tauE input sidesteps that.")
+        lines.append("")
+        lines.append("OPERATING POINT")
+        lines.append("-" * 40)
+        lines.append(f"feasible: {op.feasible}")
+        if not op.feasible:
+            lines.append(f"reason: {op.infeasible_reason}")
+        else:
+            lines.append(f"n_thermal / n_sum = {op.n_thermal_fraction:.3f}")
+            if op.n_thermal_fraction < 0.15:
+                lines.append("  ! near the feasibility edge: Ti is very sensitive here.")
+            if op.Ti_keV and op.Ti_keV > 100.0:
+                lines.append(f"  ! Ti = {op.Ti_keV:.0f} keV is implausibly high.")
+        return "\n".join(lines)
+
+    def _summary_parameters(self) -> str:
         p = self.model.plasma
+        equip_state = "ON" if p.enable_equipartition else "off"
+        alpha_state = f"ON (f_alpha={p.f_alpha:.3g})" if p.alpha_heating else "off"
+        orbit_state = "ON" if p.enable_orbit_loss else "off"
         lines = [
             f"Device: {self.active_device}    R0={p.major_radius:.3g} m    a={p.minor_radius:.3g} m    "
             f"k={p.elongation:.3g}    delta={p.triangularity:.3g}\n"
             f"B0={p.toroidal_field:.3g} T    Ip={p.plasma_current / 1e6:.3g} MA    "
-            f"Zeff={p.effective_charge:.3g}    ne=[{p.n_e_min:.3g}, {p.n_e_max:.3g}] m^-3\n"
+            f"Zeff={p.effective_charge:.3g}    ne_c={p.central_density:.3g}    "
+            f"ne_scan=[{p.n_e_min:.3g}, {p.n_e_max:.3g}] m^-3\n"
             f"D/T={p.deuterium_fraction:.3g}/{p.tritium_fraction:.3g}    "
-            f"tauE,e={p.tauE_e:.3g} s    tauE,i={p.tauE_i:.3g} s",
+            f"tauE,e={p.tauE_e:.3g} s    tauE,i={p.tauE_i:.3g} s    "
+            f"conf={p.tau_Ee_mode}/{p.tau_Ei_mode}\n"
+            f"e-i equipartition={equip_state}    alpha self-heating={alpha_state}    "
+            f"first-orbit loss={orbit_state}    CX loss frac={p.cx_loss_fraction:.3g}",
         ]
         for index, beam in enumerate(self.model.beams, start=1):
-            lines.append(
-                f"NBI-{index}: {beam.species.upper()}    P={beam.power_MW:.3g} MW    "
-                f"E={beam.beam_energy_keV:.3g} keV"
-            )
+            lines.append(f"NBI-{index}: {beam.species.upper()}    P={beam.power_MW:.3g} MW    "
+                         f"E={beam.beam_energy_keV:.3g} keV    model={beam.shine_through_model}    "
+                         f"{'co' if beam.co_current else 'counter'}-current")
         return "\n".join(lines)
 
-    def _save_summary(self, file_type):
-        extension = ".pdf" if file_type == "pdf" else ".png"
-        file_path = filedialog.asksaveasfilename(
-            title="Save HI-Jass summary",
-            defaultextension=extension,
-            filetypes=[("PDF file", "*.pdf")] if file_type == "pdf" else [("PNG image", "*.png"), ("JPEG image", "*.jpg")],
+    # ---------------------------------------------------------------- presets
+    def _apply_preset(self, name: str):
+        for field, value in self.PLASMA_PRESETS[name].items():
+            key = f"plasma.{field}"
+            if key in self.entries:
+                self.entries[key].delete(0, "end")
+                self.entries[key].insert(0, str(value))
+        self.active_device = name
+        self._run()
+
+    # --------------------------------------------------------------- export
+    def _export_summary(self, kind: str):
+        extension = ".pdf" if kind == "pdf" else ".png"
+        path = filedialog.asksaveasfilename(
+            title="Save HI-Jass summary sheet", defaultextension=extension,
+            filetypes=[("PDF file", "*.pdf")] if kind == "pdf"
+            else [("PNG image", "*.png"), ("JPEG image", "*.jpg")],
         )
-        if file_path:
-            self.summary_fig.savefig(file_path, bbox_inches="tight")
+        if path:
+            self.sum_fig.savefig(path, bbox_inches="tight")
 
-    def _apply_nbi_settings(self):
-        for index, entries in self.nbi_entries.items():
-            beam = self.model.beams[index]
-            for attr, entry in entries.items():
-                value = entry.get()
-                try:
-                    setattr(beam, attr, float(value))
-                except ValueError:
-                    setattr(beam, attr, value.upper())
-            model_name = self.shine_model_vars[index].get()
-            beam.shine_through_model = {
-                "Riviere": "riviere",
-                "Janev": "janev_suzuki",
-                "Manual": "manual",
-            }[model_name]
-        self._run_model()
+    def _export_json(self):
+        if self.last_result is None or not self.last_result.ok:
+            self.status.configure(text="Nothing to export yet", text_color="#c0504d")
+            return
+        path = filedialog.asksaveasfilename(
+            title="Save HI-Jass run record", defaultextension=".json",
+            filetypes=[("JSON file", "*.json")],
+        )
+        if not path:
+            return
+        op = self.last_result.op
+        record = {
+            "generated": datetime.now().isoformat(timespec="seconds"),
+            "git_sha": self._git_sha(),
+            "device": self.active_device,
+            "mode": self.mode,
+            "plasma": dataclasses.asdict(self.model.plasma),
+            "beams": [dataclasses.asdict(b) for b in self.model.beams],
+            "operating_point": dataclasses.asdict(op),
+            "summary": self.last_result.summary,
+        }
+        with open(path, "w", encoding="utf-8") as handle:
+            json.dump(record, handle, indent=2,
+                      default=lambda o: float(o) if hasattr(o, "__float__") else str(o))
+        self.status.configure(text=f"Wrote {Path(path).name}", text_color="gray")
 
-    def _run_model(self):
-        self.scan = self.model.density_scan()
-        rho = self.model.rho_grid()
-        density = self.model.density_profile(rho)
-        middle = len(self.scan["Te"]) // 2
-        te_profile = self.model.temperature_profile(rho, self.scan["Te"][middle])
-        ti_profile = self.model.temperature_profile(rho, self.scan["Ti"][middle])
-        p = self.model.plasma
-        self.profile_ax.clear()
-        self.profile_ax.plot(rho, density / 1e20, label=r"$n_e$")
-        self.profile_ax.set(title=r"$n_e(\rho)$, $p_n = %.2f$" % p.density_peaking, xlabel=r"$\rho$ [1]", ylabel=r"$n_e$ [$10^{20}\,\mathrm{m}^{-3}$]")
-        self.profile_ax.grid(alpha=0.3); self.profile_ax.legend()
-        self.profile_ax2.clear()
-        self.profile_ax2.plot(rho, te_profile, label=r"$T_e$"); self.profile_ax2.plot(rho, ti_profile, label=r"$T_i$")
-        self.profile_ax2.set(title=r"$T_e(\rho)$, $T_i(\rho)$, $p_T = %.2f$" % p.temp_peaking, xlabel=r"$\rho$ [1]", ylabel=r"$T_e$, $T_i$ [keV]")
-        self.profile_ax2.grid(alpha=0.3); self.profile_ax2.legend()
-        theta = np.linspace(0, 2 * np.pi, 400)
-        self.shape_ax.clear()
-        delta = np.clip(p.triangularity, -0.999, 0.999)
-        self.shape_ax.plot(p.major_radius + p.minor_radius * np.cos(theta + np.arcsin(delta) * np.sin(theta)), p.elongation * p.minor_radius * np.sin(theta))
-        self.shape_ax.plot(p.major_radius, 0.0, marker="+", color="tab:red", markersize=9, markeredgewidth=1.5)
-        self.shape_ax.set(title=r"Shape: $R_0=%.2f\,\mathrm{m}$, $a=%.2f\,\mathrm{m}$, $\kappa=%.2f$, $\delta=%.2f$" % (p.major_radius, p.minor_radius, p.elongation, p.triangularity), xlabel=r"$R$ [m]", ylabel=r"$Z$ [m]"); self.shape_ax.set_aspect("equal"); self.shape_ax.grid(alpha=0.3)
-        self.formula_ax.clear(); self.formula_ax.axis("off")
-        self.formula_ax.text(0, 0.85, "Profiles / 0D balance", fontsize=11, weight="bold")
-        self.formula_ax.text(0, 0.62, r"$n_e(\rho) = n_{e0}(1-\rho^2)^{2p_n}$", fontsize=9)
-        self.formula_ax.text(0, 0.42, r"$T_{e,i}(\rho) = T_{e0,i0}(1-\rho^2)^{2p_T}$", fontsize=9)
-        self.formula_ax.text(0, 0.22, r"$T_e$, $T_i$ solved at each scanned $n_e$", fontsize=9)
-        self.profile_fig.tight_layout(); self.profile_canvas.draw()
-        self._plot_results()
-        self._update_summary()
+    @staticmethod
+    def _git_sha() -> str:
+        try:
+            return subprocess.check_output(
+                ["git", "rev-parse", "--short", "HEAD"],
+                cwd=Path(__file__).parent, stderr=subprocess.DEVNULL,
+            ).decode().strip()
+        except Exception:
+            return "unknown"
 
-    def _update_summary(self):
-        self.summary_fig.clear()
-        axes = self.summary_fig.subplots(3, 4, squeeze=False)
-        p = self.model.plasma
-        density_axis = self.scan["n_e"] / 1e20
-        panels = [
-            ("Geometry [m]", lambda axis: (axis.plot(p.major_radius + p.minor_radius * np.cos(np.linspace(0, 2 * np.pi, 400) + np.arcsin(np.clip(p.triangularity, -0.999, 0.999)) * np.sin(np.linspace(0, 2 * np.pi, 400))), p.elongation * p.minor_radius * np.sin(np.linspace(0, 2 * np.pi, 400))), axis.plot(p.major_radius, 0.0, marker="+", color="tab:red", markersize=8, markeredgewidth=1.4))),
-            ("Temperature [keV]", lambda axis: (axis.plot(density_axis, self.scan["Te"], label=r"$T_e$"), axis.plot(density_axis, self.scan["Ti"], label=r"$T_i$"))),
-            ("Heating [MW]", lambda axis: (axis.plot(density_axis, self.scan["P_e"], label=r"$P_e$"), axis.plot(density_axis, self.scan["P_i"], label=r"$P_i$"))),
-            (r"$P_{ie}$ [MW]", lambda axis: axis.plot(density_axis, self.scan["Pi_e"])),
-            (r"$P_{shine}$ [MW]", lambda axis: axis.plot(density_axis, self.scan["P_shine-through"])),
-            (r"Species density [$\mathrm{m}^{-3}$]", lambda axis: (axis.plot(density_axis, self.scan["n_D"], label=r"$n_D$"), axis.plot(density_axis, self.scan["n_T"], label=r"$n_T$"), axis.plot(density_axis, self.scan["n_b"], label=r"$n_b$"))),
-            ("Fusion power [MW]", lambda axis: (axis.plot(density_axis, self.scan["Pf_tot"], label=r"$P_{f,tot}$"), axis.plot(density_axis, self.scan["Pf_th"], label=r"$P_{f,th}$"), axis.plot(density_axis, self.scan["Pf_b"], label=r"$P_{f,b}$"))),
-            ("Times [s]", lambda axis: (axis.plot(density_axis, self.scan["tau_S"], label=r"$\tau_S$"), axis.plot(density_axis, self.scan["tau_IE"], label=r"$\tau_{IE}$"))),
-            ("<E_fast> [keV]", lambda axis: axis.plot(density_axis, self.scan["E_fast"])),
-            ("R = U_fast / U_th [1]", lambda axis: axis.plot(density_axis, self.scan["R"])),
-            ("Pressure [Pa]", lambda axis: (axis.plot(density_axis, self.scan["Pr_th"], label=r"$p_{th}$"), axis.plot(density_axis, self.scan["Pr_fast"], label=r"$p_{fast}$"))),
-            ("Toroidal beta [%]", lambda axis: axis.plot(density_axis, self.scan["beta_T"])),
-        ]
-        for axis, (subtitle, draw) in zip(axes.flat, panels):
-            draw(axis)
-            axis.set_title(subtitle, fontsize=9)
-            axis.grid(alpha=0.25)
-            axis.tick_params(labelsize=7)
-            if subtitle == "Geometry [m]":
-                axis.set_aspect("equal")
-            else:
-                axis.set_xlabel(r"$n_e$ [$10^{20}\,\mathrm{m}^{-3}$]", fontsize=7)
-            if subtitle in ("Temperature [keV]",):
-                axis.legend(fontsize=6)
-            elif subtitle in ("Heating [MW]", r"Species density [$\mathrm{m}^{-3}$]", "Fusion power [MW]", "Times [s]", "Pressure [Pa]"):
-                axis.legend(fontsize=6, ncol=2)
-        for axis in axes.flat[len(panels):]:
-            axis.set_visible(False)
-        self.summary_fig.text(0.02, 0.01, self._summary_parameters(), fontsize=7, va="bottom", family="monospace")
-        self.summary_fig.subplots_adjust(left=0.06, right=0.98, top=0.96, bottom=0.16, wspace=0.28, hspace=0.4)
-        self.summary_canvas.draw()
+    # -------------------------------------------------------------- settings
+    def _load_settings(self) -> dict:
+        try:
+            return json.loads(SETTINGS_PATH.read_text(encoding="utf-8"))
+        except Exception:
+            return {}
 
-    def _plot_results(self):
-        selected = self.observable_var.get()
-        keys = self.OBSERVABLES[self.DISPLAY_GROUPS[selected]]
-        self.results_fig.clear()
-        if len(keys) > 2:
-            axes = self.results_fig.subplots(2, 2, squeeze=False).flat
-            for axis, key in zip(axes, keys):
-                finite = np.isfinite(self.scan[key])
-                axis.plot(self.scan["n_e"][finite] / 1e20, self.scan[key][finite], marker="o", ms=3, label=self.LATEX_NAMES[key])
-                axis.set_title(f"{self.LATEX_NAMES[key]} [${self.LATEX_UNITS[self.UNITS[key]]}$]")
-                axis.set_xlabel(r"$n_e$ [$10^{20}\,\mathrm{m}^{-3}$]")
-                axis.grid(alpha=0.3)
-                axis.legend()
-        else:
-            self.results_ax = self.results_fig.add_subplot(111)
-            for key in keys:
-                finite = np.isfinite(self.scan[key])
-                self.results_ax.plot(self.scan["n_e"][finite] / 1e20, self.scan[key][finite], marker="o", ms=3, label=f"{self.LATEX_NAMES[key]} [${self.LATEX_UNITS[self.UNITS[key]]}$]")
-            self.results_ax.set_xlabel(r"$n_e$ [$10^{20}\,\mathrm{m}^{-3}$]")
-            self.results_ax.set_ylabel(", ".join(f"{self.LATEX_NAMES[key]} [${self.LATEX_UNITS[self.UNITS[key]]}$]" for key in keys))
-            self.results_ax.grid(alpha=0.3)
-            self.results_ax.legend()
-        units = ", ".join(f"{self.LATEX_NAMES[key]} [${self.LATEX_UNITS[self.UNITS[key]]}$]" for key in keys)
-        valid_min = self.scan["n_e_valid_min"][0]
-        valid_max = self.scan["n_e_valid_max"][0]
-        self.results_fig.suptitle(r"%s | valid $n_e=[%.2e, %.2e]$ m$^{-3}$" % (units, valid_min, valid_max))
-        self.results_fig.tight_layout()
-        self.results_canvas.draw()
-        self.result_text.delete("1.0", "end")
-        self.result_text.insert("end", "Requested n_e: %.3e to %.3e m^-3\n" % (self.model.plasma.n_e_min, self.model.plasma.n_e_max))
-        self.result_text.insert("end", "Valid HotJass range: %.3e to %.3e m^-3\n\n" % (valid_min, valid_max))
-        for key in keys:
-            values = self.scan[key][np.isfinite(self.scan[key])]
-            if values.size:
-                self.result_text.insert("end", f"{key} [{self.UNITS[key]}]: {values.min():.4g} .. {values.max():.4g}\n")
-            else:
-                self.result_text.insert("end", f"{key} [{self.UNITS[key]}]: no feasible values\n")
+    def _save_settings(self):
+        data = {key: entry.get() for key, entry in self.entries.items()}
+        data["_mode"] = self.mode_toggle.get()
+        data["_confinement"] = self.confinement_var.get()
+        data["_orbit_loss"] = bool(self.orbit_var.get())
+        data["_equipartition"] = bool(self.equip_var.get())
+        data["_alpha_heating"] = bool(self.alpha_var.get())
+        for beam_index in (0, 1):
+            data[f"beam{beam_index}._shine"] = getattr(self, f"shine_var_{beam_index}").get()
+            data[f"beam{beam_index}._dir"] = getattr(self, f"beam_dir_var_{beam_index}").get()
+        try:
+            SETTINGS_PATH.parent.mkdir(parents=True, exist_ok=True)
+            SETTINGS_PATH.write_text(json.dumps(data, indent=2), encoding="utf-8")
+        except Exception:
+            pass
+
+    def _on_close(self):
+        self._save_settings()
+        self.destroy()
 
 
 if __name__ == "__main__":
     try:
         HIJassApp().mainloop()
-    except Exception as exc:
-        if "DISPLAY" in str(exc) or "tk" in str(exc).lower():
-            print("HI-Jass requires a desktop session with a valid DISPLAY variable.")
+    except Exception as exc:  # noqa: BLE001
+        message = str(exc).lower()
+        if "display" in message or "tk" in message or "no $display" in message:
+            print("HI-Jass requires a desktop session with a valid DISPLAY.")
         else:
             raise

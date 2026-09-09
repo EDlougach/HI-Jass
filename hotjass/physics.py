@@ -317,6 +317,27 @@ def alpha_heating_power(pf_total_w: float, F_alpha: float = F_ALPHA) -> float:
     return F_alpha * (E_ALPHA_MEV / E_FUSION_MEV) * pf_total_w
 
 
+M_ALPHA = 6.6446573357e-27  # He-4 nucleus mass [kg]
+
+
+def alpha_critical_energy_keV(Te_keV: float) -> float:
+    """Critical energy for a 3.5 MeV fusion alpha -- the same
+    (m/m_e)^(1/3)*Te form as critical_energy_keV(), with the He-4 mass.
+    """
+    return (M_ALPHA / M_E) ** (1.0 / 3.0) * Te_keV
+
+
+def alpha_electron_heating_fraction(Te_keV: float, E_alpha_keV: float = E_ALPHA_MEV * 1.0e3) -> float:
+    """L_e for a fusion alpha slowing down: the slowing-down-averaged fraction
+    of alpha power delivered to electrons, from the same L_e(x)=1-L_i(x)
+    kernel as the beam split (electron_heating_fraction), evaluated at
+    x = E_alpha / Ec_alpha(Te). In this project's regime (Te ~ 1-10 keV,
+    Ec_alpha ~ 20-200 keV) x >> 1, so alphas heat electrons almost entirely.
+    """
+    Ec = alpha_critical_energy_keV(Te_keV)
+    return electron_heating_fraction(E_alpha_keV / max(Ec, 1.0e-9))
+
+
 def thermal_fusion_power(
     nD0: float, nT0: float, Ti_keV: float, volume_m3: float,
     density_peaking: float = 0.0, temperature_peaking: float = 0.0,
