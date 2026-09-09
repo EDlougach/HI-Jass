@@ -177,6 +177,8 @@ class OperatingPoint:
     #   (0 unless the caller ran the alpha fixed-point -- solve_operating_point only sees it via
     #   extra_e_source_w/extra_i_source_w; the Picard loop that closes P_alpha ~ 0.2*P_fus lives
     #   in hotjass_core so solve_operating_point itself stays a single non-iterative solve)
+    P_aux_e_w: float = 0.0  # prescribed auxiliary heating to electrons (ECRH + ICRH), folded into Step 1
+    P_aux_i_w: float = 0.0  # prescribed auxiliary heating to ions (ECRH + ICRH), folded into Step 5
     Le: list[float] = field(default_factory=list)  # per-beam electron-heating fraction
     Li: list[float] = field(default_factory=list)  # per-beam ion-heating fraction
     P_NB_total_w: float = 0.0  # sum of injected (pre-shine-through) beam power, echoed for reference
@@ -448,6 +450,8 @@ def solve_operating_point(
     tau_Ei_s: float | None = None,
     extra_e_source_w: float = 0.0,
     extra_i_source_w: float = 0.0,
+    aux_e_source_w: float = 0.0,
+    aux_i_source_w: float = 0.0,
 ) -> OperatingPoint:
     """The full steps 0-7 cascade (docs/model.md) at one scanned n_e0.
 
@@ -559,6 +563,13 @@ def solve_operating_point(
         if config.tau_Ei_mode == "kaye_nstx_lmode":
             tau_Ei_s = kaye_lmode_tau_s
 
+    # Te-independent additive sources folded into the electron/ion balances:
+    # extra_*_source_w is the fusion alpha term (closed by the caller's
+    # fixed-point), aux_*_source_w is prescribed auxiliary heating (ECRH/ICRH).
+    # The solvers only see the sum; the OperatingPoint reports them separately.
+    ee_source_w = extra_e_source_w + aux_e_source_w
+    ei_source_w = extra_i_source_w + aux_i_source_w
+
     P_ei_w = 0.0
     if config.enable_equipartition:
         # Coupled solve: Te and Ti (and hence P_e_w/P_i_w, which stay the
@@ -566,9 +577,9 @@ def solve_operating_point(
         # exchange) all come out of one nested-bisection call.
         Te_keV, Ti_keV, n_thermal, nb0_total, Le_list, Li_list, P_e_w, P_i_w, P_ei_w = \
             _solve_te_ti_coupled_keV(ne0_m3, useful_beams, tau_E_s, tau_Ei_s, V, config,
-                                     extra_e_source_w, extra_i_source_w)
+                                     ee_source_w, ei_source_w)
     else:
-        Te_keV = _solve_te_keV(ne0_m3, useful_beams, tau_E_s, V, extra_e_source_w)
+        Te_keV = _solve_te_keV(ne0_m3, useful_beams, tau_E_s, V, ee_source_w)
 
         Le_list = []
         Li_list = []
@@ -594,6 +605,7 @@ def solve_operating_point(
         return OperatingPoint(
             ne0_m3=ne0_m3, feasible=False, Te_keV=Te_keV, nb0_m3=nb0_total,
             P_e_w=P_e_w, P_i_w=P_i_w, P_ei_w=P_ei_w, P_alpha_w=extra_e_source_w + extra_i_source_w,
+            P_aux_e_w=aux_e_source_w, P_aux_i_w=aux_i_source_w,
             Le=Le_list, Li=Li_list,
             tau_E_s=tau_E_s, tau_Ei_s=tau_Ei_s,
             P_NB_total_w=P_NB_total_w, P_shine_w=P_shine_w, P_capt_w=P_capt_w, f_capture=f_capture_list,
@@ -607,7 +619,7 @@ def solve_operating_point(
         )
 
     if not config.enable_equipartition:
-        P_i_total_w = P_i_w + extra_i_source_w
+        P_i_total_w = P_i_w + ei_source_w
         if config.tau_Ei_mode == "neoclassical":
             Ti_keV, tau_Ei_s = _solve_ti_neoclassical_keV(P_i_total_w, n_thermal, V, config)
         else:
@@ -672,6 +684,7 @@ def solve_operating_point(
         nb0_m3=nb0_total, nD0_m3=nD0, nT0_m3=nT0, n_thermal_m3=n_thermal,
         n_thermal_fraction=n_thermal / n_sum,
         P_e_w=P_e_w, P_i_w=P_i_w, P_ei_w=P_ei_w, P_alpha_w=extra_e_source_w + extra_i_source_w,
+            P_aux_e_w=aux_e_source_w, P_aux_i_w=aux_i_source_w,
         Le=Le_list, Li=Li_list,
         P_NB_total_w=P_NB_total_w, P_shine_w=P_shine_w, P_capt_w=P_capt_w, f_capture=f_capture_list,
         P_orbit_loss_w=P_orbit_loss_w, f_orbit_loss=f_orbit_loss_list,

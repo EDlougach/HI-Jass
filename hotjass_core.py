@@ -30,6 +30,11 @@ class PlasmaParams:
     tauE_i: float = 0.05
     alpha_heating: bool = False  # fusion alpha self-heating fed back into the T_e/T_i balance
     f_alpha: float = 1.0  # fraction of alpha power confined & thermalised
+    p_ecrh_MW: float = 0.0  # ECRH power (mostly to electrons)
+    ecrh_f_e: float = 0.95  # electron fraction of ECRH power (rest to ions)
+    p_icrh_MW: float = 0.0  # ICRH power
+    icrh_f_e: float = 0.5  # electron fraction of ICRH power
+    icrh_f_i: float = 0.5  # ion fraction of ICRH power (f_e + f_i need not sum to 1)
     tau_Ee_mode: str = "fixed"
     tau_Ei_mode: str = "fixed"
     enable_orbit_loss: bool = False
@@ -90,14 +95,29 @@ class HotJassModel:
             f_alpha=self.plasma.f_alpha,
         )
 
+    def _aux_powers_w(self) -> tuple[float, float]:
+        """Prescribed auxiliary heating (ECRH + ICRH) split into (electron, ion)
+        power [W]. ECRH is mostly to electrons (ecrh_f_e); ICRH uses independent
+        icrh_f_e / icrh_f_i (their sum need not be 1 -- any remainder is taken as
+        power that does not thermalise, e.g. a fast-ion tail or direct loss).
+        """
+        p = self.plasma
+        ecrh = max(p.p_ecrh_MW, 0.0) * 1.0e6
+        icrh = max(p.p_icrh_MW, 0.0) * 1.0e6
+        aux_e = ecrh * p.ecrh_f_e + icrh * p.icrh_f_e
+        aux_i = ecrh * (1.0 - p.ecrh_f_e) + icrh * p.icrh_f_i
+        return aux_e, aux_i
+
     def _solve_point(self, ne_m3: float, beams, tau_e: float, tau_i: float, config: TokamakConfig):
-        """One operating point, with a fixed-point on fusion alpha heating when
-        config.enable_alpha_heating: P_alpha = f_alpha*(E_alpha/E_fus)*P_fusion is
-        split electron/ion by the alpha slowing-down fraction and fed back through
-        solve_operating_point's extra source terms. Under-relaxed Picard; the
+        """One operating point. Prescribed auxiliary heating (ECRH/ICRH) is added
+        to the electron/ion balances via solve_operating_point's aux source terms.
+        When config.enable_alpha_heating, an under-relaxed Picard closes the fusion
+        alpha term P_alpha = f_alpha*(E_alpha/E_fus)*P_fusion on top of that; the
         alpha-off path is a single plain solve_operating_point call.
         """
-        op = solve_operating_point(ne_m3, beams, tau_e, config, tau_i)
+        aux_e, aux_i = self._aux_powers_w()
+        op = solve_operating_point(ne_m3, beams, tau_e, config, tau_i,
+                                   aux_e_source_w=aux_e, aux_i_source_w=aux_i)
         if not (config.enable_alpha_heating and op.feasible):
             return op
         ratio = config.f_alpha * (physics.E_ALPHA_MEV / physics.E_FUSION_MEV)
@@ -112,6 +132,7 @@ class HotJassModel:
             trial = solve_operating_point(
                 ne_m3, beams, tau_e, config, tau_i,
                 extra_e_source_w=le * p_alpha, extra_i_source_w=(1.0 - le) * p_alpha,
+                aux_e_source_w=aux_e, aux_i_source_w=aux_i,
             )
             if not trial.feasible:
                 return trial
@@ -213,6 +234,7 @@ class HotJassModel:
             "n_e": densities, "Te": te, "Ti": ti, "P_e": p_e, "P_i": p_i,
                 "Pi_e": p_ie_values * 1.0e-6, "P_shine-through": values("P_shine_w", 1.0e-6),
                 "P_alpha": values("P_alpha_w", 1.0e-6),
+                "P_aux_e": values("P_aux_e_w", 1.0e-6), "P_aux_i": values("P_aux_i_w", 1.0e-6),
                 "n_D": values("nD0_m3"), "n_T": values("nT0_m3"), "n_b": values("nb0_m3"),
                 "Pf_tot": values("pf_total_w", 1.0e-6), "Pf_th": values("pf_thermal_w", 1.0e-6), "Pf_b": values("pf_beam_w", 1.0e-6),
                 "E_fast": avg_energy, "tau_S": tau_s_values,

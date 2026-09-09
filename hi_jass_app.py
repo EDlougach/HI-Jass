@@ -194,14 +194,19 @@ class HIJassApp(ctk.CTk):
         ("n_e0 [m^-3]", "ne0"), ("n_b0 [m^-3]", "nb0"),
         ("P_NB injected [MW]", "P_NB"), ("P shine-through [MW]", "P_shine"),
         ("P captured [MW]", "P_capt"), ("P first-orbit loss [MW]", "P_orbit"),
+        ("  NBI-1  rho_Li / dr / f_orbit", "orb1"),
+        ("  NBI-2  rho_Li / dr / f_orbit", "orb2"),
         ("P charge-exchange loss [MW]", "P_cx"), ("P useful (to plasma) [MW]", "P_useful"),
         ("  -> electrons P_e [MW]", "P_e"), ("  -> ions P_i [MW]", "P_i"),
         ("P_ei equipartition (e->i) [MW]", "P_ei"),
         ("P_alpha self-heating [MW]", "P_alpha"),
-        ("P_heat total (useful + alpha) [MW]", "P_heat"),
+        ("P_ECRH -> e / i [MW]", "p_ecrh"),
+        ("P_ICRH -> e / i [MW]", "p_icrh"),
+        ("P_heat total (NBI + aux + alpha) [MW]", "P_heat"),
         ("P_fusion total [MW]", "Pf_tot"), ("  thermal [MW]", "Pf_th"),
         ("  beam-target [MW]", "Pf_b"), ("Q = P_fus / P_NB", "Q"),
         ("<E_fast> [keV]", "E_fast"), ("beta_t [%]", "beta_t"),
+        ("<n_e>/n_GW  (Greenwald, at ne_c)", "f_gw"),
         ("Dominant loss", "dominant"),
     ]
 
@@ -218,6 +223,7 @@ class HIJassApp(ctk.CTk):
         self._result_queue: queue.Queue[Result] = queue.Queue()
         self._running = False
         self._last_infeasible_key: str | None = None
+        self._applied_snapshot: dict[str, str] = {}
         self._saved = self._load_settings()
 
         self.grid_columnconfigure(1, weight=1)
@@ -230,6 +236,8 @@ class HIJassApp(ctk.CTk):
         if saved_mode in ("Operating point", "Scan"):
             self.mode_toggle.set(saved_mode)
         self._set_mode(self.mode_toggle.get())
+        self._snapshot_inputs()
+        self._highlight_active_preset()
 
         self.protocol("WM_DELETE_WINDOW", self._on_close)
         self.after(150, self._run)
@@ -252,17 +260,24 @@ class HIJassApp(ctk.CTk):
         self.mode_toggle.grid(row=0, column=0, sticky="ew")
         self.run_btn = ctk.CTkButton(run_bar, text="▶  Run", command=self._run)
         self.run_btn.grid(row=1, column=0, sticky="ew", pady=(6, 0))
+        self._run_btn_fg = self.run_btn.cget("fg_color")
+        self._run_btn_hover = self.run_btn.cget("hover_color")
         self.status = ctk.CTkLabel(run_bar, text="Ready", anchor="w", text_color="gray")
         self.status.grid(row=2, column=0, sticky="ew", pady=(4, 0))
 
         row = 1
         presets = CollapsibleSection(rail, "Presets", expanded=True)
         presets.grid(row=row, column=0, sticky="ew", pady=4)
+        self.preset_buttons: dict[str, ctk.CTkButton] = {}
         for i, name in enumerate(self.PLASMA_PRESETS):
-            ctk.CTkButton(
+            btn = ctk.CTkButton(
                 presets.body, text=name, width=70,
                 command=lambda n=name: self._apply_preset(n),
-            ).grid(row=i // 3, column=i % 3, padx=3, pady=3, sticky="ew")
+            )
+            btn.grid(row=i // 3, column=i % 3, padx=3, pady=3, sticky="ew")
+            self.preset_buttons[name] = btn
+        self._preset_fg_default = next(iter(self.preset_buttons.values())).cget("fg_color")
+        self._preset_hover_default = next(iter(self.preset_buttons.values())).cget("hover_color")
         row += 1
 
         plasma = CollapsibleSection(rail, "Plasma", expanded=True)
@@ -302,6 +317,17 @@ class HIJassApp(ctk.CTk):
             ).grid(row=r + 1, column=1, padx=8, pady=(6, 2), sticky="ew")
             row += 1
 
+        aux = CollapsibleSection(rail, "Aux heating (ECRH / ICRH)", expanded=False)
+        aux.grid(row=row, column=0, sticky="ew", pady=4)
+        self._add_entries(aux.body, "aux", [
+            ("P_ECRH [MW]", "p_ecrh_MW", self.model.plasma.p_ecrh_MW),
+            ("ECRH f_e (rest to ions)", "ecrh_f_e", self.model.plasma.ecrh_f_e),
+            ("P_ICRH [MW]", "p_icrh_MW", self.model.plasma.p_icrh_MW),
+            ("ICRH f_e", "icrh_f_e", self.model.plasma.icrh_f_e),
+            ("ICRH f_i", "icrh_f_i", self.model.plasma.icrh_f_i),
+        ])
+        row += 1
+
         models = CollapsibleSection(rail, "Models", expanded=False)
         models.grid(row=row, column=0, sticky="ew", pady=4)
         ctk.CTkLabel(models.body, text="Confinement", anchor="w").grid(
@@ -338,13 +364,16 @@ class HIJassApp(ctk.CTk):
     def _add_entries(self, parent, prefix, fields, start_row=0):
         for offset, (label, field, default) in enumerate(fields):
             row = start_row + offset
+            key = f"{prefix}.{field}"
             ctk.CTkLabel(parent, text=label, anchor="w").grid(
                 row=row, column=0, padx=8, pady=3, sticky="w")
-            entry = ctk.CTkEntry(parent, width=120)
-            key = f"{prefix}.{field}"
-            entry.insert(0, str(self._saved.get(key, default)))
+            var = ctk.StringVar(value=str(self._saved.get(key, default)))
+            entry = ctk.CTkEntry(parent, width=120, textvariable=var)
             entry.grid(row=row, column=1, padx=8, pady=3, sticky="ew")
             self.entries[key] = entry
+            if not hasattr(self, "_entry_border_default"):
+                self._entry_border_default = entry.cget("border_color")
+            var.trace_add("write", lambda *_a, k=key: self._mark_dirty(k))
 
     # --------------------------------------------------------------- results
     def _build_results(self):
@@ -494,6 +523,17 @@ class HIJassApp(ctk.CTk):
         except ValueError:
             errors.append("CX loss fraction")
 
+        for label, field, clamp01 in (
+            ("P_ECRH", "p_ecrh_MW", False), ("ECRH f_e", "ecrh_f_e", True),
+            ("P_ICRH", "p_icrh_MW", False), ("ICRH f_e", "icrh_f_e", True),
+            ("ICRH f_i", "icrh_f_i", True),
+        ):
+            try:
+                val = float(self.entries[f"aux.{field}"].get())
+                setattr(plasma, field, min(max(val, 0.0), 1.0) if clamp01 else max(val, 0.0))
+            except ValueError:
+                errors.append(label)
+
         total = plasma.deuterium_fraction + plasma.tritium_fraction
         if total > 0:
             plasma.deuterium_fraction /= total
@@ -513,16 +553,52 @@ class HIJassApp(ctk.CTk):
             beam.co_current = getattr(self, f"beam_dir_var_{beam_index}").get() == "co"
         return errors
 
+    # -------------------------------------------------------- edit indicators
+    def _snapshot_inputs(self):
+        self._applied_snapshot = {k: e.get() for k, e in self.entries.items()}
+        self._refresh_dirty()
+
+    def _mark_dirty(self, key: str):
+        entry = self.entries[key]
+        dirty = entry.get() != self._applied_snapshot.get(key)
+        entry.configure(border_color="#c0504d" if dirty else self._entry_border_default)
+        self._update_dirty_hint()
+
+    def _refresh_dirty(self):
+        for key in self.entries:
+            self._mark_dirty(key)
+
+    def _dirty_keys(self):
+        return [k for k, e in self.entries.items() if e.get() != self._applied_snapshot.get(k)]
+
+    def _update_dirty_hint(self):
+        if self._running:
+            return
+        n = len(self._dirty_keys())
+        if n:
+            self.status.configure(text=f"{n} edited input(s) — press Run", text_color="#d98b00")
+        elif self.status.cget("text").endswith("press Run"):
+            self.status.configure(text="Ready", text_color="gray")
+
+    def _highlight_active_preset(self):
+        for name, btn in self.preset_buttons.items():
+            active = name == self.active_device
+            btn.configure(fg_color="#2f7d32" if active else self._preset_fg_default,
+                          hover_color="#276b2a" if active else self._preset_hover_default)
+
     def _run(self):
         errors = self._apply_inputs()
         if errors:
             self.status.configure(text="Invalid: " + ", ".join(errors), text_color="#c0504d")
+            self._refresh_dirty()
             return
         if self._running:
             return
+        self._snapshot_inputs()
         self._running = True
         self.status.configure(text="Running…", text_color="gray")
-        self.run_btn.configure(state="disabled")
+        self.run_btn.configure(state="disabled", text="⏳  Running…",
+                               fg_color="#c0504d", hover_color="#c0504d")
         threading.Thread(target=self._worker, daemon=True).start()
         self.after(80, self._poll_result)
 
@@ -550,7 +626,8 @@ class HIJassApp(ctk.CTk):
         self._render(result)
 
     def _render(self, result: Result):
-        self.run_btn.configure(state="normal")
+        self.run_btn.configure(state="normal", text="▶  Run",
+                               fg_color=self._run_btn_fg, hover_color=self._run_btn_hover)
         if not result.ok:
             self.status.configure(text="Error — see Assumptions tab", text_color="#c0504d")
             self.assump_box.delete("1.0", "end")
@@ -615,6 +692,22 @@ class HIJassApp(ctk.CTk):
         dominant_name = max(losses, key=losses.get)
         dominant_mw = losses[dominant_name]
         pct = 100.0 * dominant_mw / P_NB if P_NB > 0 else 0.0
+
+        plasma = self.model.plasma
+        a = plasma.minor_radius
+        orb = {}
+        for i, beam in enumerate(self.model.beams):
+            sp = beam.species.upper()
+            rho_li = physics.larmor_radius_m(beam.beam_energy_keV, plasma.toroidal_field, sp)
+            dr = physics.passing_orbit_width(
+                beam.beam_energy_keV, plasma.toroidal_field, plasma.plasma_current / 1e6,
+                plasma.major_radius, a, plasma.elongation, sp)
+            f_orb = op.f_orbit_loss[i] if op.f_orbit_loss else 0.0
+            orb[f"orb{i + 1}"] = (
+                f"rho_Li={rho_li * 100:.1f} cm ({rho_li / a:.2f} a),  "
+                f"dr={dr * 100:.1f} cm ({dr / a:.2f} a),  f_orbit={f_orb:.3f}")
+        n_line, n_gw, f_gw = self._greenwald()
+
         values = {
             "Te": self._fmt(op.Te_keV), "Ti": self._fmt(op.Ti_keV),
             "ne0": self._fmt(op.ne0_m3, "{:.3e}"), "nb0": self._fmt(op.nb0_m3, "{:.3e}"),
@@ -624,16 +717,26 @@ class HIJassApp(ctk.CTk):
             "P_e": self._fmt(op.P_e_w * mw), "P_i": self._fmt(op.P_i_w * mw),
             "P_ei": self._fmt(op.P_ei_w * mw) if self.model.plasma.enable_equipartition else "off",
             "P_alpha": self._fmt(op.P_alpha_w * mw) if self.model.plasma.alpha_heating else "off",
-            "P_heat": self._fmt((op.P_useful_w + op.P_alpha_w) * mw),
+            "p_ecrh": (f"{plasma.p_ecrh_MW * plasma.ecrh_f_e:.2f} / "
+                       f"{plasma.p_ecrh_MW * (1.0 - plasma.ecrh_f_e):.2f}   (of {plasma.p_ecrh_MW:.2f})"
+                       if plasma.p_ecrh_MW > 0 else "off"),
+            "p_icrh": (f"{plasma.p_icrh_MW * plasma.icrh_f_e:.2f} / "
+                       f"{plasma.p_icrh_MW * plasma.icrh_f_i:.2f}   (of {plasma.p_icrh_MW:.2f})"
+                       if plasma.p_icrh_MW > 0 else "off"),
+            "P_heat": self._fmt((op.P_useful_w + op.P_alpha_w + op.P_aux_e_w + op.P_aux_i_w) * mw),
             "Pf_tot": self._fmt(op.pf_total_w * mw), "Pf_th": self._fmt(op.pf_thermal_w * mw),
             "Pf_b": self._fmt(op.pf_beam_w * mw),
             "Q": self._fmt(op.pf_total_w / op.P_NB_total_w if op.P_NB_total_w else None, "{:.3g}"),
             "E_fast": self._fmt(op.avg_fast_energy_keV),
             "beta_t": self._fmt(op.beta_t * 100.0),
+            "orb1": orb["orb1"], "orb2": orb["orb2"],
+            "f_gw": f"{f_gw:.3f}   (<n_e>={n_line:.2e}, n_GW={n_gw:.2e} m^-3)",
             "dominant": f"{dominant_name}: {dominant_mw:.2f} MW ({pct:.0f}% of P_NB)",
         }
         for key, text in values.items():
             self.dash_values[key].configure(text=text, text_color=("gray10", "gray90"))
+        if f_gw > 1.0:
+            self.dash_values["f_gw"].configure(text_color="#c0504d")
         badge = self.dash_values["feasibility"]
         if op.feasible:
             badge.configure(text="FEASIBLE", text_color="#2f7d32")
@@ -757,9 +860,14 @@ class HIJassApp(ctk.CTk):
             grid = np.linspace(1e-3, eb, 400)
             fE = physics.slowing_down_distribution(te, nb0_i, eb, grid, species)
             mean_e = physics.average_fast_energy_keV(te, eb, species)
-            ax.plot(grid, fE, label=f"NBI-{i + 1} {species} {eb:.0f} keV   "
-                    fr"$\langle E\rangle$={mean_e:.0f} keV,  $\tau_s$={tau_s:.3g} s")
+            line, = ax.plot(grid, fE, label=f"NBI-{i + 1} {species} {eb:.0f} keV   "
+                            fr"$\langle E\rangle$={mean_e:.0f} keV,  $\tau_s$={tau_s:.3g} s")
+            ax.axvline(eb, color=line.get_color(), linestyle=(0, (4, 3)), linewidth=1.0, alpha=0.8)
+            ax.annotate(f"$E_b$ = {eb:.0f}", xy=(eb, 0), xytext=(0, 2),
+                        textcoords="offset points", ha="right", va="bottom",
+                        fontsize=7, color=line.get_color(), rotation=90)
             any_curve = True
+        ax.set_ylim(bottom=0.0)
         ax.set_xlabel("E [keV]")
         ax.set_ylabel(r"$f(E)$ [$\mathrm{m}^{-3}\,\mathrm{keV}^{-1}$]")
         ax.set_title("Per-beam steady-state slowing-down distribution")
@@ -908,6 +1016,8 @@ class HIJassApp(ctk.CTk):
                                               ax.plot(density_axis, scan["Pf_th"], label=r"$P_{f,th}$"),
                                               ax.plot(density_axis, scan["Pf_b"], label=r"$P_{f,b}$"))),
             ("Times [s]", lambda ax: (ax.plot(density_axis, scan["tau_S"], label=r"$\tau_S$"),
+                                      ax.plot(density_axis, scan["tauE_e"], label=r"$\tau_{E,e}$"),
+                                      ax.plot(density_axis, scan["tauE_i"], label=r"$\tau_{E,i}$"),
                                       ax.plot(density_axis, scan["tau_IE"], label=r"$\tau_{IE}$"))),
             ("<E_fast> [keV]", lambda ax: ax.plot(density_axis, scan["E_fast"])),
             ("R = U_fast / U_th", lambda ax: ax.plot(density_axis, scan["R"])),
@@ -928,15 +1038,33 @@ class HIJassApp(ctk.CTk):
                          "Fusion power [MW]", "Times [s]", "Pressure [Pa]"):
                 ax.legend(fontsize=6, ncol=2)
         fig.text(0.02, 0.005, self._summary_parameters(), fontsize=7, va="bottom", family="monospace")
-        fig.subplots_adjust(left=0.06, right=0.98, top=0.95, bottom=0.19, wspace=0.3, hspace=0.42)
+        fig.subplots_adjust(left=0.06, right=0.98, top=0.95, bottom=0.22, wspace=0.3, hspace=0.42)
         self.sum_canvas.draw_idle()
 
     # --------------------------------------------------------------- helpers
+    def _greenwald(self, n_e0: float | None = None):
+        """(<n_e>_line, n_GW, <n_e>/n_GW) in m^-3, for on-axis density n_e0
+        (default: central_density).  <n_e> = n_e0 * L, L = line-average of the
+        (1-rho^2)^(2 p_n) profile shape.  n_GW = Ip[MA]/(pi a^2) x 1e20.
+        """
+        p = self.model.plasma
+        n_e0 = p.central_density if n_e0 is None else float(n_e0)
+        n_gw = (p.plasma_current / 1e6) / (np.pi * max(p.minor_radius, 1e-6) ** 2) * 1e20
+        rho = np.linspace(0.0, 1.0, 201)
+        shape = float(np.mean(np.maximum(1.0 - rho ** 2, 0.0) ** (2.0 * max(p.density_peaking, 0.0))))
+        n_line = n_e0 * shape
+        return n_line, n_gw, (n_line / n_gw if n_gw > 0 else float("inf"))
+
     def _assess(self, model: HotJassModel, op) -> str:
         plasma = model.plasma
         aspect = plasma.major_radius / max(plasma.minor_radius, 1e-6)
         lines = ["ASSUMPTIONS & VALIDITY", "=" * 40, ""]
         lines.append(f"Device: {self.active_device}    aspect ratio A = R0/a = {aspect:.2f}")
+        n_line, n_gw, f_gw = self._greenwald()
+        lines.append(f"Greenwald (at ne_c={plasma.central_density:.3g} on-axis):"
+                     f"  <n_e>_line = n_e0*L = {n_line:.3e}  (L = line-avg of (1-rho^2)^2p_n),"
+                     f"  n_GW = Ip/(pi a^2) = {n_gw:.3e} m^-3,  <n_e>/n_GW = {f_gw:.3f}"
+                     + ("   ! above the Greenwald limit" if f_gw > 1.0 else ""))
         lines.append(f"Confinement model: {self.confinement_var.get()}")
         lines.append(f"  tau_Ee_mode = {plasma.tau_Ee_mode}, tau_Ei_mode = {plasma.tau_Ei_mode}")
         if plasma.tau_Ee_mode == "fixed":
@@ -946,6 +1074,22 @@ class HIJassApp(ctk.CTk):
         dirs = ", ".join(f"NBI-{i + 1} {'co' if b.co_current else 'counter'}-current"
                          for i, b in enumerate(model.beams))
         lines.append(f"First-orbit loss: {'ON' if plasma.enable_orbit_loss else 'off'}  ({dirs})")
+        a = plasma.minor_radius
+        wide = False
+        for i, b in enumerate(model.beams):
+            sp = b.species.upper()
+            rho_li = physics.larmor_radius_m(b.beam_energy_keV, plasma.toroidal_field, sp)
+            dr = physics.passing_orbit_width(
+                b.beam_energy_keV, plasma.toroidal_field, plasma.plasma_current / 1e6,
+                plasma.major_radius, a, plasma.elongation, sp)
+            f_orb = op.f_orbit_loss[i] if op.f_orbit_loss else 0.0
+            lines.append(f"  NBI-{i + 1}: rho_Li = {rho_li * 100:.1f} cm ({rho_li / a:.2f} a), "
+                         f"passing orbit dr = {dr * 100:.1f} cm ({dr / a:.2f} a), f_orbit = {f_orb:.3f}")
+            wide = wide or rho_li / a > 0.3 or dr / a > 0.3
+        if wide:
+            lines.append("  ! rho_Li/a or dr/a > 0.3: orbit width ~ machine size; the mean-shift")
+            lines.append("    first-orbit-loss estimate is order-unity uncertain here (needs an")
+            lines.append("    orbit follower). Co-current f_orbit=0 is a model artefact, not physics.")
         lines.append(f"CX loss fraction: {plasma.cx_loss_fraction:.3g} (flat efficiency knob)")
         lines.append(f"e-i equipartition: {'ON (coupled Te/Ti solve)' if plasma.enable_equipartition else 'off (decoupled Te, Ti)'}")
         if plasma.alpha_heating:
@@ -953,6 +1097,19 @@ class HIJassApp(ctk.CTk):
                          f"P_a = f_alpha*(3.5/17.6)*P_fus, fixed-point, e/i split by slowing-down)")
         else:
             lines.append("Alpha self-heating: off")
+        aux_e = plasma.p_ecrh_MW * plasma.ecrh_f_e + plasma.p_icrh_MW * plasma.icrh_f_e
+        aux_i = plasma.p_ecrh_MW * (1.0 - plasma.ecrh_f_e) + plasma.p_icrh_MW * plasma.icrh_f_i
+        if plasma.p_ecrh_MW > 0 or plasma.p_icrh_MW > 0:
+            lines.append(f"Aux heating (prescribed source added to the Te/Ti balance):")
+            lines.append(f"  ECRH {plasma.p_ecrh_MW:.3g} MW  (f_e={plasma.ecrh_f_e:.3g}),  "
+                         f"ICRH {plasma.p_icrh_MW:.3g} MW  (f_e={plasma.icrh_f_e:.3g}, f_i={plasma.icrh_f_i:.3g})")
+            lines.append(f"  -> electrons {aux_e:.3g} MW,  ions {aux_i:.3g} MW")
+            if plasma.p_icrh_MW > 0 and abs(plasma.icrh_f_e + plasma.icrh_f_i - 1.0) > 1e-6:
+                nt = plasma.p_icrh_MW * (1.0 - plasma.icrh_f_e - plasma.icrh_f_i)
+                lines.append(f"  ! ICRH f_e+f_i = {plasma.icrh_f_e + plasma.icrh_f_i:.3g} "
+                             f"({nt:+.3g} MW not thermalised)")
+        else:
+            lines.append("Aux heating (ECRH/ICRH): off")
         lines.append("")
         lines.append("Per-beam shine-through model:")
         for i, beam in enumerate(model.beams):
@@ -986,22 +1143,45 @@ class HIJassApp(ctk.CTk):
                 lines.append(f"  ! Ti = {op.Ti_keV:.0f} keV is implausibly high.")
         return "\n".join(lines)
 
+    def _tau_used_str(self, scan_key: str, mode: str, manual_val: float) -> str:
+        """String for an actually-used confinement time: the fixed input value,
+        or the min..max range over the current scan for a physics-based mode
+        (the manual input is ignored in that case).
+        """
+        if mode == "fixed":
+            return f"{manual_val:.3g} s (fixed input)"
+        sc = getattr(self, "scan", None)
+        if sc is not None and scan_key in sc:
+            v = sc[scan_key][np.isfinite(sc[scan_key])]
+            if v.size:
+                return f"[{v.min():.3g} .. {v.max():.3g}] s ({mode}, manual input ignored)"
+        return f"— ({mode})"
+
     def _summary_parameters(self) -> str:
         p = self.model.plasma
         equip_state = "ON" if p.enable_equipartition else "off"
         alpha_state = f"ON (f_alpha={p.f_alpha:.3g})" if p.alpha_heating else "off"
         orbit_state = "ON" if p.enable_orbit_loss else "off"
+        _, n_gw, f_gw_c = self._greenwald()
+        f_gw_lo = self._greenwald(p.n_e_min)[2]
+        f_gw_hi = self._greenwald(p.n_e_max)[2]
+        tau_e_str = self._tau_used_str("tauE_e", p.tau_Ee_mode, p.tauE_e)
+        tau_i_str = self._tau_used_str("tauE_i", p.tau_Ei_mode, p.tauE_i)
         lines = [
             f"Device: {self.active_device}    R0={p.major_radius:.3g} m    a={p.minor_radius:.3g} m    "
             f"k={p.elongation:.3g}    delta={p.triangularity:.3g}\n"
             f"B0={p.toroidal_field:.3g} T    Ip={p.plasma_current / 1e6:.3g} MA    "
-            f"Zeff={p.effective_charge:.3g}    ne_c={p.central_density:.3g}    "
+            f"Zeff={p.effective_charge:.3g}    ne_c(on-axis)={p.central_density:.3g}    "
             f"ne_scan=[{p.n_e_min:.3g}, {p.n_e_max:.3g}] m^-3\n"
+            f"n_GW={n_gw:.3g} m^-3    <n_e>/n_GW: {f_gw_c:.2f} at ne_c, "
+            f"[{f_gw_lo:.2f} .. {f_gw_hi:.2f}] across the scan\n"
             f"D/T={p.deuterium_fraction:.3g}/{p.tritium_fraction:.3g}    "
-            f"tauE,e={p.tauE_e:.3g} s    tauE,i={p.tauE_i:.3g} s    "
-            f"conf={p.tau_Ee_mode}/{p.tau_Ei_mode}\n"
+            f"conf={self.confinement_var.get()}\n"
+            f"tauE,e used = {tau_e_str}    tauE,i used = {tau_i_str}\n"
             f"e-i equipartition={equip_state}    alpha self-heating={alpha_state}    "
-            f"first-orbit loss={orbit_state}    CX loss frac={p.cx_loss_fraction:.3g}",
+            f"first-orbit loss={orbit_state}    CX loss frac={p.cx_loss_fraction:.3g}\n"
+            f"ECRH={p.p_ecrh_MW:.3g} MW (f_e={p.ecrh_f_e:.3g})    "
+            f"ICRH={p.p_icrh_MW:.3g} MW (f_e={p.icrh_f_e:.3g}, f_i={p.icrh_f_i:.3g})",
         ]
         for index, beam in enumerate(self.model.beams, start=1):
             lines.append(f"NBI-{index}: {beam.species.upper()}    P={beam.power_MW:.3g} MW    "
@@ -1017,6 +1197,7 @@ class HIJassApp(ctk.CTk):
                 self.entries[key].delete(0, "end")
                 self.entries[key].insert(0, str(value))
         self.active_device = name
+        self._highlight_active_preset()
         self._run()
 
     # --------------------------------------------------------------- export
