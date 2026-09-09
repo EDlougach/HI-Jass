@@ -76,7 +76,7 @@ intersected with the shaped plasma cross-section, and the optical depth is
 evaluated as:
 
 $$
-	au_b = \sigma_{\mathrm{stop}}(E_b/A_b)
+\tau_b = \sigma_{\mathrm{stop}}(E_b/A_b)
 \int_{\mathrm{chord}} n_e(\rho(s))\,ds
 $$
 
@@ -104,7 +104,7 @@ Each NBI has a three-way shine-through selector:
 	coefficients and the carbon-impurity coefficients from Table IV. It models
 	total effective stopping, including the paper's density, electron-temperature
 	and $Z_{\mathrm{eff}}$ dependence. The fit is published for
-	$100\leq E\leq10^4$ keV/u, $10^{12}\leq n_e\leq10^{15}$ cm$^{-3}$ and
+	$100\leq E\leq10^4$ keV/u, $10^{12}\leq n_e\leq10^{15}\ \mathrm{cm^{-3}}$ and
 	$1\leq T_e\leq50$ keV; inputs outside these ranges are clipped to the
 	nearest validity boundary.
 - **Manual**: the entered manual shine-through fraction is used directly;
@@ -350,10 +350,47 @@ chosen independently. When a physics-based scaling is selected the manual
 `tauE,e` / `tauE,i` inputs are ignored, and the Summary sheet reports the
 computed value (or its range across a scan) instead.
 
+The physics-based scalings below all use the same loss power
+
+$$
+P_{\mathrm{loss}} = \sum_j P_{\mathrm{useful},j}
+                  + P_{\mathrm{aux},e} + P_{\mathrm{aux},i},
+$$
+
+i.e. the captured, post-orbit, post-charge-exchange beam power plus the
+prescribed auxiliary (ECRH, ICRH) heating. Fusion alpha heating is not included
+in $P_{\mathrm{loss}}$ (it is closed by an outer fixed-point and is not known
+when $\tau_E$ is evaluated). None of these depend on $T_e$ or $T_i$, so each is
+evaluated once.
+
 ### Fixed (input)
 
 $\tau_{E,e}$ and $\tau_{E,i}$ are the values entered on the Plasma tab,
 used unchanged.
+
+### IPB98(y,2) ELMy H-mode
+
+The ITER Physics Basis ELMy H-mode scaling (ITER Physics Basis, *Nucl. Fusion*
+**39** (1999) 2175; standard reference form):
+
+$$
+\tau_E = 0.0562\;
+I_p^{0.93}\,B_t^{0.15}\,n_{19}^{0.41}\,P_{\mathrm{loss}}^{-0.69}\,
+R_0^{1.97}\,\kappa_a^{0.78}\,\varepsilon^{0.58}\,M_{\mathrm{eff}}^{0.19}
+$$
+
+with $I_p$ in MA, $B_t$ in T, $P_{\mathrm{loss}}$ in MW, $R_0$ and $a$ in m,
+$n_{19}=n_{e0}/10^{19}\,\mathrm{m^{-3}}$, $\varepsilon=a/R_0$,
+$\kappa_a=\kappa$, and $M_{\mathrm{eff}}=2x_D+3x_T$ the mass-weighted ion mass
+number. Selecting *IPB98(y,2) ELMy H-mode* uses it for both channels
+($\tau_{E,e}=\tau_{E,i}$); *IPB98(y,2) e / neoclassical i* uses it for the
+electron channel only, with the ion channel from the neoclassical estimate
+below.
+
+The fit was obtained from conventional-aspect-ratio devices ($A\sim2.5$-$4$)
+and is documented in the spherical-tokamak literature to mis-predict at low
+aspect ratio. When $A=R_0/a<2$ the Assumptions tab flags that IPB98(y,2) is
+being extrapolated outside its dataset.
 
 ### Kaye NSTX L-mode
 
@@ -365,12 +402,33 @@ $$
 I_p^{1.01}\,B_t^{0.70}\,n_e^{-0.07}\,P_{\mathrm{loss}}^{-0.37}
 $$
 
-with $I_p$ in **A**, $B_t$ in **T**, $n_e$ in **m$^{-3}$**, $P_{\mathrm{loss}}$
-in **W** and $\tau_E$ in **s**. The loss power is the useful beam power
-$P_{\mathrm{loss}}=\sum_j P_{\mathrm{useful},j}$ (auxiliary and alpha heating
-are not yet included in $P_{\mathrm{loss}}$). It does not depend on $T_e$ or
-$T_i$, so it is evaluated once. Selecting *Kaye NSTX L-mode* uses it for both
-channels ($\tau_{E,e}=\tau_{E,i}$).
+with $I_p$ in A, $B_t$ in T, $n_e$ in $\mathrm{m^{-3}}$, $P_{\mathrm{loss}}$ in W
+and $\tau_E$ in s. Selecting *Kaye NSTX L-mode* uses it for both channels
+($\tau_{E,e}=\tau_{E,i}$); *Kaye L e / neoclassical i* uses it for the electron
+channel only.
+
+### Kaye NSTX H-mode
+
+The H-mode counterpart of the previous fit: an NSTX low-aspect-ratio
+(spherical tokamak) H-mode thermal-energy scaling
+(Kaye, *Nucl. Fusion* **46** (2006) 848, Table 1, ordinary-least-squares
+"Case 1" fit to all 85 H-mode points, RMSE $=0.145$):
+
+$$
+\tau_E = 4.69\times10^{-9}\;
+I_p^{0.57}\,B_t^{1.08}\,n_e^{0.44}\,P_{\mathrm{loss}}^{-0.73}
+$$
+
+with $I_p$ in A, $B_t$ in T, $n_e$ in $\mathrm{m^{-3}}$, $P_{\mathrm{loss}}$ in W
+and $\tau_E$ in s. Relative to IPB98(y,2) the current dependence is much
+weaker ($I_p^{0.57}$ vs $I_p^{0.93}$) and the toroidal-field dependence much
+stronger ($B_t^{1.08}$ vs $B_t^{0.15}$), the qualitative spherical-tokamak
+trend; the density and heating-power exponents ($n_e^{0.44}$,
+$P_{\mathrm{loss}}^{-0.73}$) are of the same order as the conventional-aspect
+scalings. This is an ST-appropriate fit ($A\sim1.3$–$1.5$ dataset).
+Selecting *Kaye NSTX H-mode* uses it for both channels
+($\tau_{E,e}=\tau_{E,i}$); *Kaye H e / neoclassical i* uses it for the electron
+channel only.
 
 ### Neoclassical ion
 

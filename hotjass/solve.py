@@ -465,9 +465,9 @@ def solve_operating_point(
     exactly -- this parameter is purely additive.
     """
     tau_Ei_s = tau_E_s if tau_Ei_s is None else tau_Ei_s
-    if config.tau_Ee_mode not in ("fixed", "kaye_nstx_lmode"):
+    if config.tau_Ee_mode not in ("fixed", "kaye_nstx_lmode", "kaye_nstx_hmode", "iter98y2"):
         raise ValueError(f"Unknown tau_Ee_mode {config.tau_Ee_mode!r}")
-    if config.tau_Ei_mode not in ("fixed", "neoclassical", "kaye_nstx_lmode"):
+    if config.tau_Ei_mode not in ("fixed", "neoclassical", "kaye_nstx_lmode", "kaye_nstx_hmode", "iter98y2"):
         raise ValueError(f"Unknown tau_Ei_mode {config.tau_Ei_mode!r}")
     if config.tau_Ei_mode == "neoclassical" and config.enable_equipartition:
         raise ValueError(
@@ -547,21 +547,42 @@ def solve_operating_point(
     P_shine_w = P_NB_total_w - P_capt_w
     P_cx_loss_w = P_capt_w - P_orbit_loss_w - P_useful_w
 
-    # Kaye NSTX L-mode tau_E: depends only on P_useful_w/Ip/Bt/ne0 (Step 0,
-    # above), never on Te or Ti, so it can be computed once, up front, and
-    # reused for whichever channel(s) request it -- no fixed-point issue on
-    # EITHER side, unlike neoclassical tau_Ei. Computed once even when both
-    # tau_Ee_mode and tau_Ei_mode request it (tau_Ei_mode="kaye_nstx_lmode"
-    # -- the common-tau_E model with a physics-based tau_E instead of a
-    # fixed input, i.e. tau_Ee=tau_Ei=this same value).
+    # Physics-based tau_E scalings (Kaye NSTX L-mode, IPB98(y,2)): both depend
+    # only on Ip/Bt/ne0/geometry and the loss power P_loss (known after Step 0),
+    # never on Te or Ti, so each is computed once, up front, and reused for
+    # whichever channel(s) request it -- no fixed-point issue on either side
+    # (unlike neoclassical tau_Ei). P_loss here is the captured, post-orbit,
+    # post-CX beam power plus prescribed auxiliary heating (ECRH/ICRH); fusion
+    # alpha heating is not included (it is closed by an outer fixed-point and is
+    # not yet known at this point).
+    p_loss_scaling_w = P_useful_w + aux_e_source_w + aux_i_source_w
     if config.tau_Ee_mode == "kaye_nstx_lmode" or config.tau_Ei_mode == "kaye_nstx_lmode":
         kaye_lmode_tau_s = physics.kaye_nstx_lmode_confinement_time(
-            Ip_A=config.Ip_MA * 1e6, Bt_T=config.Bt0, ne0_m3=ne0_m3, P_loss_W=P_useful_w,
+            Ip_A=config.Ip_MA * 1e6, Bt_T=config.Bt0, ne0_m3=ne0_m3, P_loss_W=p_loss_scaling_w,
         )
         if config.tau_Ee_mode == "kaye_nstx_lmode":
             tau_E_s = kaye_lmode_tau_s
         if config.tau_Ei_mode == "kaye_nstx_lmode":
             tau_Ei_s = kaye_lmode_tau_s
+    if config.tau_Ee_mode == "kaye_nstx_hmode" or config.tau_Ei_mode == "kaye_nstx_hmode":
+        kaye_hmode_tau_s = physics.kaye_nstx_confinement_time(
+            Ip_A=config.Ip_MA * 1e6, Bt_T=config.Bt0, ne0_m3=ne0_m3, P_heat_W=p_loss_scaling_w,
+        )
+        if config.tau_Ee_mode == "kaye_nstx_hmode":
+            tau_E_s = kaye_hmode_tau_s
+        if config.tau_Ei_mode == "kaye_nstx_hmode":
+            tau_Ei_s = kaye_hmode_tau_s
+    if config.tau_Ee_mode == "iter98y2" or config.tau_Ei_mode == "iter98y2":
+        iter98y2_tau_s = physics.iter98y2_confinement_time(
+            Ip_MA=config.Ip_MA, Bt_T=config.Bt0, ne0_m3=ne0_m3, P_heat_W=p_loss_scaling_w,
+            R0_m=config.geometry.major_radius, minor_radius_m=config.geometry.minor_radius,
+            elongation=config.geometry.elongation,
+            M_eff_amu=config.mix_D * 2.0 + config.mix_T * 3.0,
+        )
+        if config.tau_Ee_mode == "iter98y2":
+            tau_E_s = iter98y2_tau_s
+        if config.tau_Ei_mode == "iter98y2":
+            tau_Ei_s = iter98y2_tau_s
 
     # Te-independent additive sources folded into the electron/ion balances:
     # extra_*_source_w is the fusion alpha term (closed by the caller's

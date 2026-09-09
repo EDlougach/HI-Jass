@@ -1,0 +1,23 @@
+% Thin wrapper that typesets User_Manual.md (Markdown + LaTeX math) to PDF.
+% Build:  lualatex User_Manual.tex   (run twice for the table of contents / refs)
+\documentclass[11pt,a4paper]{article}
+\usepackage{amsmath,amssymb}
+\usepackage[margin=24mm]{geometry}
+\usepackage{booktabs}
+\usepackage{longtable}
+\usepackage[hidelinks]{hyperref}
+\usepackage{markdown}
+\markdownSetup{
+  texMathDollars = true,
+  texMathSingleBackslash = true,
+  pipeTables = true,
+  fencedCode = true,
+  underscores = false,
+  smartEllipses = false,
+  tightLists = true,
+}
+\setlength{\parindent}{0pt}
+\setlength{\parskip}{0.5em}
+\begin{document}
+\markdownInput{User_Manual.md}
+\end{document}

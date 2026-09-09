@@ -11,3 +11,9 @@ venv/
 # Local working docs and generated plots (not tracked)
 docs/
 Plots/
+
+# LaTeX build artifacts
+_markdown_*/
+*.aux
+*.toc
+*.out

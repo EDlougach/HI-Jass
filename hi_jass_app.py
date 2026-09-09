@@ -35,8 +35,12 @@ SETTINGS_PATH = Path.home() / ".hi_jass" / "settings.json"
 
 CONFINEMENT_MODES = {
     "Fixed tauE (input)": ("fixed", "fixed"),
+    "IPB98(y,2) ELMy H-mode": ("iter98y2", "iter98y2"),
     "Kaye NSTX L-mode": ("kaye_nstx_lmode", "kaye_nstx_lmode"),
-    "Kaye e / neoclassical i": ("kaye_nstx_lmode", "neoclassical"),
+    "Kaye NSTX H-mode": ("kaye_nstx_hmode", "kaye_nstx_hmode"),
+    "IPB98(y,2) e / neoclassical i": ("iter98y2", "neoclassical"),
+    "Kaye L e / neoclassical i": ("kaye_nstx_lmode", "neoclassical"),
+    "Kaye H e / neoclassical i": ("kaye_nstx_hmode", "neoclassical"),
     "Fixed e / neoclassical i": ("fixed", "neoclassical"),
 }
 SHINE_LABEL_TO_MODEL = {"Riviere": "riviere", "Janev": "janev_suzuki", "Manual": "manual"}
@@ -1121,8 +1125,18 @@ class HIJassApp(ctk.CTk):
         lines.append("Fit ranges / notes:")
         lines.append("  Bosch-Hale DT reactivity valid Ti = 0.2-100 keV.")
         lines.append("  Riviere / Janev-Suzuki stopping: order-of-magnitude fits (see physics.py).")
-        if plasma.tau_Ee_mode.startswith("kaye"):
+        if "kaye_nstx_lmode" in (plasma.tau_Ee_mode, plasma.tau_Ei_mode):
             lines.append("  Kaye NSTX L-mode: an ST-appropriate fit (A ~ 1.3-1.5 dataset).")
+        if "kaye_nstx_hmode" in (plasma.tau_Ee_mode, plasma.tau_Ei_mode):
+            lines.append("  Kaye NSTX H-mode (Kaye 2006, NF 46 848, 'Case 1'): ST fit,")
+            lines.append("  tauE ~ Ip^0.57 Bt^1.08 ne^0.44 P^-0.73 (A ~ 1.3-1.5 dataset).")
+            lines.append("  P_loss for the scaling = useful beam power + ECRH + ICRH (no alpha).")
+        if "iter98y2" in (plasma.tau_Ee_mode, plasma.tau_Ei_mode):
+            lines.append("  IPB98(y,2): ELMy H-mode fit to conventional-A devices (A ~ 2.5-4);")
+            if aspect < 2.0:
+                lines.append(f"  ! A = {aspect:.2f} < 2 -- IPB98(y,2) is being extrapolated well")
+                lines.append("    outside its dataset here; a fixed tauE or an ST fit is safer.")
+            lines.append("  P_loss for the scaling = useful beam power + ECRH + ICRH (no alpha).")
         if plasma.tau_Ei_mode == "neoclassical":
             lines.append("  Neoclassical ion transport has no anomalous channel -> Ti can be")
             lines.append("  large / implausible; treat as a lower bound on ion transport.")
