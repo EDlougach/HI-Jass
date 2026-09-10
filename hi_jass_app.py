@@ -1108,8 +1108,8 @@ class HIJassApp(ctk.CTk):
         h2, l2 = ax2.get_legend_handles_labels()
         ax.legend(h1 + h2, l1 + l2, fontsize=7, loc="upper right")
         if shine_lines:
-            ax.text(0.03, 0.03, "\n".join(shine_lines), transform=ax.transAxes,
-                    fontsize=7.5, va="bottom", ha="left",
+            ax.text(0.97, 0.5, "\n".join(shine_lines), transform=ax.transAxes,
+                    fontsize=7.5, va="center", ha="right",
                     bbox=dict(boxstyle="round", fc="white", ec="0.7", alpha=0.9))
 
         # (3) fast-ion birth vs normalised radius -----------------------
