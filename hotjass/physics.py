@@ -532,10 +532,46 @@ def tangential_path_length(minor_radius_m: float) -> float:
     Sect. 4.1: "the path length for tangential injection is approximately
     2a_p". Circular-cross-section approximation (no elongation correction),
     consistent with this project's other geometric simplifications. Only
-    valid for R_t = R_0; a general R_t != R_0 chord would need a different
-    (asymmetric) formula -- not implemented here.
+    valid for R_t = R_0; a general (R_t, Z_t) chord is handled by
+    tangential_chord() below.
     """
     return 2.0 * minor_radius_m
+
+
+def tangential_chord(
+    R0_m: float, minor_radius_m: float, elongation: float,
+    tangent_R_m: float | None = None, tangent_Z_m: float = 0.0, n_samples: int = 501,
+):
+    """Sample a horizontal neutral-beam chord tangent to the cylinder R = R_t
+    at height Z_t, through elliptical flux surfaces
+
+        rho^2 = ((R - R0)/a)^2 + (Z_t / (kappa a))^2 .
+
+    Returns ``(s, rho, R)`` -- distance along the chord from its plasma-entry
+    point [m], the normalised flux label at each sample, and the local major
+    radius [m] -- or ``None`` if the aim point is outside the plasma. With
+    tangent_R_m = None (=> R_t = R0) and tangent_Z_m = 0 this is the on-axis
+    tangential chord (rho runs 1 -> 0 -> 1); a general (R_t, Z_t) gives
+    OFF-AXIS / vertically-shifted injection, where rho no longer reaches 0.
+    Same circular / elliptical approximation as captured_power_fraction().
+    """
+    R0 = float(R0_m); a = float(minor_radius_m)
+    R_t = R0 if tangent_R_m is None else float(tangent_R_m)
+    zc = float(tangent_Z_m) / max(elongation * a, 1e-12)
+    if abs(zc) >= 1.0:
+        return None
+    edge = a * math.sqrt(max(1.0 - zc**2, 0.0))
+    outer_R = R0 + edge
+    R_t = max(R_t, 1e-3)
+    if R_t >= outer_R - 0.02 * a:      # aim point at / outside the LCFS -> beam misses
+        return None
+    half = math.sqrt(max(outer_R**2 - R_t**2, 0.0))
+    if half <= 0.05 * a:
+        return None
+    y = np.linspace(-half, half, int(max(n_samples, 11)))
+    R = np.sqrt(R_t**2 + y**2)
+    rho = np.sqrt(np.clip(((R - R0) / a) ** 2 + zc**2, 0.0, 1.0))
+    return y - y[0], rho, R
 
 
 def captured_power_fraction(
@@ -983,6 +1019,7 @@ def first_orbit_loss_fraction(
     minor_radius_m: float, orbit_width_m: float, co_current: bool = True,
     include_larmor_loss: bool = False, larmor_radius_m_value: float = 0.0,
     stopping_model: str = "riviere", Zeff: float = 2.0, Te_keV: float = 10.0,
+    chord: tuple | None = None,
 ) -> float:
     """Fraction of CAPTURED (post shine-through) beam ions promptly lost to
     first-orbit loss -- born close enough to the LCFS that their passing-
@@ -1034,9 +1071,14 @@ def first_orbit_loss_fraction(
     """
     A = beam_mass_number(species)
     sigma_m2 = stopping_cross_section_m2(Eb_keV / A, stopping_model, ne0 * 1e-6, Te_keV, Zeff)
-    x = np.linspace(0.0, path_length_m, 501)
+    if chord is None:
+        # on-axis tangential: crude linear rho(x)=|x-a|/a over x in [0, 2a]
+        x = np.linspace(0.0, path_length_m, 501)
+        rho = np.abs(x - minor_radius_m) / minor_radius_m
+    else:
+        # real (R_t, Z_t) chord from physics.tangential_chord()
+        x, rho = np.asarray(chord[0]), np.asarray(chord[1])
     density = np.exp(-ne0 * sigma_m2 * x)
-    rho = np.abs(x - minor_radius_m) / minor_radius_m
     shift = -orbit_width_m / minor_radius_m if co_current else orbit_width_m / minor_radius_m
     rho_eff = rho + shift
     lost_mask = rho_eff > 1.0
@@ -1055,6 +1097,7 @@ def first_orbit_loss_fraction_st(
     minor_radius_m: float, R0_m: float, widths: dict, co_current: bool = True,
     variant: str = "meanshift", stopping_model: str = "riviere",
     Zeff: float = 2.0, Te_keV: float = 10.0, tangent_R_m: float | None = None,
+    chord: tuple | None = None,
 ) -> float:
     """Prompt first-orbit-loss fraction of the CAPTURED beam at ARBITRARY
     aspect ratio -- the spherical-tokamak counterpart of
@@ -1121,12 +1164,17 @@ def first_orbit_loss_fraction_st(
     f_t = widths["f_trap"]
     rho_L = widths["rho_Li"]
 
-    n = 601
-    x = np.linspace(0.0, path_length_m, n)
+    if chord is None:
+        n = 601
+        x = np.linspace(0.0, path_length_m, n)
+        rho = np.abs(x - a) / a
+        R_chord_real = None
+    else:
+        x, rho, R_chord_real = (np.asarray(chord[0]), np.asarray(chord[1]), np.asarray(chord[2]))
+        n = len(x)
     lam_mfp = 5.5e19 * (Eb_keV / A) / max(ne0, 1.0e17)
     lam_mfp = min(max(lam_mfp, 0.2 * a), 8.0 * a)
     density = np.exp(-x / lam_mfp)
-    rho = np.abs(x - a) / a
     # Gyro-orbit prompt loss: born within ONE gyroradius of the LCFS. This
     # channel is direction-independent (gyration does not care about I_p), so
     # keeping it at 1 rho_Li rather than 2 leaves room for the co/counter
@@ -1150,7 +1198,7 @@ def first_orbit_loss_fraction_st(
         frac = (1.0 - f_t) * L_pass + f_t * L_trap
     elif variant == "pitch":
         R_t = R0_m if tangent_R_m is None else float(tangent_R_m)
-        R_chord = np.sqrt(R_t**2 + (x - a) ** 2)
+        R_chord = R_chord_real if R_chord_real is not None else np.sqrt(R_t**2 + (x - a) ** 2)
         # |pitch| is fixed by the injection geometry -- it does NOT depend on
         # the poloidal-field / current direction. Only the SIGN of v_par
         # relative to I_p flips (co <-> counter), carried by s_dir.

@@ -571,7 +571,24 @@ def solve_operating_point(
                 "riviere" if beam.shine_through_model == "manual" else beam.shine_through_model
             )
             co = getattr(beam, "co_current", config.orbit_loss_co_current)
-            if config.orbit_model in ("st_meanshift", "st_pitch"):
+            # Off-axis / vertically-shifted injection: sample the real
+            # (R_t, Z_t) chord for the birth-radius profile. For the standard
+            # on-axis tangential case (tangent_Z_m == 0 and R_t == R0 or
+            # unset) keep chord=None so the crude linear rho(x) mapping -- and
+            # every existing orbit-loss result -- is byte-for-byte unchanged.
+            _R0 = config.geometry.major_radius
+            _tR = beam.tangent_R_m
+            orbit_chord = None
+            _off_axis = beam.tangent_Z_m != 0.0 or (_tR is not None and abs(_tR - _R0) > 1e-6)
+            if _off_axis:
+                orbit_chord = physics.tangential_chord(
+                    _R0, config.geometry.minor_radius, config.geometry.elongation,
+                    tangent_R_m=_tR, tangent_Z_m=beam.tangent_Z_m,
+                )
+            if _off_axis and orbit_chord is None:
+                # aim point outside the plasma -> nothing born -> no orbit loss
+                f_orbit = 0.0
+            elif config.orbit_model in ("st_meanshift", "st_pitch"):
                 widths = physics.st_orbit_widths(
                     Eb_keV=beam.Eb_keV, Bt_T=config.Bt0, Ip_MA=config.Ip_MA,
                     R0_m=config.geometry.major_radius, minor_radius_m=config.geometry.minor_radius,
@@ -584,7 +601,7 @@ def solve_operating_point(
                     co_current=co,
                     variant="pitch" if config.orbit_model == "st_pitch" else "meanshift",
                     stopping_model=orbit_stopping_model, Zeff=config.Zeff,
-                    tangent_R_m=beam.tangent_R_m,
+                    tangent_R_m=beam.tangent_R_m, chord=orbit_chord,
                 )
             else:
                 orbit_width_m = physics.passing_orbit_width(
@@ -595,7 +612,7 @@ def solve_operating_point(
                 larmor_radius_m_value = physics.larmor_radius_m(Eb_keV=beam.Eb_keV, Bt_T=config.Bt0, species=beam.species)
                 f_orbit = physics.first_orbit_loss_fraction(
                     ne0_m3, beam.Eb_keV, beam.species, path_length_m, config.geometry.minor_radius, orbit_width_m,
-                    co_current=co,
+                    co_current=co, chord=orbit_chord,
                     include_larmor_loss=config.include_larmor_loss, larmor_radius_m_value=larmor_radius_m_value,
                     stopping_model=orbit_stopping_model,
                     Zeff=config.Zeff,

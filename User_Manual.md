@@ -156,6 +156,22 @@ so $\rho=0$ at the chord mid-point and $\rho=1$ at both ends. The stopping
 cross-section is the beam's selected shine-through model; **Manual** mode has no
 deposition shape, so the Riviere fit is substituted for this weighting only.
 
+**Off-axis / vertically-shifted injection.** When a beam's tangency radius
+$R_t$ differs from $R_0$, or its aim height $Z_t\neq 0$, the birth profile is
+built instead from the *real* chord: a horizontal line tangent to the cylinder
+$R=R_t$ at height $Z_t$, sampled through elliptical flux surfaces
+
+$$
+\rho(s)^2 = \left(\frac{R(s)-R_0}{a}\right)^2 + \left(\frac{Z_t}{\kappa a}\right)^2,
+\qquad R(s)=\sqrt{R_t^2 + (s - s_0)^2},
+$$
+
+with the chord length running edge-to-edge and $\rho$ no longer reaching $0$
+(the beam no longer passes through the magnetic axis). This is the same
+geometry the shine-through / capture calculation already uses. For the
+standard on-axis tangential case ($Z_t=0$, $R_t=R_0$ or unset) the crude
+$\rho(x)=|x-a|/a$ mapping above is kept, so existing results are unchanged.
+
 ### Passing-orbit width
 
 The radial width of a strongly co-passing drift orbit at the full injection
@@ -231,7 +247,9 @@ $\Delta r_j$ (in cm and as fractions of $a$) and $f_{\mathrm{orbit},j}$.
 	co-current losing high-field-side edge births, counter-current losing
 	low-field-side edge births, and trapped-ion banana-tip losses on the
 	low-field side in either direction.
-- Circular cross-section, large-aspect-ratio, $R_t=R_0$ tangential geometry;
+- Circular / elliptical cross-section, large-aspect-ratio orbit widths (the
+	birth chord itself now honours $R_t$ and $Z_t$, but the orbit-width and
+	pitch estimates are still evaluated at $R_0$);
 	$\Delta r_j$ and $\rho_{Li,j}$ are evaluated at the full injection energy (an
 	upper bound — real ions slow down).
 - The birth-profile integral in this channel uses the flat central density

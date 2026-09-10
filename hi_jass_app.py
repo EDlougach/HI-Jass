@@ -991,24 +991,23 @@ class HIJassApp(ctk.CTk):
 
     # --------------------------------------------------------- deposition tab
     def _beam_chord_samples(self, beam, plasma, Te_keV, n=3000):
-        """Sample a midplane tangent chord (tangency radius R_t, Z_t~0) through
-        the plasma: distance-from-entry s, major radius R, normalised radius
-        rho, local n_e, neutral survival I(s)/I0 and the (unnormalised)
-        fast-ion birth rate n_e*sigma*I(s)/I0. Circular-cross-section midplane
-        approximation, consistent with tangential_path_length()/L_i(x).
+        """Sample the beam's real (R_t, Z_t) tangent chord through the plasma:
+        distance-from-entry s, major radius R, normalised flux label rho, local
+        n_e, neutral survival I(s)/I0 and the (unnormalised) fast-ion birth
+        rate n_e*sigma*I(s)/I0. Uses physics.tangential_chord() so off-axis /
+        vertically-shifted injection is handled consistently with the solver.
         """
         R0, a = plasma.major_radius, plasma.minor_radius
-        Rt = beam.tangent_R_m if beam.tangent_R_m else R0
-        Rt = min(max(float(Rt), 1e-3), R0 + a - 1e-3)
-        y_out = np.sqrt(max((R0 + a) ** 2 - Rt ** 2, 0.0))
-        if y_out <= 0.0:
+        ch = physics.tangential_chord(
+            R0, a, plasma.elongation,
+            tangent_R_m=beam.tangent_R_m, tangent_Z_m=beam.tangent_Z_m, n_samples=n)
+        if ch is None:
             return None
-        y = np.linspace(-y_out, y_out, n)
-        R = np.sqrt(Rt ** 2 + y ** 2)
-        rho = np.clip(np.abs(R - R0) / a, 0.0, 1.0)
+        s, rho, R = ch
+        y_out = 0.5 * s[-1]
+        Rt = float(beam.tangent_R_m) if beam.tangent_R_m else R0
         pn = max(plasma.density_peaking, 0.0)
         ne = plasma.central_density * np.maximum(1.0 - rho ** 2, 0.0) ** (2.0 * pn)
-        s = y - y[0]
         A = physics.beam_mass_number(beam.species.upper())
         model = beam.shine_through_model
         model = "riviere" if model == "manual" else model
