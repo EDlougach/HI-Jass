@@ -540,7 +540,8 @@ def tangential_path_length(minor_radius_m: float) -> float:
 
 def tangential_chord(
     R0_m: float, minor_radius_m: float, elongation: float,
-    tangent_R_m: float | None = None, tangent_Z_m: float = 0.0, n_samples: int = 501,
+    tangent_R_m: float | None = None, tangent_Z_m: float = 0.0,
+    R_centrepost_m: float | None = None, n_samples: int = 501,
 ):
     """Sample a horizontal neutral-beam chord tangent to the cylinder R = R_t
     at height Z_t, through elliptical flux surfaces
@@ -549,14 +550,23 @@ def tangential_chord(
 
     Returns ``(s, rho, R)`` -- distance along the chord from its plasma-entry
     point [m], the normalised flux label at each sample, and the local major
-    radius [m] -- or ``None`` if the aim point is outside the plasma. With
+    radius [m] -- or ``None`` if the beam misses the plasma. With
     tangent_R_m = None (=> R_t = R0) and tangent_Z_m = 0 this is the on-axis
     tangential chord (rho runs 1 -> 0 -> 1); a general (R_t, Z_t) gives
     OFF-AXIS / vertically-shifted injection, where rho no longer reaches 0.
+
+    CENTRE-POST: the beam enters from the OUTBOARD side. If R_t is inside the
+    central column (R_t < R_centrepost_m, default R0 - a), the beam is blocked
+    when the straight chord first reaches R = R_centrepost_m, so only the
+    outboard leg (outboard-edge entry -> block point) is returned. R_t at or
+    outboard of R_centrepost_m keeps the full chord (the beam threads the gap
+    between the column and the inboard plasma edge).
+
     Same circular / elliptical approximation as captured_power_fraction().
     """
     R0 = float(R0_m); a = float(minor_radius_m)
     R_t = R0 if tangent_R_m is None else float(tangent_R_m)
+    R_cp = (R0 - a) if (R_centrepost_m is None or R_centrepost_m <= 0.0) else float(R_centrepost_m)
     zc = float(tangent_Z_m) / max(elongation * a, 1e-12)
     if abs(zc) >= 1.0:
         return None
@@ -568,7 +578,17 @@ def tangential_chord(
     half = math.sqrt(max(outer_R**2 - R_t**2, 0.0))
     if half <= 0.05 * a:
         return None
-    y = np.linspace(-half, half, int(max(n_samples, 11)))
+    # beam travels from y = -half (outboard entry) toward y = 0 (tangency); if
+    # R_t is inside the central column it is stopped at R = R_cp on that leg.
+    y_lo = -half
+    if R_t < R_cp:
+        y_block = -math.sqrt(max(R_cp**2 - R_t**2, 0.0))
+        y_hi = y_block
+        if y_hi - y_lo <= 0.05 * a:    # column as wide as the plasma -> nothing reachable
+            return None
+    else:
+        y_hi = half
+    y = np.linspace(y_lo, y_hi, int(max(n_samples, 11)))
     R = np.sqrt(R_t**2 + y**2)
     rho = np.sqrt(np.clip(((R - R0) / a) ** 2 + zc**2, 0.0, 1.0))
     return y - y[0], rho, R

@@ -172,6 +172,17 @@ geometry the shine-through / capture calculation already uses. For the
 standard on-axis tangential case ($Z_t=0$, $R_t=R_0$ or unset) the crude
 $\rho(x)=|x-a|/a$ mapping above is kept, so existing results are unchanged.
 
+**Central column.** The beam enters from the outboard side. If its tangency
+radius is inside the central column ($R_t < R_{\mathrm{post}}$, set by
+`Centre-post R`; default $R_0-a$), the straight chord would strike the column,
+so only the **outboard leg** — from the outboard-edge entry to the point where
+$R(s)=R_{\mathrm{post}}$ — is kept; the (unreachable) far leg is discarded. A
+beam with $R_t$ at or outboard of $R_{\mathrm{post}}$ threads the gap between
+the column and the inboard plasma edge and keeps its full chord. A beam whose
+aim point lies outside the plasma altogether contributes no first-orbit loss.
+The Deposition tab's geometry panel draws the column and marks a blocked
+beam.
+
 ### Passing-orbit width
 
 The radial width of a strongly co-passing drift orbit at the full injection

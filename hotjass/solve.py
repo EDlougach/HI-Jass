@@ -46,6 +46,7 @@ class TokamakConfig:
     density_peaking: float = 0.0
     temperature_peaking: float = 0.0        # electron T profile exponent
     temperature_peaking_i: float = -1.0     # ion T profile exponent; < 0 -> same as temperature_peaking
+    centrepost_radius_m: float = -1.0       # central-column outer radius; < 0 -> R0 - a
     profile_averaging: bool = False
     # profile_averaging=False (default): the 0-D balance treats ne0_m3 and the
     # solved T as spatially UNIFORM -- the historical behaviour, byte-identical.
@@ -581,9 +582,10 @@ def solve_operating_point(
             orbit_chord = None
             _off_axis = beam.tangent_Z_m != 0.0 or (_tR is not None and abs(_tR - _R0) > 1e-6)
             if _off_axis:
+                _rcp = config.centrepost_radius_m if config.centrepost_radius_m > 0.0 else None
                 orbit_chord = physics.tangential_chord(
                     _R0, config.geometry.minor_radius, config.geometry.elongation,
-                    tangent_R_m=_tR, tangent_Z_m=beam.tangent_Z_m,
+                    tangent_R_m=_tR, tangent_Z_m=beam.tangent_Z_m, R_centrepost_m=_rcp,
                 )
             if _off_axis and orbit_chord is None:
                 # aim point outside the plasma -> nothing born -> no orbit loss

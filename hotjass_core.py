@@ -22,6 +22,7 @@ class PlasmaParams:
     density_peaking: float = 0.1
     temp_peaking: float = 1.0          # electron temperature profile exponent
     temp_peaking_i: float = -1.0       # ion T profile exponent; < 0 -> same as temp_peaking
+    centrepost_radius: float = -1.0    # central-column outer radius [m]; < 0 -> R0 - a
     effective_charge: float = 2.0
     toroidal_field: float = 1.5
     plasma_current: float = 1.5e6
@@ -89,6 +90,7 @@ class HotJassModel:
             density_peaking=self.plasma.density_peaking,
             temperature_peaking=self.plasma.temp_peaking,
             temperature_peaking_i=self.plasma.temp_peaking_i,
+            centrepost_radius_m=self.plasma.centrepost_radius,
             tau_Ee_mode=self.plasma.tau_Ee_mode,
             tau_Ei_mode=self.plasma.tau_Ei_mode,
             enable_orbit_loss=self.plasma.enable_orbit_loss,

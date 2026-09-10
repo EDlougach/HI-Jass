@@ -229,6 +229,7 @@ class HIJassApp(ctk.CTk):
         ("Density peaking", "density_peaking", 0.1),
         ("Temp peaking (electron)", "temp_peaking", 1.0),
         ("Temp peaking (ion, -1=same)", "temp_peaking_i", -1.0),
+        ("Centre-post R [m] (-1=R0-a)", "centrepost_radius", -1.0),
         ("Central n_e [m^-3]", "central_density", 1.5e20),
         ("Scan n_e min [m^-3]", "n_e_min", 1.0e19),
         ("Scan n_e max [m^-3]", "n_e_max", 1.0e20),
@@ -998,9 +999,10 @@ class HIJassApp(ctk.CTk):
         vertically-shifted injection is handled consistently with the solver.
         """
         R0, a = plasma.major_radius, plasma.minor_radius
+        rcp = plasma.centrepost_radius if getattr(plasma, "centrepost_radius", -1.0) > 0.0 else None
         ch = physics.tangential_chord(
-            R0, a, plasma.elongation,
-            tangent_R_m=beam.tangent_R_m, tangent_Z_m=beam.tangent_Z_m, n_samples=n)
+            R0, a, plasma.elongation, tangent_R_m=beam.tangent_R_m,
+            tangent_Z_m=beam.tangent_Z_m, R_centrepost_m=rcp, n_samples=n)
         if ch is None:
             return None
         s, rho, R = ch
@@ -1019,8 +1021,11 @@ class HIJassApp(ctk.CTk):
         tau = tau - tau[0]
         survival = np.exp(-tau)
         birth = ne * sigma * survival
+        i_tan = int(np.argmin(R))
         return dict(s=s, R=R, rho=rho, ne=ne, survival=survival, birth=birth,
-                    ds=ds, Rt=Rt, y_out=y_out, f_capt=float(1.0 - np.exp(-tau[-1])))
+                    ds=ds, Rt=Rt, y_out=y_out, s_tan=float(s[i_tan]),
+                    blocked=bool(i_tan >= len(s) - 2),
+                    f_capt=float(1.0 - np.exp(-tau[-1])))
 
     def _orbit_cutoff_rho(self, beam, plasma):
         """Lower rho of the prompt first-orbit-loss zone for this beam
@@ -1068,6 +1073,9 @@ class HIJassApp(ctk.CTk):
         th = np.linspace(0.0, 2.0 * np.pi, 240)
         for r, st in ((R0 - a, "-"), (R0 + a, "-"), (R0, "--")):
             ax.plot(r * np.cos(th), r * np.sin(th), st, color="0.6", lw=1.0)
+        r_cp = plasma.centrepost_radius if getattr(plasma, "centrepost_radius", -1.0) > 0.0 else (R0 - a)
+        ax.fill(r_cp * np.cos(th), r_cp * np.sin(th), color="0.75", zorder=0)
+        ax.text(0.0, 0.0, "post", ha="center", va="center", fontsize=6.5, color="0.4")
         ax.annotate("", xy=((R0 + a) * np.cos(0.55), (R0 + a) * np.sin(0.55)),
                     xytext=((R0 + a) * np.cos(0.25), (R0 + a) * np.sin(0.25)),
                     arrowprops=dict(arrowstyle="-|>", color="0.55", lw=1.4))
@@ -1079,15 +1087,27 @@ class HIJassApp(ctk.CTk):
             Rt = min(float(beam.tangent_R_m or R0), R0 + a)
             p = np.array([Rt * np.cos(phi), Rt * np.sin(phi)])
             d = np.array([-np.sin(phi), np.cos(phi)])
-            yo = ch["y_out"] if ch else 0.6 * a
-            p1, p2 = p - d * yo, p + d * yo
+            if ch:
+                s_end = ch["s"][-1]
+                t_entry, t_end = -ch["s_tan"], s_end - ch["s_tan"]   # offsets from tangency
+            else:
+                t_entry, t_end = -0.6 * a, 0.6 * a
+            # co-current: beam enters from the -d (clockwise) side and travels
+            # +d (with Ip, drawn CCW); counter: mirror. Flip the whole chord so
+            # p1 is always the physical entry and p1->p2 the travel direction.
+            if not beam.co_current:
+                t_entry, t_end = -t_end, -t_entry
+                d = -d
+            p1, p2 = p + d * t_entry, p + d * t_end
             ax.plot([p1[0], p2[0]], [p1[1], p2[1]], color=c, lw=1.5, alpha=0.9)
-            sgn = 1.0 if beam.co_current else -1.0
-            ax.annotate("", xy=(p + sgn * d * yo * 0.92), xytext=(p - sgn * d * yo),
+            ax.annotate("", xy=(p1 + (p2 - p1) * 0.55), xytext=p1,
                         arrowprops=dict(arrowstyle="-|>", color=c, lw=1.7))
             ax.plot([p[0]], [p[1]], "o", color=c, ms=4)
+            if ch and ch.get("blocked"):
+                ax.plot([p2[0]], [p2[1]], "x", color=c, ms=7, mew=2)
             ax.text(p2[0] * 1.06, p2[1] * 1.06,
-                    f"NBI-{i + 1} ({'co' if beam.co_current else 'ctr'})",
+                    f"NBI-{i + 1} ({'co' if beam.co_current else 'ctr'})"
+                    + ("  blocked" if (ch and ch.get('blocked')) else ""),
                     color=c, fontsize=7, ha="center", va="center")
         lim = (R0 + a) * 1.32
         ax.set_xlim(-lim, lim)
