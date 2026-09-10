@@ -992,28 +992,37 @@ def first_orbit_loss_fraction_st(
     regardless of injection direction -- co-current loss is NOT zero. Two
     variants, both selectable in the GUI so they can be compared:
 
+    The DRIFT-ORBIT shift is direction-dependent -- inward for co-current
+    (v_par parallel to I_p), outward for counter -- for BOTH passing ions
+    (full width w_pass) and trapped ions (their banana centre, a weaker
+    shift c_trap*w_pass with c_trap=0.25). The GYRO channel (born within one
+    rho_Li of the LCFS) is direction-independent. So co-current loss is
+    non-zero but smaller than counter-current -- the co/counter split
+    survives here, unlike in the large-aspect model's all-or-nothing 0 vs 1.
+
     variant="meanshift" -- deposition-weighted loss integrals over the
-      birth profile rho(x) (same Beer-Lambert shape as the shine-through
-      and large-aspect first-orbit-loss integrals), blended by the
-      circulating / trapped split f_c, f_t:
-        passing ions lost if  rho -/+ w_pass/a > 1   (- co, + counter)
-                          OR  rho > 1 - 2 rho_Li/a   (gyro)
-        trapped ions lost if  rho + 0.5 w_ban/a > 1  (outboard banana tip)
-                          OR  rho > 1 - 2 rho_Li/a
+      birth profile rho(x), blended by the circulating / trapped split:
+        passing lost if  rho -/+ w_pass/a > 1          (- co, + counter)
+                     OR  rho > 1 - rho_Li/a            (gyro)
+        trapped lost if  rho + 0.5 w_ban/a -/+ 0.25 w_pass/a > 1
+                     OR  rho > 1 - rho_Li/a
         f_orbit = f_c * L_passing + f_t * L_trapped
       w_pass, w_ban, f_c=1-f_trap, f_t from st_orbit_widths().
 
-    variant="pitch" -- a 2-D integral over birth radius x AND pitch
-      lambda = v_par/v. The birth pitch along a chord tangent at R_t is
-      lambda_0(x) = +/- R_t / sqrt(R_t^2 + (x-a)^2) (+ co, - counter),
-      smeared by a sigma=0.15 Gaussian (beam divergence + finite chord).
-      For each pitch class: trapped if |lambda| < sqrt(2 eps_loc/(1+eps_loc))
-      with eps_loc = rho a / R0; the outboard radial excursion is
-        co-passing    : -w_pass/a * |lambda|      (inward, favourable)
-        counter-pass. : +w_pass/a * |lambda|      (outward)
-        trapped       : +0.5 w_ban/a              (outboard banana tip)
-      Lost if rho + excursion > 1, OR-ed with the same gyro cutoff. Closer
-      in spirit to Akers et al.'s START/MAST first-orbit modelling.
+    variant="pitch" -- a 2-D integral over birth radius x AND the pitch
+      magnitude |lambda| = |v_par/v|. |lambda_0(x)| = R_t/sqrt(R_t^2+(x-a)^2)
+      is set by the injection GEOMETRY and does NOT depend on the poloidal
+      field / current direction; only the sign of v_par relative to I_p
+      flips (co <-> counter), carried by s_dir. |lambda_0| is smeared by a
+      sigma=0.10 Gaussian (beam divergence + finite chord). For each pitch
+      class: trapped if |lambda| < sqrt(2 eps_loc/(1+eps_loc)) with
+      eps_loc = rho a / R0; the outboard radial excursion is
+        passing : s_dir * w_pass/a * |lambda|          (s_dir = -1 co, +1 counter)
+        trapped : 0.5 w_ban/a * (|lambda|/lambda_trap) + s_dir * 0.25 w_pass/a
+      (the banana half-width -> 0 for deeply trapped, largest near the
+      trapped/passing boundary). Lost if rho + excursion > 1, OR-ed with
+      the same gyro cutoff. Closer in spirit to Akers et al.'s START/MAST
+      first-orbit modelling.
 
     BIRTH PROFILE: unlike the large-aspect first_orbit_loss_fraction (which
     reuses the Riviere attenuation shape and, with this project's default
@@ -1044,34 +1053,52 @@ def first_orbit_loss_fraction_st(
     lam_mfp = min(max(lam_mfp, 0.2 * a), 8.0 * a)
     density = np.exp(-x / lam_mfp)
     rho = np.abs(x - a) / a
-    gyro_lost = rho > (1.0 - 2.0 * rho_L / a)
+    # Gyro-orbit prompt loss: born within ONE gyroradius of the LCFS. This
+    # channel is direction-independent (gyration does not care about I_p), so
+    # keeping it at 1 rho_Li rather than 2 leaves room for the co/counter
+    # drift asymmetry below to actually show through.
+    gyro_lost = rho > (1.0 - rho_L / a)
     total = _trapezoidal_integral(x, density)
     if total <= 0.0:
         return 0.0
 
+    # co-current shifts BOTH the passing drift orbit and the trapped-ion
+    # banana centre INWARD (favourable); counter-current shifts them OUTWARD.
+    # The banana-centre drift is weaker than the passing shift (c_trap < 1).
+    s_dir = -1.0 if co_current else 1.0
+    c_trap = 0.25
+
     if variant == "meanshift":
-        s_dir = -1.0 if co_current else 1.0
         pass_lost = gyro_lost | ((rho + s_dir * w_pass / a) > 1.0)
-        trap_lost = gyro_lost | ((rho + 0.5 * w_ban / a) > 1.0)
+        trap_lost = gyro_lost | ((rho + 0.5 * w_ban / a + s_dir * c_trap * w_pass / a) > 1.0)
         L_pass = _trapezoidal_integral(x, np.where(pass_lost, density, 0.0)) / total
         L_trap = _trapezoidal_integral(x, np.where(trap_lost, density, 0.0)) / total
         frac = (1.0 - f_t) * L_pass + f_t * L_trap
     elif variant == "pitch":
         R_t = R0_m if tangent_R_m is None else float(tangent_R_m)
         R_chord = np.sqrt(R_t**2 + (x - a) ** 2)
-        lam0 = (1.0 if co_current else -1.0) * np.clip(R_t / R_chord, -1.0, 1.0)
+        # |pitch| is fixed by the injection geometry -- it does NOT depend on
+        # the poloidal-field / current direction. Only the SIGN of v_par
+        # relative to I_p flips (co <-> counter), carried by s_dir.
+        abs_lam0 = np.clip(R_t / R_chord, 0.0, 1.0)
         eps_loc = np.clip(rho * a / R0_m, 1e-3, 0.95)
         lam_tr = np.sqrt(2.0 * eps_loc / (1.0 + eps_loc))
-        sig = 0.15
+        sig = 0.10
         offs = np.linspace(-2.5 * sig, 2.5 * sig, 25)
         wl = np.exp(-0.5 * (offs / sig) ** 2)
         wl /= wl.sum()
         lost_frac_x = np.zeros(n)
         for weight, off in zip(wl, offs):
-            lam = np.clip(lam0 + off, -1.0, 1.0)
-            trapped = np.abs(lam) < lam_tr
-            d_pass = np.where(lam >= 0.0, -w_pass / a * np.abs(lam), w_pass / a * np.abs(lam))
-            d_out = np.where(trapped, 0.5 * w_ban / a, d_pass)
+            abs_lam = np.clip(abs_lam0 + off, 0.0, 1.0)
+            trapped = abs_lam < lam_tr
+            # passing: drift orbit shifted s_dir * w_pass * |lambda|
+            d_pass = s_dir * (w_pass / a) * abs_lam
+            # trapped: outboard banana tip (widest near the trapped/passing
+            # boundary, ~0 for deeply trapped) plus the weaker banana-centre
+            # drift, also s_dir-signed
+            banana_half = 0.5 * (w_ban / a) * np.clip(abs_lam / np.maximum(lam_tr, 1e-6), 0.0, 1.0)
+            d_trap = banana_half + s_dir * c_trap * (w_pass / a)
+            d_out = np.where(trapped, d_trap, d_pass)
             lost_frac_x = lost_frac_x + weight * (gyro_lost | ((rho + d_out) > 1.0))
         frac = _trapezoidal_integral(x, lost_frac_x * density) / total
     else:

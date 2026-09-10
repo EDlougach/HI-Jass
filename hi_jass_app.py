@@ -1158,10 +1158,11 @@ class HIJassApp(ctk.CTk):
                              f"passing orbit dr = {dr * 100:.1f} cm ({dr / a:.2f} a), f_orbit = {f_orb:.3f}")
                 wide = wide or rho_li / a > 0.3 or dr / a > 0.3
         if st_orbit:
-            lines.append("  ST orbit models: widths from the poloidal gyroradius rho_theta (not q*rho_Li);")
-            lines.append("  co-current f_orbit is non-zero (trapped + gyro channels are direction-independent).")
-            lines.append("  Birth profile from lambda_mfp ~ 5.5e19 (Eb/A)/ne0, clamped [0.2a, 8a]. 0-D")
-            lines.append("  order-of-magnitude estimate; the co/counter split is narrower than the large-A model.")
+            lines.append("  ST orbit models: widths from the poloidal gyroradius rho_theta (not q*rho_Li).")
+            lines.append("  Drift shift is inward (co) / outward (counter) for both passing and trapped;")
+            lines.append("  the gyro channel (born within 1 rho_Li of the LCFS) is direction-independent, so")
+            lines.append("  co f_orbit is non-zero but < counter (split ~1.5x, not 0 vs 1).")
+            lines.append("  Birth profile: lambda_mfp ~ 5.5e19 (Eb/A)/ne0, clamped [0.2a, 8a]. 0-D estimate.")
             lines.append("  Refs: Akers NF (START NBI); Goldston-White-Boozer PRL 47 (1981); Goldston & Rutherford (1995).")
         elif wide:
             lines.append("  ! orbit width >~ 0.3 a: the large-aspect estimate is crude here -- try an ST orbit model.")
@@ -1235,8 +1236,7 @@ class HIJassApp(ctk.CTk):
 
     def _tau_used_str(self, scan_key: str, mode: str, manual_val: float) -> str:
         """String for an actually-used confinement time: the fixed input value,
-        or the min..max range over the current scan for a physics-based mode
-        (the manual input is ignored in that case).
+        or the min..max range over the current scan for a physics-based mode.
         """
         if mode == "fixed":
             return f"{manual_val:.3g} s (fixed input)"
@@ -1244,7 +1244,7 @@ class HIJassApp(ctk.CTk):
         if sc is not None and scan_key in sc:
             v = sc[scan_key][np.isfinite(sc[scan_key])]
             if v.size:
-                return f"[{v.min():.3g} .. {v.max():.3g}] s ({mode}, manual input ignored)"
+                return f"[{v.min():.3g} .. {v.max():.3g}] s ({mode})"
         return f"— ({mode})"
 
     def _summary_parameters(self) -> str:

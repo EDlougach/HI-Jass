@@ -278,8 +278,16 @@ free path $\lambda_{\mathrm{mfp}} \approx 5.5\times10^{19}\,(E_b/A)/n_{e0}$ m,
 clamped to $[0.2a, 8a]$, instead of the (with *Manual* shine-through,
 pathologically edge-peaked) Riviere weighting.
 
+The **drift-orbit shift is direction-dependent** for both populations —
+inward for co-current ($v_\parallel$ along $I_p$), outward for counter — with a
+weaker shift $c_t\,w_{\mathrm{pass}}$ ($c_t=0.25$) for the trapped-ion banana
+centre than for a passing ion. The **gyro channel** ($\rho > 1-\rho_{Li}/a$,
+born within one gyroradius of the LCFS) is direction-independent. Co-current
+loss is therefore non-zero but smaller than counter-current — the co/counter
+asymmetry survives, unlike the large-aspect model's all-or-nothing $0$ vs $1$.
+
 **Mean-shift variant.** Deposition-weighted loss integrals over $\rho(x)$,
-blended by $f_c$, $f_t$:
+blended by $f_c$, $f_t$ (sign convention: $-$ co, $+$ counter):
 
 $$
 f_{\mathrm{orbit},j} = f_c\,L_{\mathrm{pass}} + f_t\,L_{\mathrm{trap}},
@@ -287,32 +295,44 @@ $$
 
 $$
 L_{\mathrm{pass}}:\ \rho \mp \frac{w_{\mathrm{pass},j}}{a} > 1
-\ \ \text{or}\ \ \rho > 1 - \frac{2\rho_{Li,j}}{a},
-\qquad
-L_{\mathrm{trap}}:\ \rho + \frac{w_{\mathrm{ban},j}}{2a} > 1
-\ \ \text{or}\ \ \rho > 1 - \frac{2\rho_{Li,j}}{a},
+\ \ \text{or}\ \ \rho > 1 - \frac{\rho_{Li,j}}{a},
 $$
 
-($-$ co, $+$ counter). Co-current loss is non-zero through the trapped and gyro
-terms.
+$$
+L_{\mathrm{trap}}:\ \rho + \frac{w_{\mathrm{ban},j}}{2a}
+\mp \frac{0.25\,w_{\mathrm{pass},j}}{a} > 1
+\ \ \text{or}\ \ \rho > 1 - \frac{\rho_{Li,j}}{a}.
+$$
 
-**Pitch-resolved variant.** A 2-D integral over birth radius $x$ and pitch
-$\lambda = v_\parallel/v$. The birth pitch along the chord is
-$\lambda_0(x) = \pm R_t/\sqrt{R_t^2+(x-a)^2}$ ($+$ co, $-$ counter), smeared by a
-$\sigma=0.15$ Gaussian. An ion is trapped if
+**Pitch-resolved variant.** A 2-D integral over birth radius $x$ and the pitch
+**magnitude** $|\lambda| = |v_\parallel/v|$. The birth value
+$|\lambda_0(x)| = R_t/\sqrt{R_t^2+(x-a)^2}$ is fixed by the injection *geometry*
+and does **not** depend on the poloidal-field / current direction — only the
+sign of $v_\parallel$ relative to $I_p$ flips (co $\leftrightarrow$ counter),
+carried by $s_{\mathrm{dir}}=\mp1$. $|\lambda_0|$ is smeared by a $\sigma=0.10$
+Gaussian. An ion is trapped if
 $|\lambda| < \sqrt{2\varepsilon_{\mathrm{loc}}/(1+\varepsilon_{\mathrm{loc}})}$
-with $\varepsilon_{\mathrm{loc}} = \rho\,a/R_0$; its outboard radial excursion is
-$-w_{\mathrm{pass},j}|\lambda|/a$ (co-passing), $+w_{\mathrm{pass},j}|\lambda|/a$
-(counter-passing) or $+w_{\mathrm{ban},j}/2a$ (trapped), and it is lost if
-$\rho + (\text{excursion}) > 1$ or $\rho > 1 - 2\rho_{Li,j}/a$.
+($\varepsilon_{\mathrm{loc}} = \rho\,a/R_0$); its outboard radial excursion is
+
+$$
+\text{passing}:\ s_{\mathrm{dir}}\,\frac{w_{\mathrm{pass},j}}{a}\,|\lambda|,
+\qquad
+\text{trapped}:\ \frac{w_{\mathrm{ban},j}}{2a}\,\frac{|\lambda|}{\lambda_{\mathrm{tr}}}
++ s_{\mathrm{dir}}\,\frac{0.25\,w_{\mathrm{pass},j}}{a},
+$$
+
+(the banana half-width $\to 0$ for deeply trapped ions, largest near the
+trapped/passing boundary), and it is lost if $\rho + (\text{excursion}) > 1$ or
+$\rho > 1 - \rho_{Li,j}/a$.
 
 Both variants collapse toward the large-aspect co-current zero as
 $\varepsilon\to 0$. They remain 0-D order-of-magnitude estimates — absolute
-magnitudes are upper-bound-like and the co/counter split is smaller than the
-large-aspect model's because the dominant trapped and gyro channels are
-direction-independent. References: Akers *et al.*, *Nucl. Fusion* (START NBI,
-$A\sim1.4$); Goldston, White & Boozer, *Phys. Rev. Lett.* **47** (1981) 1004;
-Goldston & Rutherford, *Introduction to Plasma Physics* (1995), Ch. 12.
+magnitudes are upper-bound-like and, because the direction-independent trapped
+banana-tip and gyro channels stay significant, the co/counter split is narrower
+than the large-aspect model's (typically a factor $\sim1.5$, not $0$ vs $1$).
+References: Akers *et al.*, *Nucl. Fusion* (START NBI, $A\sim1.4$); Goldston,
+White & Boozer, *Phys. Rev. Lett.* **47** (1981) 1004; Goldston & Rutherford,
+*Introduction to Plasma Physics* (1995), Ch. 12.
 
 ## Power balance (electron and ion)
 
