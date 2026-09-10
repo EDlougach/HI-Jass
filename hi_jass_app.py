@@ -15,6 +15,7 @@ import queue
 import subprocess
 import threading
 import traceback
+import webbrowser
 from datetime import datetime
 from pathlib import Path
 from tkinter import filedialog, messagebox
@@ -54,6 +55,80 @@ ORBIT_MODELS = {
 }
 SHINE_LABEL_TO_MODEL = {"Riviere": "riviere", "Janev": "janev_suzuki", "Manual": "manual"}
 SHINE_MODEL_TO_LABEL = {v: k for k, v in SHINE_LABEL_TO_MODEL.items()}
+
+
+def _scholar(query: str) -> str:
+    """A Google Scholar search URL for a citation string -- used instead of
+    hand-typed DOIs so every link resolves to the real paper (top hit) and
+    nothing here is a fabricated identifier."""
+    import urllib.parse
+    return "https://scholar.google.com/scholar?q=" + urllib.parse.quote(query)
+
+
+# key -> (citation, url).  Grouped/filtered by active model in _render_references.
+REFERENCES = {
+    # --- beam stopping / deposition ---
+    "riviere": ("Rivière, Nucl. Fusion 11 (1971) 363 - attenuation of fast neutral hydrogen beams",
+                _scholar("Riviere 1971 Nuclear Fusion 11 363 penetration neutral beam")),
+    "janev_suzuki": ("Janev, Boley & Post, Nucl. Fusion 29 (1989) 2125 - beam stopping cross-sections",
+                     _scholar("Janev Boley Post 1989 Nuclear Fusion 29 2125 beam stopping")),
+    "suzuki": ("Suzuki et al., Plasma Phys. Control. Fusion 40 (1998) 2097 - beam-stopping fit incl. excited states",
+               _scholar("Suzuki 1998 Plasma Physics Controlled Fusion beam stopping")),
+    # --- confinement scalings ---
+    "iter98y2": ("ITER Physics Basis, Ch. 2, Nucl. Fusion 39 (1999) 2175 - IPB98(y,2) ELMy H-mode scaling",
+                 _scholar("ITER Physics Basis 1999 Nuclear Fusion 39 2175 confinement IPB98(y,2)")),
+    "kaye_nstx": ("Kaye et al., Nucl. Fusion 46 (2006) 848 - NSTX energy confinement scaling (H- and L-mode)",
+                  _scholar("Kaye 2006 Nuclear Fusion 46 848 NSTX confinement scaling")),
+    "neoclassical_ch": ("Chang & Hinton, Phys. Fluids 25 (1982) 1493 - neoclassical ion thermal transport",
+                        _scholar("Chang Hinton 1982 Physics of Fluids 25 1493 neoclassical")),
+    "helander_arbA": ("Helander, Phys. Plasmas 7 (2000) 3999 - neoclassical transport, arbitrary aspect ratio & collisionality",
+                      _scholar("Helander 2000 Physics of Plasmas 3999 neoclassical arbitrary aspect ratio")),
+    "helander_sigmar": ("Helander & Sigmar, Collisional Transport in Magnetized Plasmas (CUP, 2002)",
+                        _scholar("Helander Sigmar Collisional Transport in Magnetized Plasmas")),
+    "linliu_miller": ("Lin-Liu & Miller, Phys. Plasmas 2 (1995) 1666 - trapped-particle fraction at arbitrary A",
+                      _scholar("Lin-Liu Miller 1995 Physics of Plasmas 2 1666 trapped particle fraction")),
+    "hinton_wiley": ("Hinton, Wiley, Düchs, Furth & Rutherford, Phys. Rev. Lett. 29 (1972) 698 - finite-orbit neoclassical ion transport",
+                     "https://doi.org/10.1103/PhysRevLett.29.698"),
+    "satake_fow": ("Satake et al., Phys. Plasmas 9 (2002) 3946 - finite-orbit-width neoclassical transport",
+                   _scholar("Satake 2002 Physics of Plasmas finite orbit width neoclassical")),
+    # --- first-orbit / fast-ion losses ---
+    "akers_start": ("Akers et al., Nucl. Fusion 42 (2002) 122 - NBI heating & fast-ion losses in the START spherical tokamak",
+                    _scholar("Akers 2002 Nuclear Fusion 42 122 START neutral beam spherical tokamak")),
+    "gwb1981": ("Goldston, White & Boozer, Phys. Rev. Lett. 47 (1981) 1004 - confinement of high-energy trapped particles",
+                "https://doi.org/10.1103/PhysRevLett.47.1004"),
+    "goldston_rutherford": ("Goldston & Rutherford, Introduction to Plasma Physics (IOP, 1995) - Ch. 12, guiding-centre orbits",
+                            _scholar("Goldston Rutherford Introduction to Plasma Physics 1995")),
+    "wesson": ("Wesson, Tokamaks (4th ed., Oxford, 2011) - Sect. 3.10 particle orbits; neoclassical estimates",
+               _scholar("Wesson Tokamaks 4th edition Oxford")),
+    "uckan": ("Uckan & ITER Physics Group, ITER-TN-PH-8-6 (1988) / Uckan Fusion Technol. 14 (1988) 299 - q95 engineering formula",
+              _scholar("Uckan 1988 ITER q95 engineering safety factor formula")),
+    # --- fusion / plasma primitives ---
+    "bosch_hale": ("Bosch & Hale, Nucl. Fusion 32 (1992) 611 - improved D-T fusion reactivity & cross-section",
+                   "https://doi.org/10.1088/0029-5515/32/4/I07"),
+    "nrl": ("NRL Plasma Formulary (2019 rev.) - collision rates, thermal equilibration",
+            "https://www.nrl.navy.mil/News-Media/Publications/nrl-plasma-formulary/"),
+    "stix": ("Stix, Plasma Phys. 14 (1972) 367 - heating of toroidal plasmas by neutral injection (L_e/L_i split)",
+             _scholar("Stix 1972 Plasma Physics 14 367 heating toroidal plasmas neutral injection")),
+}
+
+# Active-machine geometry references (keyed by preset name).
+MACHINE_REFERENCES = {
+    "DANTE": ("DANTE - internal low-aspect design point; no external publication.", ""),
+    "ITER": ("ITER Physics Basis, Ch. 1, Nucl. Fusion 39 (1999) 2137 - device description & parameters",
+             _scholar("ITER Physics Basis 1999 Nuclear Fusion 39 2137 overview")),
+    "JET": ("Rebut, Bickerton & Keen, Nucl. Fusion 25 (1985) 1011 - the JET project & its prospects",
+            _scholar("Rebut Bickerton Keen 1985 Nuclear Fusion 25 1011 JET project")),
+    "ST40": ("Gryaznevich et al., Nucl. Fusion 62 (2022) 042008 - ST40 compact high-field spherical tokamak",
+             _scholar("Gryaznevich 2022 Nuclear Fusion ST40 spherical tokamak")),
+    "T-15MD": ("Khvostenko et al., Fusion Eng. Des. 146 (2019) 1108 - T-15MD tokamak construction",
+               _scholar("Khvostenko 2019 Fusion Engineering Design T-15MD tokamak")),
+    "TCV": ("Hofmann et al., Plasma Phys. Control. Fusion 36 (1994) B277 - the TCV tokamak",
+            _scholar("Hofmann 1994 Plasma Physics Controlled Fusion TCV tokamak")),
+}
+
+REPO_URL = "https://github.com/EDlougach/HI-Jass"
+_FEEDBACK_USER = "eugenia.dlougach"
+_FEEDBACK_HOST = "real-nbi.com"
 
 
 @dataclasses.dataclass
@@ -426,12 +501,15 @@ class HIJassApp(ctk.CTk):
         for tv in (self.tv_op, self.tv_scan):
             tv.grid(row=0, column=0, sticky="nsew")
 
-        for name in ("Dashboard", "Power flow", "Fast ions", "Profiles", "Assumptions"):
+        for name in ("Dashboard", "Deposition", "Power flow", "Profiles", "Assumptions", "References"):
             self.tv_op.add(name)
         for name in ("Scan", "Summary"):
             self.tv_scan.add(name)
 
         self._build_dashboard(self.tv_op.tab("Dashboard"))
+        self.dep_fig, self.dep_canvas, holder = self._plot_area(
+            self.tv_op.tab("Deposition"), figsize=(9.5, 7.2))
+        holder.pack(fill="both", expand=True)
         pf_tab = self.tv_op.tab("Power flow")
         pf_bar = ctk.CTkFrame(pf_tab, fg_color="transparent")
         pf_bar.pack(fill="x", pady=(2, 0))
@@ -443,11 +521,10 @@ class HIJassApp(ctk.CTk):
         ).pack(side="left")
         self.pf_fig, self.pf_canvas, holder = self._plot_area(pf_tab, figsize=(9.5, 6.2))
         holder.pack(fill="both", expand=True)
-        self.fi_fig, self.fi_canvas, holder = self._plot_area(self.tv_op.tab("Fast ions"))
-        holder.pack(fill="both", expand=True)
         self.prof_fig, self.prof_canvas, holder = self._plot_area(self.tv_op.tab("Profiles"))
         holder.pack(fill="both", expand=True)
         self._build_assumptions(self.tv_op.tab("Assumptions"))
+        self._build_references(self.tv_op.tab("References"))
         self._build_scan(self.tv_scan.tab("Scan"))
         self.sum_fig, self.sum_canvas, holder = self._plot_area(self.tv_scan.tab("Summary"), figsize=(11, 8))
         holder.pack(fill="both", expand=True)
@@ -461,6 +538,8 @@ class HIJassApp(ctk.CTk):
                       command=lambda: self._export_summary("pdf")).pack(side="left", padx=4)
         ctk.CTkButton(export, text="Run record (JSON)", width=150,
                       command=self._export_json).pack(side="left", padx=4)
+
+        self._render_references()
 
     def _plot_area(self, parent, figsize=(7.5, 5.5)):
         """Build a figure + canvas + toolbar inside a holder frame.
@@ -695,11 +774,12 @@ class HIJassApp(ctk.CTk):
         else:
             self._last_infeasible_key = None
         self._render_dashboard(result)
+        self._render_deposition(result)
         self._render_powerflow(result)
-        self._render_fastions(result)
         self._render_profiles(result)
         self.assump_box.delete("1.0", "end")
         self.assump_box.insert("end", self._assess(self.model, result.op))
+        self._render_references()
         eq_on = self.model.plasma.enable_equipartition
         self.scan_equip_label.configure(
             text=("●  e-i equipartition: ON  (Te, Ti coupled)" if eq_on
@@ -890,42 +970,288 @@ class HIJassApp(ctk.CTk):
             ax.text(0.5, 0.5, "Sankey unavailable\nfor this operating point",
                     ha="center", va="center", fontsize=9)
 
-    def _render_fastions(self, result: Result):
+    # --------------------------------------------------------- deposition tab
+    def _beam_chord_samples(self, beam, plasma, Te_keV, n=3000):
+        """Sample a midplane tangent chord (tangency radius R_t, Z_t~0) through
+        the plasma: distance-from-entry s, major radius R, normalised radius
+        rho, local n_e, neutral survival I(s)/I0 and the (unnormalised)
+        fast-ion birth rate n_e*sigma*I(s)/I0. Circular-cross-section midplane
+        approximation, consistent with tangential_path_length()/L_i(x).
+        """
+        R0, a = plasma.major_radius, plasma.minor_radius
+        Rt = beam.tangent_R_m if beam.tangent_R_m else R0
+        Rt = min(max(float(Rt), 1e-3), R0 + a - 1e-3)
+        y_out = np.sqrt(max((R0 + a) ** 2 - Rt ** 2, 0.0))
+        if y_out <= 0.0:
+            return None
+        y = np.linspace(-y_out, y_out, n)
+        R = np.sqrt(Rt ** 2 + y ** 2)
+        rho = np.clip(np.abs(R - R0) / a, 0.0, 1.0)
+        pn = max(plasma.density_peaking, 0.0)
+        ne = plasma.central_density * np.maximum(1.0 - rho ** 2, 0.0) ** (2.0 * pn)
+        s = y - y[0]
+        A = physics.beam_mass_number(beam.species.upper())
+        model = beam.shine_through_model
+        model = "riviere" if model == "manual" else model
+        sigma = physics.stopping_cross_section_m2(
+            beam.beam_energy_keV / A, model, plasma.central_density * 1e-6,
+            max(Te_keV, 1.0), plasma.effective_charge)
+        ds = np.gradient(s)
+        tau = np.cumsum(ne * sigma * ds)
+        tau = tau - tau[0]
+        survival = np.exp(-tau)
+        birth = ne * sigma * survival
+        return dict(s=s, R=R, rho=rho, ne=ne, survival=survival, birth=birth,
+                    ds=ds, Rt=Rt, y_out=y_out, f_capt=float(1.0 - np.exp(-tau[-1])))
+
+    def _render_deposition(self, result: Result):
         op = result.op
         model = self.model
-        volume = result.volume_m3
-        fig = self.fi_fig
+        plasma = model.plasma
+        fig = self.dep_fig
         fig.clear()
-        ax = fig.add_subplot(111)
+        R0, a = plasma.major_radius, plasma.minor_radius
+        Te = op.Te_keV or 1.0
+        colors = ["tab:blue", "tab:orange", "tab:green", "tab:red"]
+        chords = [self._beam_chord_samples(b, plasma, Te) for b in model.beams]
+
+        # (1) beam geometry, torus top view --------------------------------
+        ax = fig.add_subplot(221)
+        th = np.linspace(0.0, 2.0 * np.pi, 240)
+        for r, st in ((R0 - a, "-"), (R0 + a, "-"), (R0, "--")):
+            ax.plot(r * np.cos(th), r * np.sin(th), st, color="0.6", lw=1.0)
+        ax.annotate("", xy=((R0 + a) * np.cos(0.55), (R0 + a) * np.sin(0.55)),
+                    xytext=((R0 + a) * np.cos(0.25), (R0 + a) * np.sin(0.25)),
+                    arrowprops=dict(arrowstyle="-|>", color="0.55", lw=1.4))
+        ax.text((R0 + a) * 1.03, 0.0, r"$I_p$", color="0.5", fontsize=8, va="center")
+        nb = len(model.beams)
+        for i, (beam, ch) in enumerate(zip(model.beams, chords)):
+            c = colors[i % len(colors)]
+            phi = np.deg2rad(38.0 * (i - (nb - 1) / 2.0))
+            Rt = min(float(beam.tangent_R_m or R0), R0 + a)
+            p = np.array([Rt * np.cos(phi), Rt * np.sin(phi)])
+            d = np.array([-np.sin(phi), np.cos(phi)])
+            yo = ch["y_out"] if ch else 0.6 * a
+            p1, p2 = p - d * yo, p + d * yo
+            ax.plot([p1[0], p2[0]], [p1[1], p2[1]], color=c, lw=1.5, alpha=0.9)
+            sgn = 1.0 if beam.co_current else -1.0
+            ax.annotate("", xy=(p + sgn * d * yo * 0.92), xytext=(p - sgn * d * yo),
+                        arrowprops=dict(arrowstyle="-|>", color=c, lw=1.7))
+            ax.plot([p[0]], [p[1]], "o", color=c, ms=4)
+            ax.text(p2[0] * 1.06, p2[1] * 1.06,
+                    f"NBI-{i + 1} ({'co' if beam.co_current else 'ctr'})",
+                    color=c, fontsize=7, ha="center", va="center")
+        lim = (R0 + a) * 1.32
+        ax.set_xlim(-lim, lim)
+        ax.set_ylim(-lim, lim)
+        ax.set_aspect("equal")
+        ax.set_title("Beam targeting geometry (torus top view)", fontsize=10)
+        ax.set_xlabel("X [m]")
+        ax.set_ylabel("Y [m]")
+        ax.grid(alpha=0.2)
+
+        # (2) attenuation + birth rate along the beam ---------------------
+        ax = fig.add_subplot(222)
+        ax2 = ax.twinx()
+        for i, ch in enumerate(chords):
+            if ch is None:
+                continue
+            c = colors[i % len(colors)]
+            ax.plot(ch["s"], ch["survival"], color=c, lw=1.6,
+                    label=f"NBI-{i + 1} survival")
+            b = ch["birth"]
+            ax2.plot(ch["s"], b / (b.max() if b.max() > 0 else 1.0), color=c,
+                     lw=1.2, ls=":", label=f"NBI-{i + 1} birth rate")
+        ax.set_xlabel("distance along beam from plasma entry [m]")
+        ax.set_ylabel(r"neutral survival $I(s)/I_0$")
+        ax.set_ylim(0.0, 1.03)
+        ax2.set_ylabel("fast-ion birth rate (norm.)")
+        ax2.set_ylim(0.0, 1.05)
+        ax.set_title("Beam stopping & fast-ion birth rate", fontsize=10)
+        ax.grid(alpha=0.2)
+        h1, l1 = ax.get_legend_handles_labels()
+        h2, l2 = ax2.get_legend_handles_labels()
+        ax.legend(h1 + h2, l1 + l2, fontsize=7, loc="center right")
+
+        # (3) fast-ion birth vs normalised radius -----------------------
+        ax = fig.add_subplot(223)
+        edges = np.linspace(0.0, 1.0, 26)
+        ctr = 0.5 * (edges[:-1] + edges[1:])
+        dr = edges[1] - edges[0]
+        smooth = np.array([0.25, 0.5, 0.25])
+        total = np.zeros_like(ctr)
+        for i, (beam, ch) in enumerate(zip(model.beams, chords)):
+            if ch is None:
+                continue
+            c = colors[i % len(colors)]
+            f_capt = op.f_capture[i] if op.f_capture else ch["f_capt"]
+            f_orb = op.f_orbit_loss[i] if op.f_orbit_loss else 0.0
+            w_mw = beam.power_MW * f_capt * (1.0 - f_orb) * (1.0 - plasma.cx_loss_fraction)
+            hist, _ = np.histogram(ch["rho"], bins=edges, weights=ch["birth"] * ch["ds"])
+            if hist.sum() > 0:
+                hist = hist / hist.sum() * w_mw / dr
+            hist = np.convolve(hist, smooth, mode="same")
+            ax.plot(ctr, hist, color=c, lw=1.3, label=f"NBI-{i + 1}")
+            total += hist
+        if nb > 1:
+            ax.plot(ctr, total, color="k", lw=2.0, label="total")
+        ax.set_xlabel(r"$\rho = |R-R_0|/a$  (midplane)")
+        ax.set_ylabel(r"deposited power  [MW per unit $\rho$]")
+        ax.set_title("Fast-ion birth vs normalised radius (chord-sampled)", fontsize=10)
+        ax.grid(alpha=0.2)
+        ax.legend(fontsize=7)
+
+        # (4) slowing-down distribution --------------------------------
+        ax = fig.add_subplot(224)
         te = op.Te_keV or 1e-3
-        any_curve = False
+        vol = result.volume_m3
         for i, beam in enumerate(model.beams):
-            species = beam.species.upper()
+            sp = beam.species.upper()
             eb = beam.beam_energy_keV
             f_capt = op.f_capture[i] if op.f_capture else 1.0
-            f_orbit = op.f_orbit_loss[i] if op.f_orbit_loss else 0.0
-            p_use = beam.power_MW * 1e6 * f_capt * (1.0 - f_orbit) * (1.0 - model.plasma.cx_loss_fraction)
-            tau_s = physics.thermalization_time(op.ne0_m3, te, eb, species)
-            nb0_i = p_use * tau_s / (eb * 1e3 * physics.E_CHARGE * max(volume, 1e-9))
-            grid = np.linspace(1e-3, eb, 400)
-            fE = physics.slowing_down_distribution(te, nb0_i, eb, grid, species)
-            mean_e = physics.average_fast_energy_keV(te, eb, species)
-            line, = ax.plot(grid, fE, label=f"NBI-{i + 1} {species} {eb:.0f} keV   "
-                            fr"$\langle E\rangle$={mean_e:.0f} keV,  $\tau_s$={tau_s:.3g} s")
+            f_orb = op.f_orbit_loss[i] if op.f_orbit_loss else 0.0
+            p_use = beam.power_MW * 1e6 * f_capt * (1.0 - f_orb) * (1.0 - plasma.cx_loss_fraction)
+            tau_s = physics.thermalization_time(op.ne0_m3, te, eb, sp)
+            nb0_i = p_use * tau_s / (eb * 1e3 * physics.E_CHARGE * max(vol, 1e-9))
+            grid = np.linspace(1e-3, eb, 300)
+            fE = physics.slowing_down_distribution(te, nb0_i, eb, grid, sp)
+            mean_e = physics.average_fast_energy_keV(te, eb, sp)
+            line, = ax.plot(grid, fE, color=colors[i % len(colors)],
+                            label=fr"NBI-{i + 1} {sp} {eb:.0f} keV, $\langle E\rangle$={mean_e:.0f}, $\tau_s$={tau_s:.2g}s")
             ax.axvline(eb, color=line.get_color(), linestyle=(0, (4, 3)), linewidth=1.0, alpha=0.8)
-            ax.annotate(f"$E_b$ = {eb:.0f}", xy=(eb, 0), xytext=(0, 2),
-                        textcoords="offset points", ha="right", va="bottom",
-                        fontsize=7, color=line.get_color(), rotation=90)
-            any_curve = True
-        ax.set_ylim(bottom=0.0)
         ax.set_xlabel("E [keV]")
         ax.set_ylabel(r"$f(E)$ [$\mathrm{m}^{-3}\,\mathrm{keV}^{-1}$]")
-        ax.set_title("Per-beam steady-state slowing-down distribution")
-        ax.grid(alpha=0.3)
-        if any_curve:
-            ax.legend(fontsize=8)
+        ax.set_ylim(bottom=0.0)
+        ax.set_title("Steady-state slowing-down distribution", fontsize=10)
+        ax.grid(alpha=0.2)
+        ax.legend(fontsize=7)
+
         fig.tight_layout()
-        self.fi_canvas.draw_idle()
+        self.dep_canvas.draw_idle()
+
+    # --------------------------------------------------------- references tab
+    def _build_references(self, parent):
+        self.ref_frame = ctk.CTkScrollableFrame(parent, label_text="References for the active models")
+        self.ref_frame.pack(fill="both", expand=True, padx=4, pady=(4, 2))
+        self.ref_frame.grid_columnconfigure(0, weight=1)
+
+        bar = ctk.CTkFrame(parent)
+        bar.pack(fill="x", padx=4, pady=(2, 4))
+        self._make_logo(bar).pack(side="left", padx=(6, 8), pady=6)
+        ctk.CTkLabel(bar, text="Spotted something strange?  Please report it.",
+                     anchor="w").pack(side="left", padx=(0, 8))
+        ctk.CTkButton(bar, text="Send feedback", width=110,
+                      command=self._open_feedback_mail).pack(side="left", padx=4)
+        ctk.CTkButton(bar, text="HI-Jass on GitHub", width=140,
+                      command=lambda: webbrowser.open(REPO_URL)).pack(side="left", padx=4)
+        # human-readable, scraper-unfriendly (no literal user@host anywhere)
+        ctk.CTkLabel(bar, text=f"{_FEEDBACK_USER}  [at]  {_FEEDBACK_HOST}",
+                     text_color="gray", font=ctk.CTkFont(size=11)).pack(side="left", padx=8)
+
+    def _open_feedback_mail(self):
+        addr = _FEEDBACK_USER + "@" + _FEEDBACK_HOST
+        webbrowser.open("mailto:" + addr + "?subject=" + "HI-Jass%20feedback")
+
+    def _make_logo(self, parent, px: int = 44):
+        fig = Figure(figsize=(px / 100.0, px / 100.0), dpi=100)
+        fig.patch.set_alpha(0.0)
+        ax = fig.add_axes([0.0, 0.0, 1.0, 1.0])
+        ax.set_xlim(-1.35, 1.35)
+        ax.set_ylim(-1.35, 1.35)
+        ax.set_aspect("equal")
+        ax.axis("off")
+        cols = ["#e6194B", "#3cb44b", "#4363d8"]
+        for k in range(3):
+            a0 = np.deg2rad(90.0 + k * 120.0 + 6.0)
+            a1 = np.deg2rad(90.0 + (k + 1) * 120.0 - 30.0)
+            t = np.linspace(a0, a1, 24)
+            ax.plot(np.cos(t), np.sin(t), color=cols[k], lw=3.0, solid_capstyle="round")
+            p = np.array([np.cos(a1), np.sin(a1)])
+            tang = np.array([-np.sin(a1), np.cos(a1)])
+            ax.annotate("", xy=(p + tang * 0.02), xytext=(p - tang * 0.30),
+                        arrowprops=dict(arrowstyle="-|>", color=cols[k], lw=2.4))
+        canvas = FigureCanvasTkAgg(fig, master=parent)
+        canvas.draw()
+        return canvas.get_tk_widget()
+
+    def _active_reference_keys(self):
+        """(group title -> [ref keys]) for the currently selected models."""
+        ee, ei = CONFINEMENT_MODES[self.confinement_var.get()]
+        orbit = ORBIT_MODELS[self.orbit_model_var.get()]
+        shine = {getattr(self, f"shine_var_{i}").get() for i in range(len(self.model.beams))}
+        groups: dict[str, list[str]] = {}
+
+        groups["Machine geometry"] = ["__machine__"]
+
+        stop = []
+        if "Riviere" in shine or "Manual" in shine:
+            stop.append("riviere")
+        if "Janev" in shine:
+            stop += ["janev_suzuki", "suzuki"]
+        stop.append("stix")
+        groups["Beam stopping / deposition"] = stop
+
+        conf = []
+        modes = {ee, ei}
+        if "iter98y2" in modes:
+            conf.append("iter98y2")
+        if "kaye_nstx_lmode" in modes or "kaye_nstx_hmode" in modes:
+            conf.append("kaye_nstx")
+        if "neoclassical" in modes:
+            conf += ["neoclassical_ch", "wesson"]
+        if "neoclassical_arbA" in modes:
+            conf += ["helander_arbA", "helander_sigmar", "linliu_miller",
+                     "hinton_wiley", "satake_fow", "uckan"]
+        if not conf:
+            conf = ["iter98y2"]
+        groups["Confinement model"] = conf
+
+        if self.orbit_var.get():
+            if orbit in ("st_meanshift", "st_pitch"):
+                groups["First-orbit loss model"] = [
+                    "akers_start", "gwb1981", "linliu_miller", "uckan", "goldston_rutherford"]
+            else:
+                groups["First-orbit loss model"] = ["wesson", "goldston_rutherford"]
+
+        prim = ["bosch_hale", "nrl"]
+        if self.model.plasma.enable_equipartition:
+            prim.append("nrl")
+        groups["Fusion & plasma primitives"] = list(dict.fromkeys(prim))
+        return groups
+
+    def _render_references(self):
+        for child in self.ref_frame.winfo_children():
+            child.destroy()
+        row = 0
+        for title, keys in self._active_reference_keys().items():
+            ctk.CTkLabel(self.ref_frame, text=title, anchor="w",
+                         font=ctk.CTkFont(size=13, weight="bold")).grid(
+                row=row, column=0, sticky="w", padx=6, pady=(10, 2))
+            row += 1
+            seen = set()
+            for key in keys:
+                if key == "__machine__":
+                    cite, url = MACHINE_REFERENCES.get(
+                        self.active_device, (f"{self.active_device}: no reference on file.", ""))
+                else:
+                    if key in seen:
+                        continue
+                    seen.add(key)
+                    cite, url = REFERENCES.get(key, (key, ""))
+                line = ctk.CTkFrame(self.ref_frame, fg_color="transparent")
+                line.grid(row=row, column=0, sticky="ew", padx=6, pady=1)
+                line.grid_columnconfigure(0, weight=1)
+                ctk.CTkLabel(line, text="- " + cite, anchor="w", justify="left",
+                             wraplength=760).grid(row=0, column=0, sticky="w")
+                if url:
+                    ctk.CTkButton(line, text="open", width=54,
+                                  command=lambda u=url: webbrowser.open(u)).grid(
+                        row=0, column=1, padx=(8, 0))
+                row += 1
+        ctk.CTkLabel(self.ref_frame, anchor="w", text_color="gray", wraplength=760,
+                     text=("Links are Google Scholar searches (they resolve to the paper) except "
+                           "where a DOI is certain. Please flag anything that looks wrong via "
+                           "Send feedback.")).grid(row=row, column=0, sticky="w", padx=6, pady=(12, 4))
 
     def _render_profiles(self, result: Result):
         model = self.model

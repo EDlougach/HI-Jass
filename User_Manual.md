@@ -662,6 +662,23 @@ $$
 
 The underlying HotJass calculation still evaluates each beam separately before forming these combined diagnostics.
 
+## Results tabs (Operating point)
+
+- **Dashboard** — scalar table of the operating point (temperatures, densities,
+  power balance terms, orbit widths, Greenwald ratio).
+- **Deposition** — (1) beam targeting geometry in the torus top view, tangent to
+  each beam's $R_t$ with its co-/counter-current sense; (2) neutral-beam
+  survival $I(s)/I_0$ and the fast-ion birth rate $n_e\sigma\,I(s)/I_0$ along
+  the beam; (3) the resulting fast-ion birth versus normalised radius $\rho$,
+  per beam and total (chord-sampled, midplane circular approximation); (4) the
+  steady-state slowing-down distribution $f(E)$ with the $E_b$ edge marked.
+- **Power flow** — waterfall / Sankey / pie of injected power to its sinks.
+- **Profiles** — $n_e(\rho)$, $T_{e,i}(\rho)$ and the plasma shape.
+- **Assumptions** — the full validity / fit-range read-out and any warnings.
+- **References** — the literature behind the *currently selected* models
+  (beam stopping, confinement scaling, orbit-loss model) and the active machine
+  geometry, each with a link, plus a feedback button.
+
 ## Electron-ion exchange time
 
 The electron-ion exchange time is based on the NRL Plasma Formulary thermal-equilibration rate. For each thermal ion species $s$ (D or T):
