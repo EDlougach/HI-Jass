@@ -42,6 +42,15 @@ CONFINEMENT_MODES = {
     "Kaye L e / neoclassical i": ("kaye_nstx_lmode", "neoclassical"),
     "Kaye H e / neoclassical i": ("kaye_nstx_hmode", "neoclassical"),
     "Fixed e / neoclassical i": ("fixed", "neoclassical"),
+    "Kaye H e / neoclassical i (arbitrary A)": ("kaye_nstx_hmode", "neoclassical_arbA"),
+    "IPB98(y,2) e / neoclassical i (arbitrary A)": ("iter98y2", "neoclassical_arbA"),
+    "Fixed e / neoclassical i (arbitrary A)": ("fixed", "neoclassical_arbA"),
+}
+
+ORBIT_MODELS = {
+    "Large-aspect (q* rho_Li)": "large_aspect",
+    "ST orbits - mean-shift (arbitrary A)": "st_meanshift",
+    "ST orbits - pitch-resolved": "st_pitch",
 }
 SHINE_LABEL_TO_MODEL = {"Riviere": "riviere", "Janev": "janev_suzuki", "Manual": "manual"}
 SHINE_MODEL_TO_LABEL = {v: k for k, v in SHINE_LABEL_TO_MODEL.items()}
@@ -198,8 +207,8 @@ class HIJassApp(ctk.CTk):
         ("n_e0 [m^-3]", "ne0"), ("n_b0 [m^-3]", "nb0"),
         ("P_NB injected [MW]", "P_NB"), ("P shine-through [MW]", "P_shine"),
         ("P captured [MW]", "P_capt"), ("P first-orbit loss [MW]", "P_orbit"),
-        ("  NBI-1  rho_Li / dr / f_orbit", "orb1"),
-        ("  NBI-2  rho_Li / dr / f_orbit", "orb2"),
+        ("  NBI-1  orbit widths / f_orbit", "orb1"),
+        ("  NBI-2  orbit widths / f_orbit", "orb2"),
         ("P charge-exchange loss [MW]", "P_cx"), ("P useful (to plasma) [MW]", "P_useful"),
         ("  -> electrons P_e [MW]", "P_e"), ("  -> ions P_i [MW]", "P_i"),
         ("P_ei equipartition (e->i) [MW]", "P_ei"),
@@ -345,21 +354,28 @@ class HIJassApp(ctk.CTk):
         ctk.CTkCheckBox(
             models.body, text="First-orbit loss (direction set per NBI)", variable=self.orbit_var,
         ).grid(row=1, column=0, columnspan=2, padx=8, pady=4, sticky="w")
+        ctk.CTkLabel(models.body, text="Orbit model", anchor="w").grid(
+            row=2, column=0, padx=8, pady=4, sticky="w")
+        self.orbit_model_var = ctk.StringVar(
+            value=self._saved.get("_orbit_model", "Large-aspect (q* rho_Li)"))
+        ctk.CTkOptionMenu(
+            models.body, values=list(ORBIT_MODELS), variable=self.orbit_model_var,
+        ).grid(row=2, column=1, padx=8, pady=4, sticky="ew")
         self._add_entries(models.body, "models", [
             ("CX loss fraction (0-1)", "cx_loss_fraction",
              self._saved.get("models.cx_loss_fraction", 0.0)),
-        ], start_row=2)
+        ], start_row=3)
         self.equip_var = ctk.BooleanVar(value=self._saved.get("_equipartition", False))
         ctk.CTkCheckBox(
             models.body, text="e-i equipartition (couple Te, Ti)", variable=self.equip_var,
-        ).grid(row=3, column=0, columnspan=2, padx=8, pady=4, sticky="w")
+        ).grid(row=4, column=0, columnspan=2, padx=8, pady=4, sticky="w")
         self.alpha_var = ctk.BooleanVar(value=self._saved.get("_alpha_heating", False))
         ctk.CTkCheckBox(
             models.body, text="alpha self-heating (P_a into Te, Ti)", variable=self.alpha_var,
-        ).grid(row=4, column=0, columnspan=2, padx=8, pady=4, sticky="w")
+        ).grid(row=5, column=0, columnspan=2, padx=8, pady=4, sticky="w")
         self._add_entries(models.body, "models", [
             ("f_alpha (confined fraction 0-1)", "f_alpha", self._saved.get("models.f_alpha", 1.0)),
-        ], start_row=5)
+        ], start_row=6)
 
     def _plasma_defaults(self):
         preset = {**{f: d for _, f, d in self.PLASMA_FIELDS}}
@@ -513,8 +529,9 @@ class HIJassApp(ctk.CTk):
         ee_mode, ei_mode = CONFINEMENT_MODES[self.confinement_var.get()]
         plasma.tau_Ee_mode, plasma.tau_Ei_mode = ee_mode, ei_mode
         plasma.enable_orbit_loss = bool(self.orbit_var.get())
+        plasma.orbit_model = ORBIT_MODELS[self.orbit_model_var.get()]
         plasma.enable_equipartition = bool(self.equip_var.get())
-        if plasma.enable_equipartition and plasma.tau_Ei_mode == "neoclassical":
+        if plasma.enable_equipartition and plasma.tau_Ei_mode in ("neoclassical", "neoclassical_arbA"):
             errors.append("equipartition + neoclassical ion (unsupported together)")
         plasma.alpha_heating = bool(self.alpha_var.get())
         try:
@@ -699,17 +716,26 @@ class HIJassApp(ctk.CTk):
 
         plasma = self.model.plasma
         a = plasma.minor_radius
+        st_orbit = getattr(plasma, "orbit_model", "large_aspect") in ("st_meanshift", "st_pitch")
         orb = {}
         for i, beam in enumerate(self.model.beams):
             sp = beam.species.upper()
             rho_li = physics.larmor_radius_m(beam.beam_energy_keV, plasma.toroidal_field, sp)
-            dr = physics.passing_orbit_width(
-                beam.beam_energy_keV, plasma.toroidal_field, plasma.plasma_current / 1e6,
-                plasma.major_radius, a, plasma.elongation, sp)
             f_orb = op.f_orbit_loss[i] if op.f_orbit_loss else 0.0
-            orb[f"orb{i + 1}"] = (
-                f"rho_Li={rho_li * 100:.1f} cm ({rho_li / a:.2f} a),  "
-                f"dr={dr * 100:.1f} cm ({dr / a:.2f} a),  f_orbit={f_orb:.3f}")
+            if st_orbit:
+                w = physics.st_orbit_widths(
+                    beam.beam_energy_keV, plasma.toroidal_field, plasma.plasma_current / 1e6,
+                    plasma.major_radius, a, plasma.elongation, plasma.triangularity, sp)
+                orb[f"orb{i + 1}"] = (
+                    f"rho_Li={rho_li / a:.2f} a,  rho_th={w['rho_theta'] / a:.2f} a,  "
+                    f"w_ban={w['w_ban'] / a:.2f} a,  f_t={w['f_trap']:.2f},  f_orbit={f_orb:.3f}")
+            else:
+                dr = physics.passing_orbit_width(
+                    beam.beam_energy_keV, plasma.toroidal_field, plasma.plasma_current / 1e6,
+                    plasma.major_radius, a, plasma.elongation, sp)
+                orb[f"orb{i + 1}"] = (
+                    f"rho_Li={rho_li * 100:.1f} cm ({rho_li / a:.2f} a),  "
+                    f"dr={dr * 100:.1f} cm ({dr / a:.2f} a),  f_orbit={f_orb:.3f}")
         n_line, n_gw, f_gw = self._greenwald()
 
         values = {
@@ -1077,23 +1103,48 @@ class HIJassApp(ctk.CTk):
             lines.append(f"  fixed tauE,i = {plasma.tauE_i:.4g} s")
         dirs = ", ".join(f"NBI-{i + 1} {'co' if b.co_current else 'counter'}-current"
                          for i, b in enumerate(model.beams))
+        orbit_model = getattr(plasma, "orbit_model", "large_aspect")
+        st_orbit = orbit_model in ("st_meanshift", "st_pitch")
+        orbit_label = {
+            "large_aspect": "large-aspect (q* rho_Li, direction-only mean-shift)",
+            "st_meanshift": "ST orbits - mean-shift (arbitrary A: q_a, banana + gyro channels)",
+            "st_pitch": "ST orbits - pitch-resolved (co/counter/trapped classes)",
+        }.get(orbit_model, orbit_model)
         lines.append(f"First-orbit loss: {'ON' if plasma.enable_orbit_loss else 'off'}  ({dirs})")
+        lines.append(f"  orbit model: {orbit_label}")
         a = plasma.minor_radius
         wide = False
         for i, b in enumerate(model.beams):
             sp = b.species.upper()
             rho_li = physics.larmor_radius_m(b.beam_energy_keV, plasma.toroidal_field, sp)
-            dr = physics.passing_orbit_width(
-                b.beam_energy_keV, plasma.toroidal_field, plasma.plasma_current / 1e6,
-                plasma.major_radius, a, plasma.elongation, sp)
             f_orb = op.f_orbit_loss[i] if op.f_orbit_loss else 0.0
-            lines.append(f"  NBI-{i + 1}: rho_Li = {rho_li * 100:.1f} cm ({rho_li / a:.2f} a), "
-                         f"passing orbit dr = {dr * 100:.1f} cm ({dr / a:.2f} a), f_orbit = {f_orb:.3f}")
-            wide = wide or rho_li / a > 0.3 or dr / a > 0.3
-        if wide:
+            if st_orbit:
+                w = physics.st_orbit_widths(
+                    b.beam_energy_keV, plasma.toroidal_field, plasma.plasma_current / 1e6,
+                    plasma.major_radius, a, plasma.elongation, plasma.triangularity, sp)
+                lines.append(
+                    f"  NBI-{i + 1}: rho_Li = {rho_li / a:.2f} a,  rho_theta = {w['rho_theta'] / a:.2f} a,  "
+                    f"w_pass = {w['w_pass'] / a:.2f} a,  w_ban = {w['w_ban'] / a:.2f} a,")
+                lines.append(
+                    f"          q_a = {w['q_a']:.1f},  f_trap = {w['f_trap']:.2f},  f_orbit = {f_orb:.3f}")
+                wide = wide or w["w_ban"] / a > 0.5
+            else:
+                dr = physics.passing_orbit_width(
+                    b.beam_energy_keV, plasma.toroidal_field, plasma.plasma_current / 1e6,
+                    plasma.major_radius, a, plasma.elongation, sp)
+                lines.append(f"  NBI-{i + 1}: rho_Li = {rho_li * 100:.1f} cm ({rho_li / a:.2f} a), "
+                             f"passing orbit dr = {dr * 100:.1f} cm ({dr / a:.2f} a), f_orbit = {f_orb:.3f}")
+                wide = wide or rho_li / a > 0.3 or dr / a > 0.3
+        if st_orbit:
+            lines.append("  ST orbit models: widths from the poloidal gyroradius rho_theta (not q*rho_Li);")
+            lines.append("  co-current f_orbit is NOT zero (trapped + gyro channels are direction-independent).")
+            lines.append("  Birth profile from lambda_mfp ~ 5.5e19 (Eb/A)/ne0, clamped [0.2a, 8a] -- a 0-D")
+            lines.append("  order-of-magnitude estimate; absolute magnitude is upper-bound-ish.")
+            lines.append("  Refs: Akers NF (START NBI); Goldston-White-Boozer PRL 47 (1981); Goldston & Rutherford (1995).")
+        elif wide:
             lines.append("  ! rho_Li/a or dr/a > 0.3: orbit width ~ machine size; the mean-shift")
             lines.append("    first-orbit-loss estimate is order-unity uncertain here (needs an")
-            lines.append("    orbit follower). Co-current f_orbit=0 is a model artefact, not physics.")
+            lines.append("    orbit follower). Co-current f_orbit=0 is a model artefact -- try an ST orbit model.")
         lines.append(f"CX loss fraction: {plasma.cx_loss_fraction:.3g} (flat efficiency knob)")
         lines.append(f"e-i equipartition: {'ON (coupled Te/Ti solve)' if plasma.enable_equipartition else 'off (decoupled Te, Ti)'}")
         if plasma.alpha_heating:
@@ -1137,9 +1188,14 @@ class HIJassApp(ctk.CTk):
                 lines.append(f"  ! A = {aspect:.2f} < 2 -- IPB98(y,2) is being extrapolated well")
                 lines.append("    outside its dataset here; a fixed tauE or an ST fit is safer.")
             lines.append("  P_loss for the scaling = useful beam power + ECRH + ICRH (no alpha).")
-        if plasma.tau_Ei_mode == "neoclassical":
+        if plasma.tau_Ei_mode in ("neoclassical", "neoclassical_arbA"):
             lines.append("  Neoclassical ion transport has no anomalous channel -> Ti can be")
             lines.append("  large / implausible; treat as a lower bound on ion transport.")
+        if plasma.tau_Ei_mode == "neoclassical_arbA":
+            lines.append("  Arbitrary-A ion channel: chi_i ~ q_a^2 rho_i^2 nu_ii (f_t/f_c) with")
+            lines.append("  f_t = Lin-Liu & Miller, q_a = Uckan (Helander PoP 7 (2000); Hinton-Wiley")
+            lines.append("  PRL 29 (1972); Satake PoP 9 (2002)). NOT a smooth reduction of the")
+            lines.append("  eps^-1.5 form -- can differ by ~1 order of magnitude either way; run both.")
         if aspect < 2.0 and plasma.tau_Ee_mode == "fixed":
             lines.append("  A < 2: conventional-aspect confinement scalings (IPB98) would be")
             lines.append("  extrapolating here; a fixed tauE input sidesteps that.")
@@ -1175,7 +1231,10 @@ class HIJassApp(ctk.CTk):
         p = self.model.plasma
         equip_state = "ON" if p.enable_equipartition else "off"
         alpha_state = f"ON (f_alpha={p.f_alpha:.3g})" if p.alpha_heating else "off"
-        orbit_state = "ON" if p.enable_orbit_loss else "off"
+        orbit_model_short = {"large_aspect": "large-A", "st_meanshift": "ST mean-shift",
+                             "st_pitch": "ST pitch-resolved"}.get(
+            getattr(p, "orbit_model", "large_aspect"), getattr(p, "orbit_model", ""))
+        orbit_state = f"ON [{orbit_model_short}]" if p.enable_orbit_loss else "off"
         _, n_gw, f_gw_c = self._greenwald()
         f_gw_lo = self._greenwald(p.n_e_min)[2]
         f_gw_hi = self._greenwald(p.n_e_max)[2]
@@ -1273,6 +1332,7 @@ class HIJassApp(ctk.CTk):
         data["_mode"] = self.mode_toggle.get()
         data["_confinement"] = self.confinement_var.get()
         data["_orbit_loss"] = bool(self.orbit_var.get())
+        data["_orbit_model"] = self.orbit_model_var.get()
         data["_equipartition"] = bool(self.equip_var.get())
         data["_alpha_heating"] = bool(self.alpha_var.get())
         for beam_index in (0, 1):

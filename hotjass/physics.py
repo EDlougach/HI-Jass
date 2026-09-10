@@ -660,6 +660,115 @@ def safety_factor_cyl_edge(Ip_MA: float, Bt_T: float, R0_m: float, a_m: float, e
     return 5.0 * a_m**2 * Bt_T * (1.0 + elongation**2) / 2.0 / (R0_m * max(Ip_MA, 1e-9))
 
 
+def safety_factor_cyl_edge_arbitrary_A(
+    Ip_MA: float, Bt_T: float, R0_m: float, a_m: float, elongation: float, triangularity: float = 0.0,
+) -> float:
+    """Edge safety factor with the standard low-aspect-ratio / shaping
+    corrections -- the q_95 "engineering" formula (ITER Physics Basis 1999,
+    Nucl. Fusion 39 2175, Ch. 1; Uckan & Sheffield):
+
+        q* = 5 a^2 Bt / (R0 Ip[MA])
+             * [1 + kappa^2 (1 + 2 delta^2 - 1.2 delta^3)] / 2
+             * (1.17 - 0.65 eps) / (1 - eps^2)^2
+
+    Same practical-units 5*a^2*Bt/(R0*Ip) core as safety_factor_cyl_edge()
+    above, but the (1.17 - 0.65 eps)/(1 - eps^2)^2 factor -- ~1.2 as eps -> 0,
+    but ~3-6 at eps ~ 0.6-0.8 -- restores the large edge q of a spherical
+    tokamak that the bare a^2 Bt/(R0 Ip) scaling badly under-estimates. The
+    triangularity term in the shaping bracket is the same one used in most
+    tokamak 0-D system codes. Used by the "ST orbits" first-orbit-loss
+    models and the arbitrary-A neoclassical ion channel; the large-aspect
+    code paths keep calling safety_factor_cyl_edge() unchanged.
+    """
+    eps = a_m / R0_m
+    kappa = elongation
+    delta = triangularity
+    shape = (1.0 + kappa**2 * (1.0 + 2.0 * delta**2 - 1.2 * delta**3)) / 2.0
+    aspect_factor = (1.17 - 0.65 * eps) / (1.0 - min(eps, 0.99) ** 2) ** 2
+    return 5.0 * a_m**2 * Bt_T * shape * aspect_factor / (R0_m * max(Ip_MA, 1e-9))
+
+
+def trapped_particle_fraction(eps: float) -> float:
+    """Effective trapped-particle fraction f_t at ARBITRARY aspect ratio --
+    the Lin-Liu & Miller closed form (Phys. Plasmas 2 (1995) 1666), the one
+    used in most bootstrap-current / neoclassical packages:
+
+        f_t = 1 - (1 - eps)^2 / [ (1 + 1.46 sqrt(eps)) sqrt(1 - eps^2) ]
+
+    Reduces to the textbook large-aspect f_t ~ 1.46 sqrt(eps) as eps -> 0
+    and rises smoothly toward 1 as eps -> 1 (every orbit trapped). The bare
+    1.46 sqrt(eps), by contrast, passes 1 already at eps ~ 0.47 and is
+    meaningless on a spherical tokamak (eps ~ 0.5-0.8). The circulating
+    (passing) fraction is f_c = 1 - f_t.
+    """
+    eps = min(max(eps, 0.0), 0.999)
+    return 1.0 - (1.0 - eps) ** 2 / ((1.0 + 1.46 * math.sqrt(eps)) * math.sqrt(1.0 - eps**2))
+
+
+def poloidal_gyroradius_m(
+    Eb_keV: float, Bt_T: float, Ip_MA: float, minor_radius_m: float, elongation: float, species: str = "D",
+) -> float:
+    """Fast-ion poloidal Larmor radius rho_theta = (Bt/Bp) * rho_Li, with the
+    LCFS-perimeter-averaged poloidal field
+
+        Bp_bar = mu0 Ip / (2 pi a sqrt((1 + kappa^2)/2))
+
+    (shaped-perimeter approximation). rho_theta is the natural radial scale
+    of a passing fast-ion drift orbit; unlike q* rho_Li it carries no extra
+    factor of eps, so on a spherical tokamak (small Bt/Bp is NOT the case
+    there -- Bp is a large fraction of Bt) it is an O(a) quantity. Reported
+    alongside rho_Li in the Fast-ions / Assumptions panels for the ST orbit
+    models.
+    """
+    rho_L = larmor_radius_m(Eb_keV, Bt_T, species)
+    perimeter = 2.0 * math.pi * minor_radius_m * math.sqrt((1.0 + elongation**2) / 2.0)
+    Bp_bar = MU0 * Ip_MA * 1e6 / perimeter
+    return rho_L * Bt_T / max(Bp_bar, 1e-9)
+
+
+def st_orbit_widths(
+    Eb_keV: float, Bt_T: float, Ip_MA: float, R0_m: float, minor_radius_m: float,
+    elongation: float, triangularity: float = 0.0, species: str = "D",
+) -> dict:
+    """Fast-ion orbit-width scales at ARBITRARY aspect ratio, feeding
+    first_orbit_loss_fraction_st(). Returns a dict with
+
+        rho_Li     bare gyroradius at Eb (physics.larmor_radius_m)
+        rho_theta  poloidal gyroradius (physics.poloidal_gyroradius_m)
+        q_a        arbitrary-A edge safety factor (Uckan form)
+        f_trap     trapped fraction (Lin-Liu & Miller)
+        w_pass     passing-ion drift-orbit width  ~ q_a rho_Li
+        w_ban      trapped-ion banana full width  ~ q_a rho_Li / sqrt(eps)
+
+    Both widths are built from the POLOIDAL gyroradius rho_theta (not the
+    large-aspect q*rho_Li, whose q blows up as eps -> 1):
+
+        w_pass = eps * rho_theta          (circulating-orbit width ~ q rho_Li)
+        w_ban  = 2 sqrt(eps) * rho_theta  (banana full width, Wesson "Tokamaks"
+                                           Sect. 3.10)
+
+    with eps clamped to [1e-3, 0.95]. At large aspect w_pass -> q rho_Li
+    (the same scale as physics.passing_orbit_width); at eps ~ 0.6-0.8 both
+    widths are a large fraction of a and neither runs away. q_a (arbitrary-A
+    edge safety factor) is returned for reporting only -- it is NOT used in
+    the widths. Refs: Akers et al., Nucl. Fusion (START NBI); Goldston,
+    White & Boozer, PRL 47 (1981) 1004 (trapped fast-ion orbits / loss);
+    Goldston & Rutherford, "Introduction to Plasma Physics" (1995), Ch. 12.
+    """
+    eps = minor_radius_m / R0_m
+    eps_c = min(max(eps, 1e-3), 0.95)
+    rho_L = larmor_radius_m(Eb_keV, Bt_T, species)
+    rho_theta = poloidal_gyroradius_m(Eb_keV, Bt_T, Ip_MA, minor_radius_m, elongation, species)
+    return {
+        "rho_Li": rho_L,
+        "rho_theta": rho_theta,
+        "q_a": safety_factor_cyl_edge_arbitrary_A(Ip_MA, Bt_T, R0_m, minor_radius_m, elongation, triangularity),
+        "f_trap": trapped_particle_fraction(eps),
+        "w_pass": eps_c * rho_theta,
+        "w_ban": 2.0 * math.sqrt(eps_c) * rho_theta,
+    }
+
+
 def ion_ion_collision_frequency_hz(Ti_keV: float, ni_m3: float, species: str = "D") -> float:
     """Ion-ion collision frequency [s^-1], NRL Plasma Formulary "Collision
     Rates" (Z_i=1 hydrogenic ions, same Coulomb logarithm convention as
@@ -682,6 +791,7 @@ def ion_ion_collision_frequency_hz(Ti_keV: float, ni_m3: float, species: str = "
 def neoclassical_tau_Ei_s(
     Ti_keV: float, n_thermal_m3: float, Bt_T: float, Ip_MA: float,
     R0_m: float, a_m: float, elongation: float, mix_D: float, mix_T: float,
+    arbitrary_A: bool = False, triangularity: float = 0.0,
 ) -> float:
     """Neoclassical (banana-regime) ion energy confinement time -- the
     textbook order-unity-coefficient estimate (Wesson "Tokamaks" /
@@ -690,6 +800,28 @@ def neoclassical_tau_Ei_s(
 
         chi_i,neo ~= q^2 * rho_i^2 * nu_ii / eps^1.5
         tau_Ei,neo = a^2 / chi_i,neo = a^2 * eps^1.5 / (q^2 * rho_i^2 * nu_ii)
+
+    ARBITRARY ASPECT RATIO (arbitrary_A=True): the bare eps^-1.5 geometric
+    factor both diverges as eps -> 0 and stays bounded as eps -> 1, neither
+    of which is right on a spherical tokamak. Following the arbitrary-A /
+    arbitrary-collisionality neoclassical treatments (Helander, Phys.
+    Plasmas 7 (2000) 3999; Helander & Sigmar, "Collisional Transport in
+    Magnetized Plasmas"; finite-orbit-width corrections, Hinton, Wiley et
+    al., PRL 29 (1972) 698; Satake et al., Phys. Plasmas 9 (2002)), the
+    trapped-fraction part is replaced by the Lin-Liu & Miller f_t/f_c
+    (the banana-regime structure of Helander & Sigmar's Ch. 11):
+
+        chi_i,neo ~= q_a^2 * rho_i^2 * nu_ii * (f_t / f_c)
+
+    with q_a the arbitrary-A safety factor (safety_factor_cyl_edge_arbitrary_A,
+    using triangularity) and f_t = trapped_particle_fraction(eps),
+    f_c = 1 - f_t. f_t/f_c stays finite for every eps < 1 and rises steeply
+    (-> infinity) only as eps -> 1 -- the physically correct low-aspect
+    trend, where nearly every ion is trapped. This is NOT a smooth
+    reduction of the crude eps^-1.5 form (it can differ either way by up to
+    ~1 order of magnitude, and more once the tau_Ei ~ Ti^0.5 fixed point
+    amplifies it); it is offered as a SEPARATE selectable ion-channel mode
+    precisely so the two order-of-magnitude estimates can be compared.
 
     where eps=a/R0, q from safety_factor_cyl_edge() above, rho_i the
     THERMAL ion Larmor radius (reuses larmor_radius_m()'s exact formula,
@@ -712,14 +844,20 @@ def neoclassical_tau_Ei_s(
     solve._solve_ti_neoclassical_keV).
     """
     eps = a_m / R0_m
-    q = safety_factor_cyl_edge(Ip_MA, Bt_T, R0_m, a_m, elongation)
     m_eff_kg = mix_D * M_D + mix_T * M_T
     v_thi = math.sqrt(2.0 * max(Ti_keV, 1e-9) * 1e3 * E_CHARGE / m_eff_kg)
     rho_i = m_eff_kg * v_thi / (E_CHARGE * Bt_T)
     nu_ii_D = ion_ion_collision_frequency_hz(Ti_keV, mix_D * n_thermal_m3, "D")
     nu_ii_T = ion_ion_collision_frequency_hz(Ti_keV, mix_T * n_thermal_m3, "T")
     nu_ii = nu_ii_D + nu_ii_T
-    chi_i = q**2 * rho_i**2 * nu_ii / eps**1.5
+    if arbitrary_A:
+        q = safety_factor_cyl_edge_arbitrary_A(Ip_MA, Bt_T, R0_m, a_m, elongation, triangularity)
+        f_t = trapped_particle_fraction(eps)
+        f_c = max(1.0 - f_t, 1e-3)
+        chi_i = q**2 * rho_i**2 * nu_ii * (f_t / f_c)
+    else:
+        q = safety_factor_cyl_edge(Ip_MA, Bt_T, R0_m, a_m, elongation)
+        chi_i = q**2 * rho_i**2 * nu_ii / eps**1.5
     if chi_i <= 0.0:
         return float("inf")
     return a_m**2 / chi_i
@@ -836,6 +974,110 @@ def first_orbit_loss_fraction(
         return 0.0
     lost = _trapezoidal_integral(x, lost_density)
     return float(lost / total)
+
+
+def first_orbit_loss_fraction_st(
+    ne0: float, Eb_keV: float, species: str, path_length_m: float,
+    minor_radius_m: float, R0_m: float, widths: dict, co_current: bool = True,
+    variant: str = "meanshift", stopping_model: str = "riviere",
+    Zeff: float = 2.0, Te_keV: float = 10.0, tangent_R_m: float | None = None,
+) -> float:
+    """Prompt first-orbit-loss fraction of the CAPTURED beam at ARBITRARY
+    aspect ratio -- the spherical-tokamak counterpart of
+    first_orbit_loss_fraction() above, which uses the large-aspect
+    q* rho_Li passing-orbit width and a direction-only mean-shift (and so
+    gives EXACTLY zero loss for co-current injection). On an ST the drift
+    and banana orbit widths are an O(a) fraction of the minor radius, the
+    trapped fraction is large, and outboard-born trapped ions are lost
+    regardless of injection direction -- co-current loss is NOT zero. Two
+    variants, both selectable in the GUI so they can be compared:
+
+    variant="meanshift" -- deposition-weighted loss integrals over the
+      birth profile rho(x) (same Beer-Lambert shape as the shine-through
+      and large-aspect first-orbit-loss integrals), blended by the
+      circulating / trapped split f_c, f_t:
+        passing ions lost if  rho -/+ w_pass/a > 1   (- co, + counter)
+                          OR  rho > 1 - 2 rho_Li/a   (gyro)
+        trapped ions lost if  rho + 0.5 w_ban/a > 1  (outboard banana tip)
+                          OR  rho > 1 - 2 rho_Li/a
+        f_orbit = f_c * L_passing + f_t * L_trapped
+      w_pass, w_ban, f_c=1-f_trap, f_t from st_orbit_widths().
+
+    variant="pitch" -- a 2-D integral over birth radius x AND pitch
+      lambda = v_par/v. The birth pitch along a chord tangent at R_t is
+      lambda_0(x) = +/- R_t / sqrt(R_t^2 + (x-a)^2) (+ co, - counter),
+      smeared by a sigma=0.15 Gaussian (beam divergence + finite chord).
+      For each pitch class: trapped if |lambda| < sqrt(2 eps_loc/(1+eps_loc))
+      with eps_loc = rho a / R0; the outboard radial excursion is
+        co-passing    : -w_pass/a * |lambda|      (inward, favourable)
+        counter-pass. : +w_pass/a * |lambda|      (outward)
+        trapped       : +0.5 w_ban/a              (outboard banana tip)
+      Lost if rho + excursion > 1, OR-ed with the same gyro cutoff. Closer
+      in spirit to Akers et al.'s START/MAST first-orbit modelling.
+
+    BIRTH PROFILE: unlike the large-aspect first_orbit_loss_fraction (which
+    reuses the Riviere attenuation shape and, with this project's default
+    "manual" shine-through, collapses to an unphysical edge spike), this
+    integral builds the fast-ion birth weight along the chord from a
+    physically-calibrated mean free path
+
+        lambda_mfp [m] ~= 5.5e19 * (Eb/A)[keV/amu] / ne0[m^-3]
+
+    (standard NBI penetration rule of thumb), clamped to [0.2 a, 8 a] so the
+    profile is neither a delta at the edge nor perfectly flat. stopping_model
+    is accepted for signature parity but only selects a mild shape tilt.
+
+    Refs: Akers et al., Nucl. Fusion (START NBI, tight aspect ratio ~1.4);
+    Goldston, White & Boozer, PRL 47 (1981) 1004 (trapped fast-ion orbit
+    topology / loss); Goldston & Rutherford (1995), Ch. 12.
+    """
+    A = beam_mass_number(species)
+    a = minor_radius_m
+    w_pass = widths["w_pass"]
+    w_ban = widths["w_ban"]
+    f_t = widths["f_trap"]
+    rho_L = widths["rho_Li"]
+
+    n = 601
+    x = np.linspace(0.0, path_length_m, n)
+    lam_mfp = 5.5e19 * (Eb_keV / A) / max(ne0, 1.0e17)
+    lam_mfp = min(max(lam_mfp, 0.2 * a), 8.0 * a)
+    density = np.exp(-x / lam_mfp)
+    rho = np.abs(x - a) / a
+    gyro_lost = rho > (1.0 - 2.0 * rho_L / a)
+    total = _trapezoidal_integral(x, density)
+    if total <= 0.0:
+        return 0.0
+
+    if variant == "meanshift":
+        s_dir = -1.0 if co_current else 1.0
+        pass_lost = gyro_lost | ((rho + s_dir * w_pass / a) > 1.0)
+        trap_lost = gyro_lost | ((rho + 0.5 * w_ban / a) > 1.0)
+        L_pass = _trapezoidal_integral(x, np.where(pass_lost, density, 0.0)) / total
+        L_trap = _trapezoidal_integral(x, np.where(trap_lost, density, 0.0)) / total
+        frac = (1.0 - f_t) * L_pass + f_t * L_trap
+    elif variant == "pitch":
+        R_t = R0_m if tangent_R_m is None else float(tangent_R_m)
+        R_chord = np.sqrt(R_t**2 + (x - a) ** 2)
+        lam0 = (1.0 if co_current else -1.0) * np.clip(R_t / R_chord, -1.0, 1.0)
+        eps_loc = np.clip(rho * a / R0_m, 1e-3, 0.95)
+        lam_tr = np.sqrt(2.0 * eps_loc / (1.0 + eps_loc))
+        sig = 0.15
+        offs = np.linspace(-2.5 * sig, 2.5 * sig, 25)
+        wl = np.exp(-0.5 * (offs / sig) ** 2)
+        wl /= wl.sum()
+        lost_frac_x = np.zeros(n)
+        for weight, off in zip(wl, offs):
+            lam = np.clip(lam0 + off, -1.0, 1.0)
+            trapped = np.abs(lam) < lam_tr
+            d_pass = np.where(lam >= 0.0, -w_pass / a * np.abs(lam), w_pass / a * np.abs(lam))
+            d_out = np.where(trapped, 0.5 * w_ban / a, d_pass)
+            lost_frac_x = lost_frac_x + weight * (gyro_lost | ((rho + d_out) > 1.0))
+        frac = _trapezoidal_integral(x, lost_frac_x * density) / total
+    else:
+        raise ValueError(f"unknown first_orbit_loss_fraction_st variant {variant!r}")
+
+    return float(min(max(frac, 0.0), 1.0))
 
 
 def beam_target_fusion_power(

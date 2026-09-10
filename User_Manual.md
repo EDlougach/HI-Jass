@@ -123,6 +123,16 @@ slowing-down or charge-exchange — because they are born close enough to the la
 closed flux surface (LCFS) that their guiding-centre orbit, or their gyro-orbit,
 crosses it.
 
+The **Orbit model** selector (Models section) chooses how the orbit widths and
+the loss criterion are built:
+
+- **Large-aspect ($q_\ast\rho_{Li}$)** — the original reduced model described in
+  *Passing-orbit width* and *Loss criterion* below. Direction-only mean shift;
+  exactly zero co-current loss.
+- **ST orbits — mean-shift (arbitrary $A$)** and **ST orbits — pitch-resolved** —
+  two spherical-tokamak variants described in *ST orbit models* at the end of
+  this section. Both give non-zero co-current loss.
+
 ### Birth profile along the chord
 
 The calculation reuses the shine-through deposition. Along the straight
@@ -229,7 +239,80 @@ $\Delta r_j$ (in cm and as fractions of $a$) and $f_{\mathrm{orbit},j}$.
 - When $\rho_{Li}/a$ or $\Delta r/a \gtrsim 0.3$ — orbit width comparable to the
 	machine size, typical of compact low-aspect-ratio devices — the whole
 	estimate is order-unity uncertain and really needs a guiding-centre orbit
-	follower. The Assumptions tab flags this case.
+	follower. The Assumptions tab flags this case. The ST orbit models below
+	address the first three of these limitations directly.
+
+### ST orbit models (arbitrary aspect ratio)
+
+On a spherical tokamak the drift and banana orbit widths are an $O(a)$ fraction
+of the minor radius, the trapped fraction is large, and outboard-born trapped
+ions are lost **regardless of injection direction** — so the large-aspect
+model's exact co-current zero is qualitatively wrong. The two ST variants build
+their widths from the **poloidal gyroradius**
+
+$$
+\rho_{\theta,j} = \frac{B_t}{\bar B_p}\,\rho_{Li,j},
+\qquad
+\bar B_p = \frac{\mu_0 I_p}{2\pi a\sqrt{(1+\kappa^2)/2}},
+$$
+
+(not $q_\ast\rho_{Li}$, whose $q_\ast$ runs away as $\varepsilon\to1$), together
+with the circulating and banana widths and the arbitrary-$A$ trapped fraction
+
+$$
+w_{\mathrm{pass},j} = \varepsilon\,\rho_{\theta,j},
+\qquad
+w_{\mathrm{ban},j} = 2\sqrt{\varepsilon}\,\rho_{\theta,j},
+\qquad
+f_t = 1 - \frac{(1-\varepsilon)^2}{(1+1.46\sqrt{\varepsilon})\sqrt{1-\varepsilon^2}},
+$$
+
+with $\varepsilon=a/R_0$ (clamped to $[10^{-3},0.95]$) and $f_c = 1-f_t$
+(Lin-Liu & Miller, *Phys. Plasmas* **2** (1995) 1666). An arbitrary-$A$ edge
+safety factor $q_a$ (Uckan / ITER Physics Basis form, with the
+$(1.17-0.65\varepsilon)/(1-\varepsilon^2)^2$ shaping factor) is reported for
+reference but is **not** used in the widths.
+
+The birth profile in this channel is rebuilt from a physically calibrated mean
+free path $\lambda_{\mathrm{mfp}} \approx 5.5\times10^{19}\,(E_b/A)/n_{e0}$ m,
+clamped to $[0.2a, 8a]$, instead of the (with *Manual* shine-through,
+pathologically edge-peaked) Riviere weighting.
+
+**Mean-shift variant.** Deposition-weighted loss integrals over $\rho(x)$,
+blended by $f_c$, $f_t$:
+
+$$
+f_{\mathrm{orbit},j} = f_c\,L_{\mathrm{pass}} + f_t\,L_{\mathrm{trap}},
+$$
+
+$$
+L_{\mathrm{pass}}:\ \rho \mp \frac{w_{\mathrm{pass},j}}{a} > 1
+\ \ \text{or}\ \ \rho > 1 - \frac{2\rho_{Li,j}}{a},
+\qquad
+L_{\mathrm{trap}}:\ \rho + \frac{w_{\mathrm{ban},j}}{2a} > 1
+\ \ \text{or}\ \ \rho > 1 - \frac{2\rho_{Li,j}}{a},
+$$
+
+($-$ co, $+$ counter). Co-current loss is non-zero through the trapped and gyro
+terms.
+
+**Pitch-resolved variant.** A 2-D integral over birth radius $x$ and pitch
+$\lambda = v_\parallel/v$. The birth pitch along the chord is
+$\lambda_0(x) = \pm R_t/\sqrt{R_t^2+(x-a)^2}$ ($+$ co, $-$ counter), smeared by a
+$\sigma=0.15$ Gaussian. An ion is trapped if
+$|\lambda| < \sqrt{2\varepsilon_{\mathrm{loc}}/(1+\varepsilon_{\mathrm{loc}})}$
+with $\varepsilon_{\mathrm{loc}} = \rho\,a/R_0$; its outboard radial excursion is
+$-w_{\mathrm{pass},j}|\lambda|/a$ (co-passing), $+w_{\mathrm{pass},j}|\lambda|/a$
+(counter-passing) or $+w_{\mathrm{ban},j}/2a$ (trapped), and it is lost if
+$\rho + (\text{excursion}) > 1$ or $\rho > 1 - 2\rho_{Li,j}/a$.
+
+Both variants collapse toward the large-aspect co-current zero as
+$\varepsilon\to 0$. They remain 0-D order-of-magnitude estimates — absolute
+magnitudes are upper-bound-like and the co/counter split is smaller than the
+large-aspect model's because the dominant trapped and gyro channels are
+direction-independent. References: Akers *et al.*, *Nucl. Fusion* (START NBI,
+$A\sim1.4$); Goldston, White & Boozer, *Phys. Rev. Lett.* **47** (1981) 1004;
+Goldston & Rutherford, *Introduction to Plasma Physics* (1995), Ch. 12.
 
 ## Power balance (electron and ion)
 
@@ -476,6 +559,41 @@ transport has no anomalous channel, so it under-estimates real ion transport
 and can predict very hot, sometimes implausible $T_i$; treat it as a lower
 bound. It cannot be combined with electron-ion equipartition.
 
+### Neoclassical ion (arbitrary aspect ratio)
+
+The bare $\varepsilon^{-3/2}$ geometric factor above both diverges as
+$\varepsilon\to0$ and stays bounded as $\varepsilon\to1$, neither of which is
+right on a spherical tokamak. The *arbitrary $A$* variant (selector entries
+ending "*neoclassical i (arbitrary A)*") replaces the trapped-fraction part with
+the Lin-Liu & Miller $f_t/f_c$ — the banana-regime structure of Helander &
+Sigmar's *Collisional Transport in Magnetized Plasmas*, Ch. 11 — and uses the
+arbitrary-$A$ edge safety factor $q_a$:
+
+$$
+\chi_{i,\mathrm{neo}} \simeq
+q_a^2\,\rho_i^2\,\nu_{ii}\,\frac{f_t}{f_c},
+\qquad
+f_t = 1 - \frac{(1-\varepsilon)^2}{(1+1.46\sqrt{\varepsilon})\sqrt{1-\varepsilon^2}},
+\qquad
+f_c = 1 - f_t,
+$$
+
+$$
+q_a = \frac{5\,a^2 B_t}{R_0\,I_p[\mathrm{MA}]}\,
+\frac{1+\kappa^2(1+2\delta^2-1.2\delta^3)}{2}\,
+\frac{1.17-0.65\,\varepsilon}{(1-\varepsilon^2)^2}.
+$$
+
+$f_t/f_c$ stays finite for every $\varepsilon<1$ and rises steeply only as
+$\varepsilon\to1$ (all ions trapped) — the physically correct low-aspect trend.
+This is **not** a smooth reduction of the $\varepsilon^{-3/2}$ form: the two
+order-of-magnitude estimates can differ by up to about one order of magnitude in
+either direction (more once the $\tau_{E,i}\propto T_i^{1/2}$ fixed point
+amplifies it), which is exactly why both are offered — run them side by side.
+References: Helander, *Phys. Plasmas* **7** (2000) 3999; Hinton, Wiley *et al.*,
+*Phys. Rev. Lett.* **29** (1972) 698; Satake *et al.*, *Phys. Plasmas* **9**
+(2002); Goldston & Rutherford (1995).
+
 ## Mean fast-ion energy
 
 Each beam has its own steady-state slowing-down distribution:
@@ -674,7 +792,11 @@ The Plasma tab defines the requested scan range with `n_e_min` and `n_e_max`. Th
 - $n_D$, $n_T$: thermal deuterium and tritium densities
 - $n_{b0}$: total fast-ion density
 - $\rho_{Li}$: fast-ion toroidal-field Larmor radius at the injection energy
-- $\Delta r$: passing drift-orbit radial width, $q_\ast\,\rho_{Li}$
+- $\Delta r$: passing drift-orbit radial width, $q_\ast\,\rho_{Li}$ (large-aspect model)
+- $\rho_\theta$: fast-ion poloidal gyroradius, $(B_t/\bar B_p)\,\rho_{Li}$ (ST orbit models)
+- $w_{\mathrm{pass}}$, $w_{\mathrm{ban}}$: ST circulating / banana orbit widths
+- $f_t$, $f_c$: trapped / circulating particle fractions (arbitrary $A$)
+- $q_a$: arbitrary-aspect-ratio edge safety factor (Uckan form)
 - $f_{\mathrm{orbit}}$: first-orbit loss fraction of captured beam power
 - $P_{\mathrm{orbit}}$: first-orbit loss power
 - $P_{f,tot}$, $P_{f,th}$, $P_{f,b}$: total, thermal, and beam-target fusion power

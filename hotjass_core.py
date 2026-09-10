@@ -39,6 +39,7 @@ class PlasmaParams:
     tau_Ei_mode: str = "fixed"
     enable_orbit_loss: bool = False
     orbit_loss_co_current: bool = True
+    orbit_model: str = "large_aspect"  # "large_aspect" | "st_meanshift" | "st_pitch"
     cx_loss_fraction: float = 0.0
     enable_equipartition: bool = False
 
@@ -89,6 +90,7 @@ class HotJassModel:
             tau_Ei_mode=self.plasma.tau_Ei_mode,
             enable_orbit_loss=self.plasma.enable_orbit_loss,
             orbit_loss_co_current=self.plasma.orbit_loss_co_current,
+            orbit_model=self.plasma.orbit_model,
             cx_loss_fraction=self.plasma.cx_loss_fraction,
             enable_equipartition=self.plasma.enable_equipartition,
             enable_alpha_heating=self.plasma.alpha_heating,

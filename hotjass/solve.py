@@ -49,6 +49,19 @@ class TokamakConfig:
     enable_orbit_loss: bool = False
     orbit_loss_co_current: bool = True
     include_larmor_loss: bool = False
+    orbit_model: str = "large_aspect"
+    # First-orbit-loss orbit-width model (only used when enable_orbit_loss):
+    #   "large_aspect" (default): physics.passing_orbit_width (q* rho_Li) +
+    #     the direction-only mean-shift in first_orbit_loss_fraction -- gives
+    #     EXACTLY zero loss for co-current. include_larmor_loss adds the
+    #     optional bare-gyroradius channel. Unchanged from before.
+    #   "st_meanshift": physics.first_orbit_loss_fraction_st(variant=
+    #     "meanshift") -- arbitrary-A q_a, banana channel, gyro channel;
+    #     co-current loss is NOT zero on a spherical tokamak.
+    #   "st_pitch": physics.first_orbit_loss_fraction_st(variant="pitch") --
+    #     a pitch-angle-resolved 2-D integral (co-passing / counter-passing /
+    #     trapped classes). Both ST variants are offered so they can be
+    #     compared; neither touches the large-aspect result.
     # First-orbit loss (physics.first_orbit_loss_fraction/passing_orbit_width):
     # a fraction of CAPTURED beam power (post shine-through) is lost
     # promptly -- born close enough to the LCFS that a fast ion's passing-
@@ -406,6 +419,8 @@ def _solve_ti_neoclassical_keV(
             Ti_keV, n_thermal_m3, config.Bt0, config.Ip_MA,
             geom.major_radius, geom.minor_radius, geom.elongation,
             config.mix_D, config.mix_T,
+            arbitrary_A=(config.tau_Ei_mode == "neoclassical_arbA"),
+            triangularity=geom.triangularity,
         )
 
     def residual(Ti_keV: float) -> float:
@@ -467,9 +482,11 @@ def solve_operating_point(
     tau_Ei_s = tau_E_s if tau_Ei_s is None else tau_Ei_s
     if config.tau_Ee_mode not in ("fixed", "kaye_nstx_lmode", "kaye_nstx_hmode", "iter98y2"):
         raise ValueError(f"Unknown tau_Ee_mode {config.tau_Ee_mode!r}")
-    if config.tau_Ei_mode not in ("fixed", "neoclassical", "kaye_nstx_lmode", "kaye_nstx_hmode", "iter98y2"):
+    if config.tau_Ei_mode not in (
+        "fixed", "neoclassical", "neoclassical_arbA", "kaye_nstx_lmode", "kaye_nstx_hmode", "iter98y2",
+    ):
         raise ValueError(f"Unknown tau_Ei_mode {config.tau_Ei_mode!r}")
-    if config.tau_Ei_mode == "neoclassical" and config.enable_equipartition:
+    if config.tau_Ei_mode in ("neoclassical", "neoclassical_arbA") and config.enable_equipartition:
         raise ValueError(
             "tau_Ei_mode='neoclassical' combined with enable_equipartition=True is not yet "
             "implemented (would need neoclassical Ti nested inside the coupled Te/Ti bisection's "
@@ -509,25 +526,42 @@ def solve_operating_point(
         P_capt_w += P_capt_i
 
         if config.enable_orbit_loss:
-            orbit_width_m = physics.passing_orbit_width(
-                Eb_keV=beam.Eb_keV, Bt_T=config.Bt0, Ip_MA=config.Ip_MA,
-                R0_m=config.geometry.major_radius, minor_radius_m=config.geometry.minor_radius,
-                elongation=config.geometry.elongation, species=beam.species,
-            )
-            larmor_radius_m_value = physics.larmor_radius_m(Eb_keV=beam.Eb_keV, Bt_T=config.Bt0, species=beam.species)
             # first_orbit_loss_fraction needs an attenuation SHAPE for the birth
             # profile; "manual" shine-through only fixes a fraction, not a shape,
             # so fall back to the standard Riviere shape in that case.
             orbit_stopping_model = (
                 "riviere" if beam.shine_through_model == "manual" else beam.shine_through_model
             )
-            f_orbit = physics.first_orbit_loss_fraction(
-                ne0_m3, beam.Eb_keV, beam.species, path_length_m, config.geometry.minor_radius, orbit_width_m,
-                co_current=getattr(beam, "co_current", config.orbit_loss_co_current),
-                include_larmor_loss=config.include_larmor_loss, larmor_radius_m_value=larmor_radius_m_value,
-                stopping_model=orbit_stopping_model,
-                Zeff=config.Zeff,
-            )
+            co = getattr(beam, "co_current", config.orbit_loss_co_current)
+            if config.orbit_model in ("st_meanshift", "st_pitch"):
+                widths = physics.st_orbit_widths(
+                    Eb_keV=beam.Eb_keV, Bt_T=config.Bt0, Ip_MA=config.Ip_MA,
+                    R0_m=config.geometry.major_radius, minor_radius_m=config.geometry.minor_radius,
+                    elongation=config.geometry.elongation, triangularity=config.geometry.triangularity,
+                    species=beam.species,
+                )
+                f_orbit = physics.first_orbit_loss_fraction_st(
+                    ne0_m3, beam.Eb_keV, beam.species, path_length_m,
+                    config.geometry.minor_radius, config.geometry.major_radius, widths,
+                    co_current=co,
+                    variant="pitch" if config.orbit_model == "st_pitch" else "meanshift",
+                    stopping_model=orbit_stopping_model, Zeff=config.Zeff,
+                    tangent_R_m=beam.tangent_R_m,
+                )
+            else:
+                orbit_width_m = physics.passing_orbit_width(
+                    Eb_keV=beam.Eb_keV, Bt_T=config.Bt0, Ip_MA=config.Ip_MA,
+                    R0_m=config.geometry.major_radius, minor_radius_m=config.geometry.minor_radius,
+                    elongation=config.geometry.elongation, species=beam.species,
+                )
+                larmor_radius_m_value = physics.larmor_radius_m(Eb_keV=beam.Eb_keV, Bt_T=config.Bt0, species=beam.species)
+                f_orbit = physics.first_orbit_loss_fraction(
+                    ne0_m3, beam.Eb_keV, beam.species, path_length_m, config.geometry.minor_radius, orbit_width_m,
+                    co_current=co,
+                    include_larmor_loss=config.include_larmor_loss, larmor_radius_m_value=larmor_radius_m_value,
+                    stopping_model=orbit_stopping_model,
+                    Zeff=config.Zeff,
+                )
         else:
             f_orbit = 0.0
         f_orbit_loss_list.append(f_orbit)
@@ -641,7 +675,7 @@ def solve_operating_point(
 
     if not config.enable_equipartition:
         P_i_total_w = P_i_w + ei_source_w
-        if config.tau_Ei_mode == "neoclassical":
+        if config.tau_Ei_mode in ("neoclassical", "neoclassical_arbA"):
             Ti_keV, tau_Ei_s = _solve_ti_neoclassical_keV(P_i_total_w, n_thermal, V, config)
         else:
             Ti_keV = P_i_total_w * tau_Ei_s / (1.5 * n_thermal * 1e3 * physics.E_CHARGE * V)
