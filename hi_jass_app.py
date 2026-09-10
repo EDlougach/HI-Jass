@@ -1004,6 +1004,36 @@ class HIJassApp(ctk.CTk):
         return dict(s=s, R=R, rho=rho, ne=ne, survival=survival, birth=birth,
                     ds=ds, Rt=Rt, y_out=y_out, f_capt=float(1.0 - np.exp(-tau[-1])))
 
+    def _orbit_cutoff_rho(self, beam, plasma):
+        """Lower rho of the prompt first-orbit-loss zone for this beam
+        (1.0 -> no loss zone). Mirrors the criteria in
+        physics.first_orbit_loss_fraction[_st]: gyro (1 - rho_Li/a),
+        passing drift (co: none, counter: 1 - w_pass/a) and trapped-tip
+        (1 - 0.5 w_ban/a -/+ 0.25 w_pass/a for co/counter)."""
+        if not plasma.enable_orbit_loss:
+            return 1.0
+        a = plasma.minor_radius
+        sp = beam.species.upper()
+        Ip_MA = plasma.plasma_current / 1e6
+        rho_li = physics.larmor_radius_m(beam.beam_energy_keV, plasma.toroidal_field, sp)
+        co = bool(beam.co_current)
+        if getattr(plasma, "orbit_model", "large_aspect") in ("st_meanshift", "st_pitch"):
+            w = physics.st_orbit_widths(
+                beam.beam_energy_keV, plasma.toroidal_field, Ip_MA, plasma.major_radius,
+                a, plasma.elongation, plasma.triangularity, sp)
+            wp, wb = w["w_pass"] / a, w["w_ban"] / a
+            s = -1.0 if co else 1.0
+            gyro = 1.0 - rho_li / a
+            passing = 1.0 if co else 1.0 - wp
+            trapped = 1.0 - 0.5 * wb - s * 0.25 * wp
+            return float(max(0.0, min(gyro, passing, trapped)))
+        if co:
+            return 1.0
+        dr = physics.passing_orbit_width(
+            beam.beam_energy_keV, plasma.toroidal_field, Ip_MA, plasma.major_radius,
+            a, plasma.elongation, sp)
+        return float(max(0.0, 1.0 - dr / a))
+
     def _render_deposition(self, result: Result):
         op = result.op
         model = self.model
@@ -1045,7 +1075,8 @@ class HIJassApp(ctk.CTk):
         ax.set_xlim(-lim, lim)
         ax.set_ylim(-lim, lim)
         ax.set_aspect("equal")
-        ax.set_title("Beam targeting geometry (torus top view)", fontsize=10)
+        ax.set_title(f"{self.active_device} - beam targeting geometry (top view)",
+                     fontsize=10, fontweight="bold")
         ax.set_xlabel("X [m]")
         ax.set_ylabel("Y [m]")
         ax.grid(alpha=0.2)
@@ -1053,6 +1084,7 @@ class HIJassApp(ctk.CTk):
         # (2) attenuation + birth rate along the beam ---------------------
         ax = fig.add_subplot(222)
         ax2 = ax.twinx()
+        shine_lines = []
         for i, ch in enumerate(chords):
             if ch is None:
                 continue
@@ -1062,6 +1094,9 @@ class HIJassApp(ctk.CTk):
             b = ch["birth"]
             ax2.plot(ch["s"], b / (b.max() if b.max() > 0 else 1.0), color=c,
                      lw=1.2, ls=":", label=f"NBI-{i + 1} birth rate")
+            f_capt = op.f_capture[i] if op.f_capture else ch["f_capt"]
+            shine_lines.append(f"NBI-{i + 1}: shine-through {100.0 * (1.0 - f_capt):.1f}%  "
+                               f"(capture {100.0 * f_capt:.1f}%)")
         ax.set_xlabel("distance along beam from plasma entry [m]")
         ax.set_ylabel(r"neutral survival $I(s)/I_0$")
         ax.set_ylim(0.0, 1.03)
@@ -1071,7 +1106,11 @@ class HIJassApp(ctk.CTk):
         ax.grid(alpha=0.2)
         h1, l1 = ax.get_legend_handles_labels()
         h2, l2 = ax2.get_legend_handles_labels()
-        ax.legend(h1 + h2, l1 + l2, fontsize=7, loc="center right")
+        ax.legend(h1 + h2, l1 + l2, fontsize=7, loc="upper right")
+        if shine_lines:
+            ax.text(0.03, 0.03, "\n".join(shine_lines), transform=ax.transAxes,
+                    fontsize=7.5, va="bottom", ha="left",
+                    bbox=dict(boxstyle="round", fc="white", ec="0.7", alpha=0.9))
 
         # (3) fast-ion birth vs normalised radius -----------------------
         ax = fig.add_subplot(223)
@@ -1080,6 +1119,7 @@ class HIJassApp(ctk.CTk):
         dr = edges[1] - edges[0]
         smooth = np.array([0.25, 0.5, 0.25])
         total = np.zeros_like(ctr)
+        cutoffs = []
         for i, (beam, ch) in enumerate(zip(model.beams, chords)):
             if ch is None:
                 continue
@@ -1093,11 +1133,20 @@ class HIJassApp(ctk.CTk):
             hist = np.convolve(hist, smooth, mode="same")
             ax.plot(ctr, hist, color=c, lw=1.3, label=f"NBI-{i + 1}")
             total += hist
+            rc = self._orbit_cutoff_rho(beam, plasma)
+            if rc < 0.999:
+                cutoffs.append(rc)
+                ax.axvline(rc, color=c, ls="--", lw=1.0, alpha=0.75)
         if nb > 1:
             ax.plot(ctr, total, color="k", lw=2.0, label="total")
+        if cutoffs:
+            rc_min = min(cutoffs)
+            ax.axvspan(rc_min, 1.0, color="0.5", alpha=0.12,
+                       label=r"first-orbit-loss zone ($\rho>\rho_{cut}$)")
         ax.set_xlabel(r"$\rho = |R-R_0|/a$  (midplane)")
         ax.set_ylabel(r"deposited power  [MW per unit $\rho$]")
         ax.set_title("Fast-ion birth vs normalised radius (chord-sampled)", fontsize=10)
+        ax.set_xlim(0.0, 1.0)
         ax.grid(alpha=0.2)
         ax.legend(fontsize=7)
 

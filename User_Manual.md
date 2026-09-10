@@ -666,12 +666,16 @@ The underlying HotJass calculation still evaluates each beam separately before f
 
 - **Dashboard** — scalar table of the operating point (temperatures, densities,
   power balance terms, orbit widths, Greenwald ratio).
-- **Deposition** — (1) beam targeting geometry in the torus top view, tangent to
-  each beam's $R_t$ with its co-/counter-current sense; (2) neutral-beam
-  survival $I(s)/I_0$ and the fast-ion birth rate $n_e\sigma\,I(s)/I_0$ along
-  the beam; (3) the resulting fast-ion birth versus normalised radius $\rho$,
-  per beam and total (chord-sampled, midplane circular approximation); (4) the
-  steady-state slowing-down distribution $f(E)$ with the $E_b$ edge marked.
+- **Deposition** — (1) beam targeting geometry in the torus top view (titled
+  with the active device), tangent to each beam's $R_t$ with its
+  co-/counter-current sense; (2) neutral-beam survival $I(s)/I_0$ and the
+  fast-ion birth rate $n_e\sigma\,I(s)/I_0$ along the beam, annotated with each
+  beam's shine-through percentage; (3) the resulting fast-ion birth versus
+  normalised radius $\rho$, per beam and total (chord-sampled, midplane circular
+  approximation), with the prompt first-orbit-loss zone $\rho>\rho_{cut}$ shaded
+  and a per-beam $\rho_{cut}$ line (from the same criteria as the orbit-loss
+  model in use); (4) the steady-state slowing-down distribution $f(E)$ with the
+  $E_b$ edge marked.
 - **Power flow** — waterfall / Sankey / pie of injected power to its sinks.
 - **Profiles** — $n_e(\rho)$, $T_{e,i}(\rho)$ and the plasma shape.
 - **Assumptions** — the full validity / fit-range read-out and any warnings.
