@@ -134,6 +134,13 @@ class HIJassApp(ctk.CTk):
             "n_e_min": 1.0e19, "n_e_max": 1.0e20, "density_peaking": 0.0, "temp_peaking": 0.0,
             "deuterium_fraction": 0.5, "tritium_fraction": 0.5, "tauE_e": 0.1, "tauE_i": 0.1,
         },
+        "TCV": {
+            "major_radius": 0.88, "minor_radius": 0.25, "elongation": 1.8,
+            "triangularity": 0.5, "effective_charge": 2.0, "toroidal_field": 1.43,
+            "plasma_current_MA": 0.4, "central_density": 5.0e19,
+            "n_e_min": 5.0e18, "n_e_max": 1.0e20, "density_peaking": 0.3, "temp_peaking": 1.0,
+            "deuterium_fraction": 1.0, "tritium_fraction": 0.0, "tauE_e": 0.005, "tauE_i": 0.005,
+        },
     }
 
     PLASMA_FIELDS = [
@@ -376,6 +383,18 @@ class HIJassApp(ctk.CTk):
         self._add_entries(models.body, "models", [
             ("f_alpha (confined fraction 0-1)", "f_alpha", self._saved.get("models.f_alpha", 1.0)),
         ], start_row=6)
+        row += 1
+
+        # Second Run button at the foot of the input rail, so the user does not
+        # have to scroll back up after changing a model. Kept in lock-step with
+        # the top button by _configure_run_buttons().
+        self.run_btn_bottom = ctk.CTkButton(rail, text="▶  Run", command=self._run)
+        self.run_btn_bottom.grid(row=row, column=0, sticky="ew", pady=(10, 4))
+        self._run_btns = [self.run_btn, self.run_btn_bottom]
+
+    def _configure_run_buttons(self, **kwargs):
+        for btn in getattr(self, "_run_btns", [self.run_btn]):
+            btn.configure(**kwargs)
 
     def _plasma_defaults(self):
         preset = {**{f: d for _, f, d in self.PLASMA_FIELDS}}
@@ -618,8 +637,8 @@ class HIJassApp(ctk.CTk):
         self._snapshot_inputs()
         self._running = True
         self.status.configure(text="Running…", text_color="gray")
-        self.run_btn.configure(state="disabled", text="⏳  Running…",
-                               fg_color="#c0504d", hover_color="#c0504d")
+        self._configure_run_buttons(state="disabled", text="⏳  Running…",
+                                    fg_color="#c0504d", hover_color="#c0504d")
         threading.Thread(target=self._worker, daemon=True).start()
         self.after(80, self._poll_result)
 
@@ -647,8 +666,8 @@ class HIJassApp(ctk.CTk):
         self._render(result)
 
     def _render(self, result: Result):
-        self.run_btn.configure(state="normal", text="▶  Run",
-                               fg_color=self._run_btn_fg, hover_color=self._run_btn_hover)
+        self._configure_run_buttons(state="normal", text="▶  Run",
+                                    fg_color=self._run_btn_fg, hover_color=self._run_btn_hover)
         if not result.ok:
             self.status.configure(text="Error — see Assumptions tab", text_color="#c0504d")
             self.assump_box.delete("1.0", "end")
@@ -727,8 +746,9 @@ class HIJassApp(ctk.CTk):
                     beam.beam_energy_keV, plasma.toroidal_field, plasma.plasma_current / 1e6,
                     plasma.major_radius, a, plasma.elongation, plasma.triangularity, sp)
                 orb[f"orb{i + 1}"] = (
-                    f"rho_Li={rho_li / a:.2f} a,  rho_th={w['rho_theta'] / a:.2f} a,  "
-                    f"w_ban={w['w_ban'] / a:.2f} a,  f_t={w['f_trap']:.2f},  f_orbit={f_orb:.3f}")
+                    f"rho_th={w['rho_theta'] / a:.2f} a,  w_pass={w['w_pass'] / a:.2f} a,  "
+                    f"w_ban={w['w_ban'] / a:.2f} a,  f_c/f_t={1.0 - w['f_trap']:.2f}/{w['f_trap']:.2f},  "
+                    f"f_orbit={f_orb:.3f}")
             else:
                 dr = physics.passing_orbit_width(
                     beam.beam_energy_keV, plasma.toroidal_field, plasma.plasma_current / 1e6,
@@ -1122,11 +1142,13 @@ class HIJassApp(ctk.CTk):
                 w = physics.st_orbit_widths(
                     b.beam_energy_keV, plasma.toroidal_field, plasma.plasma_current / 1e6,
                     plasma.major_radius, a, plasma.elongation, plasma.triangularity, sp)
+                f_c = 1.0 - w["f_trap"]
                 lines.append(
                     f"  NBI-{i + 1}: rho_Li = {rho_li / a:.2f} a,  rho_theta = {w['rho_theta'] / a:.2f} a,  "
                     f"w_pass = {w['w_pass'] / a:.2f} a,  w_ban = {w['w_ban'] / a:.2f} a,")
                 lines.append(
-                    f"          q_a = {w['q_a']:.1f},  f_trap = {w['f_trap']:.2f},  f_orbit = {f_orb:.3f}")
+                    f"          q_a = {w['q_a']:.1f},  passing f_c = {f_c:.2f} / trapped f_t = {w['f_trap']:.2f},  "
+                    f"f_orbit = {f_orb:.3f}")
                 wide = wide or w["w_ban"] / a > 0.5
             else:
                 dr = physics.passing_orbit_width(
@@ -1137,14 +1159,12 @@ class HIJassApp(ctk.CTk):
                 wide = wide or rho_li / a > 0.3 or dr / a > 0.3
         if st_orbit:
             lines.append("  ST orbit models: widths from the poloidal gyroradius rho_theta (not q*rho_Li);")
-            lines.append("  co-current f_orbit is NOT zero (trapped + gyro channels are direction-independent).")
-            lines.append("  Birth profile from lambda_mfp ~ 5.5e19 (Eb/A)/ne0, clamped [0.2a, 8a] -- a 0-D")
-            lines.append("  order-of-magnitude estimate; absolute magnitude is upper-bound-ish.")
+            lines.append("  co-current f_orbit is non-zero (trapped + gyro channels are direction-independent).")
+            lines.append("  Birth profile from lambda_mfp ~ 5.5e19 (Eb/A)/ne0, clamped [0.2a, 8a]. 0-D")
+            lines.append("  order-of-magnitude estimate; the co/counter split is narrower than the large-A model.")
             lines.append("  Refs: Akers NF (START NBI); Goldston-White-Boozer PRL 47 (1981); Goldston & Rutherford (1995).")
         elif wide:
-            lines.append("  ! rho_Li/a or dr/a > 0.3: orbit width ~ machine size; the mean-shift")
-            lines.append("    first-orbit-loss estimate is order-unity uncertain here (needs an")
-            lines.append("    orbit follower). Co-current f_orbit=0 is a model artefact -- try an ST orbit model.")
+            lines.append("  ! orbit width >~ 0.3 a: the large-aspect estimate is crude here -- try an ST orbit model.")
         lines.append(f"CX loss fraction: {plasma.cx_loss_fraction:.3g} (flat efficiency knob)")
         lines.append(f"e-i equipartition: {'ON (coupled Te/Ti solve)' if plasma.enable_equipartition else 'off (decoupled Te, Ti)'}")
         if plasma.alpha_heating:
