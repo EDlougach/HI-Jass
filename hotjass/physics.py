@@ -33,6 +33,12 @@ E_ALPHA_MEV = 3.5
 E_FUSION_MEV = 17.6
 F_ALPHA = 1.0
 
+# D-D fusion branch energetics (Bosch-Hale 1992 / NRL).
+E_DDP_MEV = 4.033   # D(d,p)T   -- no neutron
+E_DDN_MEV = 3.269   # D(d,n)3He -- 2.45 MeV neutron
+E_DDN_NEUTRON_MEV = 2.45
+E_DTN_MEV = 14.06   # the D-T neutron
+
 
 @dataclass
 class TokamakGeometry:
@@ -90,6 +96,60 @@ def bosch_hale_dt_cross_section(energy_keV: float | np.ndarray) -> float | np.nd
     sigma_mb = s_of_e / (e * np.exp(B_G / np.sqrt(e)))
     sigma_m2 = sigma_mb * 1e-31
     return sigma_m2 if np.ndim(energy_keV) else float(sigma_m2)
+
+
+# Bosch-Hale (1992, Nucl. Fusion 32, 611) D-D coefficients, per reaction branch:
+#   Table VIII -> reactivity C1..C7, B_G, m_r c^2 ;  Table VII -> S(E) A1..A5, B_G.
+# Energies/temperatures in keV; reactivity comes out in cm^3/s, cross-section in mb,
+# both converted to SI below. Same theta/xi functional form as the D-T fits above.
+_BH_DD = {
+    "p": dict(B_G=31.3970, MC2=937814.0,
+              C=(5.65718e-12, 3.41267e-3, 1.99167e-3, 0.0, 1.05060e-5, 0.0, 0.0),
+              A=(5.5576e4, 2.1054e2, -3.2638e-2, 1.4987e-6, 1.8181e-10)),
+    "n": dict(B_G=31.3970, MC2=937814.0,
+              C=(5.43360e-12, 5.85778e-3, 7.68222e-3, 0.0, -2.96400e-6, 0.0, 0.0),
+              A=(5.3701e4, 3.3027e2, -1.2706e-1, 2.9327e-5, -2.5151e-9)),
+}
+
+
+def _bh_reactivity_cm3s(t_keV, B_G, MC2, C):
+    C1, C2, C3, C4, C5, C6, C7 = C
+    t = np.asarray(t_keV, dtype=float)
+    ts = np.maximum(t, 1e-6)
+    theta = ts / (1.0 - (ts * (C2 + ts * (C4 + ts * C6))) / (1.0 + ts * (C3 + ts * (C5 + ts * C7))))
+    xi = (B_G**2 / (4.0 * theta)) ** (1.0 / 3.0)
+    sv = C1 * theta * np.sqrt(xi / (MC2 * ts**3)) * np.exp(-3.0 * xi)
+    return np.where(t > 0.0, sv, 0.0)
+
+
+def _bh_cross_section_m2(e_keV, B_G, A):
+    A1, A2, A3, A4, A5 = A
+    e = np.maximum(np.asarray(e_keV, dtype=float), 0.5)
+    S = A1 + e * (A2 + e * (A3 + e * (A4 + e * A5)))
+    sigma_mb = S / (e * np.exp(B_G / np.sqrt(e)))
+    return np.maximum(sigma_mb, 0.0) * 1e-31
+
+
+def bosch_hale_dd_reactivity(temperature_keV: float | np.ndarray, branch: str = "total"):
+    """Bosch-Hale D-D thermal reactivity <sigma v> [m^3/s] as a function of the
+    ION temperature. branch = 'p' for D(d,p)T, 'n' for D(d,n)3He, 'total' for
+    the sum. Valid 0.2-100 keV; matches the NRL Formulary table to a few %.
+    """
+    p = _bh_reactivity_cm3s(temperature_keV, **{k: _BH_DD["p"][k] for k in ("B_G", "MC2", "C")}) * 1e-6
+    n = _bh_reactivity_cm3s(temperature_keV, **{k: _BH_DD["n"][k] for k in ("B_G", "MC2", "C")}) * 1e-6
+    out = {"p": p, "n": n, "total": p + n}[branch]
+    return out if np.ndim(temperature_keV) else float(out)
+
+
+def bosch_hale_dd_cross_section(energy_keV: float | np.ndarray, branch: str = "total"):
+    """Bosch-Hale D-D cross-section [m^2] vs the LAB kinetic energy of the
+    incident deuteron (target deuteron at rest) -- same lab-frame convention as
+    bosch_hale_dt_cross_section(). branch = 'p' / 'n' / 'total'.
+    """
+    p = _bh_cross_section_m2(energy_keV, _BH_DD["p"]["B_G"], _BH_DD["p"]["A"])
+    n = _bh_cross_section_m2(energy_keV, _BH_DD["n"]["B_G"], _BH_DD["n"]["A"])
+    out = {"p": p, "n": n, "total": p + n}[branch]
+    return out if np.ndim(energy_keV) else float(out)
 
 
 def beam_velocity(energy_keV: float | np.ndarray, species: str = "D") -> float | np.ndarray:
@@ -1150,3 +1210,70 @@ def beam_target_fusion_power(
         distribution = slowing_down_distribution(float(local_te), local_nb, Eb_keV, energies, species)
         radial_rate[index] = n_target0 * density_factor * _trapezoidal_integral(energies, distribution * sigma_v)
     return volume_m3 * profile_volume_average(radial_rate, rho) * E_FUSION_J
+
+
+def thermal_dd_fusion_power(
+    nD0: float, Ti_keV: float, volume_m3: float,
+    density_peaking: float = 0.0, temperature_peaking: float = 0.0,
+) -> tuple[float, float]:
+    """Thermal D-D fusion power [W] and D(d,n)3He reaction rate [1/s].
+
+    Sums the two branches with their own energies (D(d,p)T 4.033 MeV,
+    D(d,n)3He 3.269 MeV) and the 1/2 identical-particle factor. Profile-
+    integrated exactly like thermal_fusion_power(): nD0 and Ti_keV are the
+    CENTRAL (on-axis) values, the (1-rho^2) shape from density_peaking /
+    temperature_peaking. Returns ``(P_w, R_ddn_per_s)`` -- the second value
+    is the neutron-producing rate (one 2.45 MeV neutron each).
+    """
+    if nD0 <= 0.0 or Ti_keV <= 0.0:
+        return 0.0, 0.0
+    rho = np.linspace(0.0, 1.0, 401)
+    d2 = (np.maximum(1.0 - rho**2, 0.0) ** (2.0 * max(density_peaking, 0.0))) ** 2
+    tprof = np.maximum(1.0 - rho**2, 0.0) ** (2.0 * max(temperature_peaking, 0.0))
+    Tloc = Ti_keV * tprof
+    half_nD2_V = 0.5 * nD0**2 * volume_m3
+    rate_p = half_nD2_V * profile_volume_average(d2 * bosch_hale_dd_reactivity(Tloc, "p"), rho)
+    rate_n = half_nD2_V * profile_volume_average(d2 * bosch_hale_dd_reactivity(Tloc, "n"), rho)
+    P = rate_p * (E_DDP_MEV * 1e6 * E_CHARGE) + rate_n * (E_DDN_MEV * 1e6 * E_CHARGE)
+    return P, rate_n
+
+
+def beam_target_dd_fusion_power(
+    nb0: float, nD_target0: float, Te_keV: float, Eb_keV: float, volume_m3: float,
+    ne0: float | None = None, density_peaking: float = 0.0, temperature_peaking: float = 0.0,
+) -> tuple[float, float]:
+    """Beam-target D-D fusion power [W] and D(d,n)3He rate [1/s]: a fast D ion
+    slowing down through a thermal D population. Structure mirrors
+    beam_target_fusion_power(); the cross-section is bosch_hale_dd_cross_section
+    at the (lab) slowing-down energy. NO 1/2 factor -- the fast and thermal D
+    populations are distinct. Returns ``(P_w, R_ddn_per_s)``.
+    """
+    if nb0 <= 0.0 or nD_target0 <= 0.0:
+        return 0.0, 0.0
+    energies = np.linspace(1.0e-3, Eb_keV, 601)
+    v = beam_velocity(energies, "D")
+    svp = bosch_hale_dd_cross_section(energies, "p") * v
+    svn = bosch_hale_dd_cross_section(energies, "n") * v
+    if ne0 is None or (density_peaking == 0.0 and temperature_peaking == 0.0):
+        f = slowing_down_distribution(Te_keV, nb0, Eb_keV, energies, "D")
+        Rp = volume_m3 * _trapezoidal_integral(energies, nD_target0 * f * svp)
+        Rn = volume_m3 * _trapezoidal_integral(energies, nD_target0 * f * svn)
+    else:
+        rho = np.linspace(0.0, 1.0, 121)
+        dprof = np.maximum(1.0 - rho**2, 0.0) ** (2.0 * max(density_peaking, 0.0))
+        tprof = np.maximum(1.0 - rho**2, 0.0) ** (2.0 * max(temperature_peaking, 0.0))
+        ref_tau = thermalization_time(ne0, Te_keV, Eb_keV, "D")
+        radp = np.zeros_like(rho)
+        radn = np.zeros_like(rho)
+        for i, (df, tf) in enumerate(zip(dprof, tprof)):
+            local_ne = ne0 * df
+            local_te = Te_keV * tf
+            local_tau = thermalization_time(float(local_ne), float(local_te), Eb_keV, "D")
+            local_nb = nb0 * local_tau / max(ref_tau, 1e-30)
+            f = slowing_down_distribution(float(local_te), local_nb, Eb_keV, energies, "D")
+            radp[i] = nD_target0 * df * _trapezoidal_integral(energies, f * svp)
+            radn[i] = nD_target0 * df * _trapezoidal_integral(energies, f * svn)
+        Rp = volume_m3 * profile_volume_average(radp, rho)
+        Rn = volume_m3 * profile_volume_average(radn, rho)
+    P = Rp * (E_DDP_MEV * 1e6 * E_CHARGE) + Rn * (E_DDN_MEV * 1e6 * E_CHARGE)
+    return P, Rn

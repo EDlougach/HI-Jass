@@ -286,6 +286,7 @@ class HIJassApp(ctk.CTk):
     DASH_ROWS = [
         ("Feasibility", "feasibility"),
         ("T_e [keV]", "Te"), ("T_i [keV]", "Ti"),
+        ("  on-axis T_e0 / T_i0 [keV]", "T0"),
         ("n_e0 [m^-3]", "ne0"), ("n_b0 [m^-3]", "nb0"),
         ("P_NB injected [MW]", "P_NB"), ("P shine-through [MW]", "P_shine"),
         ("P captured [MW]", "P_capt"), ("P first-orbit loss [MW]", "P_orbit"),
@@ -298,8 +299,10 @@ class HIJassApp(ctk.CTk):
         ("P_ECRH -> e / i [MW]", "p_ecrh"),
         ("P_ICRH -> e / i [MW]", "p_icrh"),
         ("P_heat total (NBI + aux + alpha) [MW]", "P_heat"),
-        ("P_fusion total [MW]", "Pf_tot"), ("  thermal [MW]", "Pf_th"),
-        ("  beam-target [MW]", "Pf_b"), ("Q = P_fus / P_NB", "Q"),
+        ("P_fusion total [MW]", "Pf_tot"),
+        ("  D-T (thermal / beam-target) [MW]", "Pf_dt"),
+        ("  D-D (thermal / beam-target) [MW]", "Pf_dd"),
+        ("neutron rate [n/s]", "R_n"), ("Q = P_fus / P_NB", "Q"),
         ("<E_fast> [keV]", "E_fast"), ("beta_t [%]", "beta_t"),
         ("<n_e>/n_GW  (Greenwald, at ne_c)", "f_gw"),
         ("Dominant loss", "dominant"),
@@ -458,6 +461,11 @@ class HIJassApp(ctk.CTk):
         self._add_entries(models.body, "models", [
             ("f_alpha (confined fraction 0-1)", "f_alpha", self._saved.get("models.f_alpha", 1.0)),
         ], start_row=6)
+        self.profile_var = ctk.BooleanVar(value=self._saved.get("_profile_averaging", False))
+        ctk.CTkCheckBox(
+            models.body, text="profile-corrected 0-D (central n_e in; <T> + T0 out)",
+            variable=self.profile_var,
+        ).grid(row=7, column=0, columnspan=2, padx=8, pady=4, sticky="w")
         row += 1
 
         # Second Run button at the foot of the input rail, so the user does not
@@ -628,6 +636,7 @@ class HIJassApp(ctk.CTk):
         plasma.tau_Ee_mode, plasma.tau_Ei_mode = ee_mode, ei_mode
         plasma.enable_orbit_loss = bool(self.orbit_var.get())
         plasma.orbit_model = ORBIT_MODELS[self.orbit_model_var.get()]
+        plasma.profile_averaging = bool(self.profile_var.get())
         plasma.enable_equipartition = bool(self.equip_var.get())
         if plasma.enable_equipartition and plasma.tau_Ei_mode in ("neoclassical", "neoclassical_arbA"):
             errors.append("equipartition + neoclassical ion (unsupported together)")
@@ -838,9 +847,16 @@ class HIJassApp(ctk.CTk):
                     f"dr={dr * 100:.1f} cm ({dr / a:.2f} a),  f_orbit={f_orb:.3f}")
         n_line, n_gw, f_gw = self._greenwald()
 
+        prof_on = getattr(self.model.plasma, "profile_averaging", False)
+        te0 = op.Te0_keV if op.Te0_keV is not None else op.Te_keV
+        ti0 = op.Ti0_keV if op.Ti0_keV is not None else op.Ti_keV
         values = {
-            "Te": self._fmt(op.Te_keV), "Ti": self._fmt(op.Ti_keV),
-            "ne0": self._fmt(op.ne0_m3, "{:.3e}"), "nb0": self._fmt(op.nb0_m3, "{:.3e}"),
+            "Te": self._fmt(op.Te_keV) + ("  (<T>)" if prof_on else ""),
+            "Ti": self._fmt(op.Ti_keV) + ("  (<T>)" if prof_on else ""),
+            "T0": (f"{self._fmt(te0)} / {self._fmt(ti0)}" if prof_on
+                   else "(profile-corrected 0-D off)"),
+            "ne0": self._fmt(op.ne0_m3, "{:.3e}") + ("  (on-axis)" if prof_on else ""),
+            "nb0": self._fmt(op.nb0_m3, "{:.3e}"),
             "P_NB": self._fmt(P_NB), "P_shine": self._fmt(op.P_shine_w * mw),
             "P_capt": self._fmt(op.P_capt_w * mw), "P_orbit": self._fmt(op.P_orbit_loss_w * mw),
             "P_cx": self._fmt(op.P_cx_loss_w * mw), "P_useful": self._fmt(op.P_useful_w * mw),
@@ -854,8 +870,10 @@ class HIJassApp(ctk.CTk):
                        f"{plasma.p_icrh_MW * plasma.icrh_f_i:.2f}   (of {plasma.p_icrh_MW:.2f})"
                        if plasma.p_icrh_MW > 0 else "off"),
             "P_heat": self._fmt((op.P_useful_w + op.P_alpha_w + op.P_aux_e_w + op.P_aux_i_w) * mw),
-            "Pf_tot": self._fmt(op.pf_total_w * mw), "Pf_th": self._fmt(op.pf_thermal_w * mw),
-            "Pf_b": self._fmt(op.pf_beam_w * mw),
+            "Pf_tot": self._fmt(op.pf_total_w * mw),
+            "Pf_dt": f"{op.pf_thermal_w * mw:.3g} / {op.pf_beam_w * mw:.3g}   (= {op.pf_dt_w * mw:.3g})",
+            "Pf_dd": f"{op.pf_dd_thermal_w * mw:.3g} / {op.pf_dd_beam_w * mw:.3g}   (= {op.pf_dd_w * mw:.3g})",
+            "R_n": self._fmt(op.neutron_rate_s, "{:.3e}"),
             "Q": self._fmt(op.pf_total_w / op.P_NB_total_w if op.P_NB_total_w else None, "{:.3g}"),
             "E_fast": self._fmt(op.avg_fast_energy_keV),
             "beta_t": self._fmt(op.beta_t * 100.0),
@@ -1543,6 +1561,22 @@ class HIJassApp(ctk.CTk):
             lines.append("  ! orbit width >~ 0.3 a: the large-aspect estimate is crude here -- try an ST orbit model.")
         lines.append(f"CX loss fraction: {plasma.cx_loss_fraction:.3g} (flat efficiency knob)")
         lines.append(f"e-i equipartition: {'ON (coupled Te/Ti solve)' if plasma.enable_equipartition else 'off (decoupled Te, Ti)'}")
+        if getattr(plasma, "profile_averaging", False):
+            pkn = 1.0 + 2.0 * max(plasma.density_peaking, 0.0)
+            pkt = 1.0 + 2.0 * max(plasma.temp_peaking, 0.0)
+            lines.append(f"Profile-corrected 0-D: ON  -- balance runs on <n_e> = n_e0 / {pkn:.2f}")
+            lines.append(f"  (from density peaking {plasma.density_peaking:.2g}); T reported as <T> and")
+            lines.append(f"  T0 = <T> x {pkt:.2f} (from temperature peaking {plasma.temp_peaking:.2g}). Fusion")
+            lines.append(f"  uses the on-axis values with the (1-rho^2) profile shape.")
+            lines.append(f"  Te0 = {op.Te0_keV:.2f} keV, Ti0 = {op.Ti0_keV:.2f} keV,  "
+                         f"neutrons = {op.neutron_rate_s:.2e} n/s.")
+        else:
+            lines.append("Profile-corrected 0-D: off  -- n_e0 and T treated as uniform "
+                         "(reported T is a flat-plasma effective value).")
+        if op.pf_dd_w > 0.0:
+            lines.append(f"D-D fusion: {op.pf_dd_w * 1e-6:.3g} MW  "
+                         f"(thermal {op.pf_dd_thermal_w * 1e-6:.3g} + beam-target {op.pf_dd_beam_w * 1e-6:.3g}); "
+                         f"D-T {op.pf_dt_w * 1e-6:.3g} MW.")
         if plasma.alpha_heating:
             lines.append(f"Alpha self-heating: ON  (f_alpha={plasma.f_alpha:.3g}; "
                          f"P_a = f_alpha*(3.5/17.6)*P_fus, fixed-point, e/i split by slowing-down)")
@@ -1630,6 +1664,8 @@ class HIJassApp(ctk.CTk):
                              "st_pitch": "ST pitch-resolved"}.get(
             getattr(p, "orbit_model", "large_aspect"), getattr(p, "orbit_model", ""))
         orbit_state = f"ON [{orbit_model_short}]" if p.enable_orbit_loss else "off"
+        prof_state = ("ON (n_e0 -> <n_e>; <T> + T0 reported)"
+                      if getattr(p, "profile_averaging", False) else "off (uniform n_e, T)")
         _, n_gw, f_gw_c = self._greenwald()
         f_gw_lo = self._greenwald(p.n_e_min)[2]
         f_gw_hi = self._greenwald(p.n_e_max)[2]
@@ -1648,6 +1684,7 @@ class HIJassApp(ctk.CTk):
             f"tauE,e used = {tau_e_str}    tauE,i used = {tau_i_str}\n"
             f"e-i equipartition={equip_state}    alpha self-heating={alpha_state}    "
             f"first-orbit loss={orbit_state}    CX loss frac={p.cx_loss_fraction:.3g}\n"
+            f"profile-corrected 0-D={prof_state}\n"
             f"ECRH={p.p_ecrh_MW:.3g} MW (f_e={p.ecrh_f_e:.3g})    "
             f"ICRH={p.p_icrh_MW:.3g} MW (f_e={p.icrh_f_e:.3g}, f_i={p.icrh_f_i:.3g})",
         ]
@@ -1730,6 +1767,7 @@ class HIJassApp(ctk.CTk):
         data["_orbit_model"] = self.orbit_model_var.get()
         data["_equipartition"] = bool(self.equip_var.get())
         data["_alpha_heating"] = bool(self.alpha_var.get())
+        data["_profile_averaging"] = bool(self.profile_var.get())
         for beam_index in (0, 1):
             data[f"beam{beam_index}._shine"] = getattr(self, f"shine_var_{beam_index}").get()
             data[f"beam{beam_index}._dir"] = getattr(self, f"beam_dir_var_{beam_index}").get()

@@ -445,6 +445,38 @@ $$
 The reported $P_e$ and $P_i$ remain the pure beam split; $P_{ei}$, $P_\alpha$
 and $P_{\mathrm{aux}}$ are reported separately.
 
+### Profile-corrected 0-D
+
+The balance above is genuinely 0-D: one density, one $T_e$, one $T_i$, treated
+as uniform over the volume. With the **profile-corrected 0-D** checkbox
+(Models section) *off* — the default — the entered central density is used
+directly as that uniform value and the solved $T$ is a flat-plasma effective
+temperature; comparing it to a measured on-axis $T_0$ then needs a peaking
+factor supplied by the reader (validation runs use $\simeq 2$).
+
+With the checkbox *on*, the entered `central n_e` is taken to be the **on-axis**
+$n_{e0}$, and for a $(1-\rho^2)^{2p}$ profile the volume average is
+$\langle X\rangle = X_0/(1+2p)$. The energy balance and the $\tau_E$ scalings
+then run on
+
+$$
+\langle n_e\rangle = \frac{n_{e0}}{1+2\,p_n},
+$$
+
+so the solved $T_e$, $T_i$ are **volume-averaged**. The on-axis values
+
+$$
+T_{e0} = \langle T_e\rangle\,(1+2\,p_T), \qquad
+T_{i0} = \langle T_i\rangle\,(1+2\,p_T)
+$$
+
+are reported alongside (Dashboard row "on-axis $T_{e0}/T_{i0}$"), and are what
+the fusion, pressure and $\beta_t$ integrals use as their central values (with
+the $(1-\rho^2)$ shape from $p_n$, $p_T$). Set $p_n$ (`Density peaking`) and
+$p_T$ (`Temperature peaking`) to values that describe the real profile —
+$p_T\simeq0.5$–$0.75$ gives $T_0/\langle T\rangle\simeq2$–$2.5$, typical of an
+L- or H-mode. With both peaking parameters at $0$ the correction is a no-op.
+
 ## Confinement time
 
 $\tau_{E,e}$ and $\tau_{E,i}$ in the balances above are set per channel by the
@@ -664,8 +696,9 @@ The underlying HotJass calculation still evaluates each beam separately before f
 
 ## Results tabs (Operating point)
 
-- **Dashboard** — scalar table of the operating point (temperatures, densities,
-  power balance terms, orbit widths, Greenwald ratio).
+- **Dashboard** — scalar table of the operating point (temperatures, and their
+  on-axis values when profile-corrected 0-D is on; densities, power balance
+  terms, orbit widths, D-T / D-D fusion power, neutron rate, Greenwald ratio).
 - **Deposition** — (1) beam targeting geometry in the torus top view (titled
   with the active device), tangent to each beam's $R_t$ with its
   co-/counter-current sense; (2) neutral-beam survival $I(s)/I_0$ and the
@@ -780,7 +813,9 @@ $$
 v_j(E)=\sqrt{\frac{2E}{m_j}}
 $$
 
-For a D beam, $n_{\mathrm{target},j}=n_{T0}$. For a T beam, $n_{\mathrm{target},j}=n_{D0}$. The beam fast-ion density is obtained from the useful beam power:
+For a D-T beam-target reaction $E_f = 17.6$ MeV. For a D beam,
+$n_{\mathrm{target},j}=n_{T0}$; for a T beam, $n_{\mathrm{target},j}=n_{D0}$.
+The beam fast-ion density is obtained from the useful beam power:
 
 $$
 n_{b0,j} =
@@ -790,26 +825,67 @@ $$
 
 The input shine-through fraction is used to determine captured beam power; the plotted $P_{\mathrm{shine}}$ is then the derived shine-through power from the scan. Charge-exchange and other configured losses similarly reduce the useful power before calculating $n_{b0,j}$.
 
-When profile peaking is nonzero, the fusion post-processing uses volume
-integrals. The thermal contribution becomes:
+The fusion post-processing always uses the $(1-\rho^2)$ profile weighting: the
+thermal contribution is
 
 $$
 P_{f,\mathrm{thermal}}=V E_f\left\langle
-n_D(\rho)n_T(\rho)\langle\sigma v\rangle_{DT}[T_i(\rho)]\right\rangle_V.
+n_D(\rho)n_T(\rho)\langle\sigma v\rangle_{DT}[T_i(\rho)]\right\rangle_V,
 $$
 
-The beam-target contribution similarly uses the local target density and the
-local slowing-down distribution evaluated with $T_e(\rho)$. Pressure and
-thermal-energy diagnostics use the corresponding volume-averaged $nT$
-profiles. The electron and ion power-balance solve remains a 0D central-value
-solve; peaking changes those temperatures only indirectly through the
-profile-aware shine-through and captured beam power.
+and the beam-target contribution uses the local target density and the local
+slowing-down distribution evaluated with $T_e(\rho)$. The $n_{D0}$, $n_{T0}$,
+$T_e$, $T_i$ used here are the **on-axis** values (see *Profile-corrected 0-D*).
+
+### D-D fusion
+
+The D-D channel (present whenever the deuterium fraction $x_D>0$) is evaluated
+with the Bosch-Hale D-D fits, **branch-resolved**:
+
+| branch | products | $E_f$ | neutron |
+|---|---|---|---|
+| D(d,p)T | T (1.01) + p (3.02 MeV) | 4.033 MeV | none |
+| D(d,n)³He | ³He (0.82) + n (2.45 MeV) | 3.269 MeV | 2.45 MeV |
+
+**Thermal:**
+
+$$
+P_{f,\mathrm{DD}}^{\mathrm{th}} = V\!\left[
+E_{ddp}\,\big\langle \tfrac12 n_D^2\,\langle\sigma v\rangle_{ddp}(T_i)\big\rangle_V
++ E_{ddn}\,\big\langle \tfrac12 n_D^2\,\langle\sigma v\rangle_{ddn}(T_i)\big\rangle_V
+\right],
+$$
+
+with the $\tfrac12$ identical-particle factor and the same $(1-\rho^2)$ profile
+weighting as the D-T thermal term.
+
+**Beam-target** (a fast D ion on the thermal-D population — **no** $\tfrac12$
+factor, the two populations are distinct):
+
+$$
+P_{f,\mathrm{DD}}^{\mathrm{beam}} =
+\sum_{j\in\mathrm{D\ beams}} V\!\int_0^{E_{b,j}}
+n_{D0}\,f_j(E)\big[E_{ddp}\,\sigma_{ddp}(E) + E_{ddn}\,\sigma_{ddn}(E)\big] v_j(E)\,dE .
+$$
+
+The cross-sections take the **lab-frame** deuteron energy (same convention as
+$\sigma_{DT}$). D-D does **not** produce alphas, so the alpha self-heating
+fixed-point closes on the D-T power only ($P_\alpha = f_\alpha(3.5/17.6)P_{f,DT}$).
+
+### Neutron rate
+
+$$
+R_n = \frac{P_{f,DT}}{17.6\,\mathrm{MeV}}
+\;+\; R_{ddn}^{\mathrm{th}} + R_{ddn}^{\mathrm{beam}},
+$$
+
+i.e. one 14.06 MeV neutron per D-T reaction plus the 2.45 MeV neutrons from the
+D(d,n) branch. Reported on the Dashboard and as `R_neutron` in a scan.
 
 ### Current model limitations
 
-- The beam-target integral uses stationary target ions, so the solved $T_i$ is not included in that reaction integral.
-- D-D beam-target reactions are not included.
-- Each included D-T reaction is assigned $17.6\,\mathrm{MeV}$ of fusion energy.
+- The beam-target integral uses stationary target ions, so the solved $T_i$ is not included in that reaction integral, and the beam is treated as a single full-energy component (no half/third fractions).
+- The tritium and ³He bred by D-D are not burned further ("cat-DD" is neglected).
 - The radial volume weighting uses the model's elliptical flux-surface
 	approximation and does not yet solve a 2D equilibrium.
 
@@ -840,7 +916,10 @@ The Plasma tab defines the requested scan range with `n_e_min` and `n_e_max`. Th
 - $q_a$: arbitrary-aspect-ratio edge safety factor (Uckan form)
 - $f_{\mathrm{orbit}}$: first-orbit loss fraction of captured beam power
 - $P_{\mathrm{orbit}}$: first-orbit loss power
-- $P_{f,tot}$, $P_{f,th}$, $P_{f,b}$: total, thermal, and beam-target fusion power
+- $P_{f,tot}$, $P_{f,th}$, $P_{f,b}$: total, thermal, and beam-target fusion power (D-T)
+- $P_{f,DT}$, $P_{f,DD}$: D-T and D-D fusion power ($P_{f,tot}=P_{f,DT}+P_{f,DD}$)
+- $R_n$: neutron rate (14 MeV D-T + 2.45 MeV D-D branch)
+- $\langle T\rangle$, $T_0$: volume-averaged and on-axis temperature (profile-corrected 0-D)
 - $\tau_{IE}$: effective electron-ion exchange time
 - $p_{th}$, $p_{fast}$: thermal and fast-ion pressure
 - $\beta_t$: toroidal beta

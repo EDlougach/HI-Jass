@@ -40,6 +40,7 @@ class PlasmaParams:
     enable_orbit_loss: bool = False
     orbit_loss_co_current: bool = True
     orbit_model: str = "large_aspect"  # "large_aspect" | "st_meanshift" | "st_pitch"
+    profile_averaging: bool = False  # treat central_density as ON-AXIS; balance runs on <n_e>
     cx_loss_fraction: float = 0.0
     enable_equipartition: bool = False
 
@@ -91,6 +92,7 @@ class HotJassModel:
             enable_orbit_loss=self.plasma.enable_orbit_loss,
             orbit_loss_co_current=self.plasma.orbit_loss_co_current,
             orbit_model=self.plasma.orbit_model,
+            profile_averaging=self.plasma.profile_averaging,
             cx_loss_fraction=self.plasma.cx_loss_fraction,
             enable_equipartition=self.plasma.enable_equipartition,
             enable_alpha_heating=self.plasma.alpha_heating,
@@ -125,7 +127,8 @@ class HotJassModel:
         ratio = config.f_alpha * (physics.E_ALPHA_MEV / physics.E_FUSION_MEV)
         p_alpha = 0.0
         for _ in range(30):
-            target = ratio * op.pf_total_w
+            # alphas come from D-T only -- not the D-D channel
+            target = ratio * op.pf_dt_w
             step = 0.5 * (target - p_alpha)
             if abs(step) <= 1.0e-3 * max(target, 1.0e-9):
                 break
@@ -239,6 +242,9 @@ class HotJassModel:
                 "P_aux_e": values("P_aux_e_w", 1.0e-6), "P_aux_i": values("P_aux_i_w", 1.0e-6),
                 "n_D": values("nD0_m3"), "n_T": values("nT0_m3"), "n_b": values("nb0_m3"),
                 "Pf_tot": values("pf_total_w", 1.0e-6), "Pf_th": values("pf_thermal_w", 1.0e-6), "Pf_b": values("pf_beam_w", 1.0e-6),
+                "Pf_DT": values("pf_dt_w", 1.0e-6), "Pf_DD": values("pf_dd_w", 1.0e-6),
+                "R_neutron": values("neutron_rate_s"),
+                "Te0": values("Te0_keV"), "Ti0": values("Ti0_keV"),
                 "E_fast": avg_energy, "tau_S": tau_s_values,
                 "tauE_e": values("tau_E_s"), "tauE_i": values("tau_Ei_s"), "tau_IE": tau_ie_values, "R": fast_energy / np.maximum(thermal_energy, 1.0e-30),
                 "Pr_th": values("pressure_pa") - (1.0 - 1.0 / 3.0) * fast_energy, "Pr_fast": (1.0 - 1.0 / 3.0) * fast_energy, "beta_T": values("beta_t") * 100.0,

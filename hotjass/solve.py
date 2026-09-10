@@ -45,6 +45,18 @@ class TokamakConfig:
     mix_T: float = 0.5
     density_peaking: float = 0.0
     temperature_peaking: float = 0.0
+    profile_averaging: bool = False
+    # profile_averaging=False (default): the 0-D balance treats ne0_m3 and the
+    # solved T as spatially UNIFORM -- the historical behaviour, byte-identical.
+    #   The reported T is then a flat-plasma effective temperature, and comparing
+    #   it to a measured on-axis T0 needs a peaking factor supplied by the user.
+    # profile_averaging=True: ne0_m3 is taken to be the ON-AXIS density; the
+    #   energy balance and the tau_E scalings run on the volume-averaged
+    #   <n_e> = ne0_m3 / (1 + 2*density_peaking) and return VOLUME-AVERAGED
+    #   T_e, T_i (OperatingPoint.Te_keV / Ti_keV). The on-axis values
+    #   Te0_keV = Te_keV*(1+2*temperature_peaking), Ti0_keV similarly, are
+    #   reported alongside and are what the fusion / pressure integrals use as
+    #   their central values (with the (1-rho^2) shape from the peaking params).
     fast_ion_mean_pitch2: float = 1.0 / 3.0
     enable_orbit_loss: bool = False
     orbit_loss_co_current: bool = True
@@ -202,9 +214,16 @@ class OperatingPoint:
     f_orbit_loss: list[float] = field(default_factory=list)  # per-beam first-orbit-loss fraction
     P_cx_loss_w: float = 0.0  # charge-exchange loss during slowing-down (fraction of post-orbit-loss power)
     P_useful_w: float = 0.0  # P_capt_w - P_orbit_loss_w - P_cx_loss_w == P_e_w + P_i_w -- what actually heats the plasma
-    pf_thermal_w: float = 0.0
-    pf_beam_w: float = 0.0
-    pf_total_w: float = 0.0
+    pf_thermal_w: float = 0.0   # D-T thermal fusion power
+    pf_beam_w: float = 0.0      # D-T beam-target fusion power
+    pf_dt_w: float = 0.0        # pf_thermal_w + pf_beam_w -- the D-T total (drives the alpha closure)
+    pf_dd_thermal_w: float = 0.0  # D-D thermal fusion power (both branches)
+    pf_dd_beam_w: float = 0.0     # D-D beam-target fusion power (fast D on thermal D)
+    pf_dd_w: float = 0.0          # pf_dd_thermal_w + pf_dd_beam_w
+    pf_total_w: float = 0.0       # pf_dt_w + pf_dd_w -- all fusion power
+    neutron_rate_s: float = 0.0  # 14 MeV (D-T) + 2.45 MeV (D-D n-branch) neutrons per second
+    Te0_keV: float | None = None  # on-axis T_e (== Te_keV unless config.profile_averaging)
+    Ti0_keV: float | None = None  # on-axis T_i (== Ti_keV unless config.profile_averaging)
     pressure_pa: float = 0.0  # isotropic fast-ion pressure assumption (config.fast_ion_mean_pitch2, default 1/3 -> p_fast=(2/3)u_fast)
     beta_t: float = 0.0  # beta_t from pressure_pa (isotropic, per config.fast_ion_mean_pitch2)
     pressure_anisotropic_pa: float = 0.0  # SAME point, fast-ion pressure recomputed at pitch2=1.0 (purely
@@ -495,6 +514,18 @@ def solve_operating_point(
     V = config.geometry.volume()
     path_length_m = physics.tangential_path_length(config.geometry.minor_radius)
 
+    # Profile averaging (config.profile_averaging). pk_n, pk_T convert between
+    # the on-axis and the volume-averaged value of a (1-rho^2)^(2p) profile:
+    #   <X>/X0 = 1/(1 + 2p).  Both are 1.0 (a no-op) when profile_averaging is
+    #   off, so every existing result is byte-identical.
+    if config.profile_averaging:
+        pk_n = 1.0 + 2.0 * max(config.density_peaking, 0.0)
+        pk_T = 1.0 + 2.0 * max(config.temperature_peaking, 0.0)
+    else:
+        pk_n = pk_T = 1.0
+    ne_bal = ne0_m3 / pk_n          # density seen by the energy balance & tau_E scalings
+    ne_axis = ne0_m3               # on-axis density (== ne0_m3; the input, in profile mode)
+
     # Step 0: beam shine-through / capture fraction, then (optionally)
     # first-orbit loss, then charge-exchange loss. All three depend only on
     # ne0 and each beam's own (Eb, species) -- not on Te -- so all are
@@ -592,7 +623,7 @@ def solve_operating_point(
     p_loss_scaling_w = P_useful_w + aux_e_source_w + aux_i_source_w
     if config.tau_Ee_mode == "kaye_nstx_lmode" or config.tau_Ei_mode == "kaye_nstx_lmode":
         kaye_lmode_tau_s = physics.kaye_nstx_lmode_confinement_time(
-            Ip_A=config.Ip_MA * 1e6, Bt_T=config.Bt0, ne0_m3=ne0_m3, P_loss_W=p_loss_scaling_w,
+            Ip_A=config.Ip_MA * 1e6, Bt_T=config.Bt0, ne0_m3=ne_bal, P_loss_W=p_loss_scaling_w,
         )
         if config.tau_Ee_mode == "kaye_nstx_lmode":
             tau_E_s = kaye_lmode_tau_s
@@ -600,7 +631,7 @@ def solve_operating_point(
             tau_Ei_s = kaye_lmode_tau_s
     if config.tau_Ee_mode == "kaye_nstx_hmode" or config.tau_Ei_mode == "kaye_nstx_hmode":
         kaye_hmode_tau_s = physics.kaye_nstx_confinement_time(
-            Ip_A=config.Ip_MA * 1e6, Bt_T=config.Bt0, ne0_m3=ne0_m3, P_heat_W=p_loss_scaling_w,
+            Ip_A=config.Ip_MA * 1e6, Bt_T=config.Bt0, ne0_m3=ne_bal, P_heat_W=p_loss_scaling_w,
         )
         if config.tau_Ee_mode == "kaye_nstx_hmode":
             tau_E_s = kaye_hmode_tau_s
@@ -608,7 +639,7 @@ def solve_operating_point(
             tau_Ei_s = kaye_hmode_tau_s
     if config.tau_Ee_mode == "iter98y2" or config.tau_Ei_mode == "iter98y2":
         iter98y2_tau_s = physics.iter98y2_confinement_time(
-            Ip_MA=config.Ip_MA, Bt_T=config.Bt0, ne0_m3=ne0_m3, P_heat_W=p_loss_scaling_w,
+            Ip_MA=config.Ip_MA, Bt_T=config.Bt0, ne0_m3=ne_bal, P_heat_W=p_loss_scaling_w,
             R0_m=config.geometry.major_radius, minor_radius_m=config.geometry.minor_radius,
             elongation=config.geometry.elongation,
             M_eff_amu=config.mix_D * 2.0 + config.mix_T * 3.0,
@@ -631,10 +662,10 @@ def solve_operating_point(
         # pure BEAM heating split -- P_ei_w is the separate equipartition
         # exchange) all come out of one nested-bisection call.
         Te_keV, Ti_keV, n_thermal, nb0_total, Le_list, Li_list, P_e_w, P_i_w, P_ei_w = \
-            _solve_te_ti_coupled_keV(ne0_m3, useful_beams, tau_E_s, tau_Ei_s, V, config,
+            _solve_te_ti_coupled_keV(ne_bal, useful_beams, tau_E_s, tau_Ei_s, V, config,
                                      ee_source_w, ei_source_w)
     else:
-        Te_keV = _solve_te_keV(ne0_m3, useful_beams, tau_E_s, V, ee_source_w)
+        Te_keV = _solve_te_keV(ne_bal, useful_beams, tau_E_s, V, ee_source_w)
 
         Le_list = []
         Li_list = []
@@ -650,12 +681,12 @@ def solve_operating_point(
             Le_list.append(le)
             P_e_w += le * beam.P_NB_W
             P_i_w += li * beam.P_NB_W
-            tau_s = physics.thermalization_time(ne0_m3, Te_keV, beam.Eb_keV, beam.species)
+            tau_s = physics.thermalization_time(ne_bal, Te_keV, beam.Eb_keV, beam.species)
             nb0_total += beam.P_NB_W * tau_s / (beam.Eb_keV * 1e3 * physics.E_CHARGE * V)
 
-        n_thermal = _n_sum_for_ne(ne0_m3, config.Zeff) - nb0_total
+        n_thermal = _n_sum_for_ne(ne_bal, config.Zeff) - nb0_total
 
-    n_sum = _n_sum_for_ne(ne0_m3, config.Zeff)
+    n_sum = _n_sum_for_ne(ne_bal, config.Zeff)
     if n_thermal <= 0.0:
         return OperatingPoint(
             ne0_m3=ne0_m3, feasible=False, Te_keV=Te_keV, nb0_m3=nb0_total,
@@ -683,24 +714,51 @@ def solve_operating_point(
     nD0 = config.mix_D * n_thermal
     nT0 = config.mix_T * n_thermal
 
+    # On-axis values for the fusion / pressure integrals. With profile_averaging
+    # off, pk_n == pk_T == 1 so these equal the balance quantities exactly and
+    # every result below is byte-identical to before.
+    Te0_keV = Te_keV * pk_T
+    Ti0_keV = Ti_keV * pk_T
+    nD0_axis = nD0 * pk_n
+    nT0_axis = nT0 * pk_n
+
     pf_thermal = physics.thermal_fusion_power(
-        nD0, nT0, Ti_keV, V, config.density_peaking, config.temperature_peaking
+        nD0_axis, nT0_axis, Ti0_keV, V, config.density_peaking, config.temperature_peaking
     )
     pf_beam = 0.0
+    pf_dd_beam = 0.0
+    dd_beam_neutrons = 0.0
     for beam in useful_beams:
         # Per-beam fast-ion density, recomputed (cheap) rather than stored,
         # to keep beam_target_fusion_power's existing per-beam signature.
         # beam.P_NB_W here is already the USEFUL power (Step 0: captured,
         # minus CX loss) -- only particles that survive both shine-through
         # and charge-exchange become fast ions.
-        tau_s = physics.thermalization_time(ne0_m3, Te_keV, beam.Eb_keV, beam.species)
+        tau_s = physics.thermalization_time(ne_axis, Te0_keV, beam.Eb_keV, beam.species)
         nb0_i = beam.P_NB_W * tau_s / (beam.Eb_keV * 1e3 * physics.E_CHARGE * V)
-        target_n = nT0 if beam.species == "D" else nD0
+        target_n = nT0_axis if beam.species == "D" else nD0_axis
         pf_beam += physics.beam_target_fusion_power(
-            nb0_i, target_n, Te_keV, beam.Eb_keV, V, beam.species,
-            ne0_m3, config.density_peaking, config.temperature_peaking,
+            nb0_i, target_n, Te0_keV, beam.Eb_keV, V, beam.species,
+            ne_axis, config.density_peaking, config.temperature_peaking,
         )
-    pf_total = pf_thermal + pf_beam
+        # D-D beam-target: a fast D ion on the thermal-D population.
+        if beam.species == "D" and nD0_axis > 0.0:
+            p_dd, r_dd = physics.beam_target_dd_fusion_power(
+                nb0_i, nD0_axis, Te0_keV, beam.Eb_keV, V,
+                ne_axis, config.density_peaking, config.temperature_peaking,
+            )
+            pf_dd_beam += p_dd
+            dd_beam_neutrons += r_dd
+    pf_dd_thermal, dd_thermal_neutrons = physics.thermal_dd_fusion_power(
+        nD0_axis, Ti0_keV, V, config.density_peaking, config.temperature_peaking
+    )
+    pf_dt = pf_thermal + pf_beam
+    pf_dd = pf_dd_thermal + pf_dd_beam
+    pf_total = pf_dt + pf_dd
+    neutron_rate = (
+        pf_dt / physics.E_FUSION_J          # one 14 MeV n per D-T reaction
+        + dd_thermal_neutrons + dd_beam_neutrons  # 2.45 MeV D-D n-branch
+    )
 
     # Diagnostics -- reported, never enforced (see TokamakConfig docstring).
     # P_useful_w==0 (e.g. cx_loss_fraction=1.0, or ne0 low enough that
@@ -714,8 +772,9 @@ def solve_operating_point(
         )
     else:
         avg_fast_energy = 0.0
+    n_thermal_axis = n_thermal * pk_n
     pressure_pa = physics.compute_pressure(
-        ne0_m3, n_thermal, nb0_total, Te_keV, Ti_keV, config.fast_ion_mean_pitch2, avg_fast_energy,
+        ne_axis, n_thermal_axis, nb0_total, Te0_keV, Ti0_keV, config.fast_ion_mean_pitch2, avg_fast_energy,
         config.density_peaking, config.temperature_peaking,
     )
     beta_t = physics.compute_beta_t(pressure_pa, config.Bt0)
@@ -724,12 +783,12 @@ def solve_operating_point(
     # entirely. Reuses compute_pressure/compute_beta_t exactly as-is, just called again with a different
     # pitch2 -- no new physics, and Te/Ti/n_thermal etc. don't depend on this choice at all.
     pressure_anisotropic_pa = physics.compute_pressure(
-        ne0_m3, n_thermal, nb0_total, Te_keV, Ti_keV, 1.0, avg_fast_energy,
+        ne_axis, n_thermal_axis, nb0_total, Te0_keV, Ti0_keV, 1.0, avg_fast_energy,
         config.density_peaking, config.temperature_peaking,
     )
     beta_t_anisotropic = physics.compute_beta_t(pressure_anisotropic_pa, config.Bt0)
     u_thermal = physics.thermal_energy_density(
-        ne0_m3, n_thermal, Te_keV, Ti_keV, config.density_peaking, config.temperature_peaking
+        ne_axis, n_thermal_axis, Te0_keV, Ti0_keV, config.density_peaking, config.temperature_peaking
     )
     u_fast = physics.fast_ion_energy_density(nb0_total, avg_fast_energy)
     R = u_fast / u_thermal if u_thermal > 0.0 else float("inf")
@@ -744,7 +803,10 @@ def solve_operating_point(
         P_NB_total_w=P_NB_total_w, P_shine_w=P_shine_w, P_capt_w=P_capt_w, f_capture=f_capture_list,
         P_orbit_loss_w=P_orbit_loss_w, f_orbit_loss=f_orbit_loss_list,
         P_cx_loss_w=P_cx_loss_w, P_useful_w=P_useful_w,
-        pf_thermal_w=pf_thermal, pf_beam_w=pf_beam, pf_total_w=pf_total,
+        pf_thermal_w=pf_thermal, pf_beam_w=pf_beam, pf_dt_w=pf_dt,
+        pf_dd_thermal_w=pf_dd_thermal, pf_dd_beam_w=pf_dd_beam, pf_dd_w=pf_dd,
+        pf_total_w=pf_total, neutron_rate_s=neutron_rate,
+        Te0_keV=Te0_keV, Ti0_keV=Ti0_keV,
         pressure_pa=pressure_pa, beta_t=beta_t,
         pressure_anisotropic_pa=pressure_anisotropic_pa, beta_t_anisotropic=beta_t_anisotropic,
         avg_fast_energy_keV=avg_fast_energy, R_fast_thermal=R, tau_E_s=tau_E_s, tau_Ei_s=tau_Ei_s,
