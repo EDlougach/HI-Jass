@@ -20,7 +20,8 @@ class PlasmaParams:
     n_e_min: float = 1.0e19
     n_e_max: float = 1.0e20
     density_peaking: float = 0.1
-    temp_peaking: float = 1.0
+    temp_peaking: float = 1.0          # electron temperature profile exponent
+    temp_peaking_i: float = -1.0       # ion T profile exponent; < 0 -> same as temp_peaking
     effective_charge: float = 2.0
     toroidal_field: float = 1.5
     plasma_current: float = 1.5e6
@@ -87,6 +88,7 @@ class HotJassModel:
             mix_T=self.plasma.tritium_fraction,
             density_peaking=self.plasma.density_peaking,
             temperature_peaking=self.plasma.temp_peaking,
+            temperature_peaking_i=self.plasma.temp_peaking_i,
             tau_Ee_mode=self.plasma.tau_Ee_mode,
             tau_Ei_mode=self.plasma.tau_Ei_mode,
             enable_orbit_loss=self.plasma.enable_orbit_loss,
@@ -256,9 +258,12 @@ class HotJassModel:
         result["n_e_valid_max"] = np.asarray([valid_densities.max() if valid_densities.size else np.nan])
         return result
 
-    def temperature_profile(self, rho: np.ndarray, central_temperature: float) -> np.ndarray:
-        exponent = 2.0 * self.plasma.temp_peaking
-        return central_temperature * (1.0 - rho ** 2) ** exponent
+    def temperature_profile(self, rho: np.ndarray, central_temperature: float,
+                            ion: bool = False) -> np.ndarray:
+        p = self.plasma.temp_peaking
+        if ion and self.plasma.temp_peaking_i >= 0.0:
+            p = self.plasma.temp_peaking_i
+        return central_temperature * (1.0 - rho ** 2) ** (2.0 * p)
 
     def fast_ion_profile(self, rho: np.ndarray) -> np.ndarray:
         return np.full_like(rho, sum(beam.power_MW for beam in self.beams), dtype=float)

@@ -325,17 +325,24 @@ def compute_pressure(
     ne0: float, n_thermal: float, n_fast: float, Te_keV: float, Ti_keV: float,
     fast_ion_mean_pitch2: float, average_fast_energy_keV_value: float,
     density_peaking: float = 0.0, temperature_peaking: float = 0.0,
+    temperature_peaking_i: float = -1.0,
 ) -> float:
     """Total plasma pressure p_e + p_i + p_fast [Pa]. p_fast uses the
     anisotropic pitch correction p_fast=(1-<zeta^2>)*u_fast (isotropic
     default <zeta^2>=1/3 recovers p_fast=(2/3)*u_fast).
+
+    temperature_peaking shapes the electron temperature profile;
+    temperature_peaking_i shapes the ion one (a separate value only matters
+    in a hot-ion regime). temperature_peaking_i < 0 -> use temperature_peaking
+    for both, which reproduces the single-profile result exactly.
     """
+    p_ti = temperature_peaking if temperature_peaking_i < 0.0 else temperature_peaking_i
     rho = np.linspace(0.0, 1.0, 201)
     density_profile = np.maximum(1.0 - rho**2, 0.0) ** (2.0 * max(density_peaking, 0.0))
-    temperature_profile = np.maximum(1.0 - rho**2, 0.0) ** (2.0 * max(temperature_peaking, 0.0))
-    profile_average = profile_volume_average(density_profile * temperature_profile, rho)
-    p_e = ne0 * Te_keV * profile_average * 1e3 * E_CHARGE
-    p_i = n_thermal * Ti_keV * profile_average * 1e3 * E_CHARGE
+    tprof_e = np.maximum(1.0 - rho**2, 0.0) ** (2.0 * max(temperature_peaking, 0.0))
+    tprof_i = np.maximum(1.0 - rho**2, 0.0) ** (2.0 * max(p_ti, 0.0))
+    p_e = ne0 * Te_keV * profile_volume_average(density_profile * tprof_e, rho) * 1e3 * E_CHARGE
+    p_i = n_thermal * Ti_keV * profile_volume_average(density_profile * tprof_i, rho) * 1e3 * E_CHARGE
     u_fast = n_fast * average_fast_energy_keV_value * 1e3 * E_CHARGE
     p_fast = (1.0 - fast_ion_mean_pitch2) * u_fast
     return p_e + p_i + p_fast
@@ -349,11 +356,18 @@ def compute_beta_t(pressure_pa: float, Bt0: float) -> float:
 def thermal_energy_density(
     ne0: float, n_thermal: float, Te_keV: float, Ti_keV: float,
     density_peaking: float = 0.0, temperature_peaking: float = 0.0,
+    temperature_peaking_i: float = -1.0,
 ) -> float:
-    """U_t = (3/2)*(ne*Te + n_thermal*Ti) [J/m^3]."""
+    """U_t = (3/2)*(ne*Te + n_thermal*Ti) [J/m^3]. temperature_peaking_i < 0
+    reuses temperature_peaking for the ion term (single-profile result)."""
+    p_ti = temperature_peaking if temperature_peaking_i < 0.0 else temperature_peaking_i
     rho = np.linspace(0.0, 1.0, 201)
-    profile = np.maximum(1.0 - rho**2, 0.0) ** (2.0 * max(density_peaking + temperature_peaking, 0.0))
-    return 1.5 * (ne0 * Te_keV + n_thermal * Ti_keV) * profile_volume_average(profile, rho) * 1e3 * E_CHARGE
+    prof_e = np.maximum(1.0 - rho**2, 0.0) ** (2.0 * max(density_peaking + temperature_peaking, 0.0))
+    prof_i = np.maximum(1.0 - rho**2, 0.0) ** (2.0 * max(density_peaking + p_ti, 0.0))
+    return 1.5 * (
+        ne0 * Te_keV * profile_volume_average(prof_e, rho)
+        + n_thermal * Ti_keV * profile_volume_average(prof_i, rho)
+    ) * 1e3 * E_CHARGE
 
 
 def fast_ion_energy_density(nb0: float, average_fast_energy_keV_value: float) -> float:

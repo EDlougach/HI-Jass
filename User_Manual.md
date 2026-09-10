@@ -463,19 +463,25 @@ $$
 \langle n_e\rangle = \frac{n_{e0}}{1+2\,p_n},
 $$
 
-so the solved $T_e$, $T_i$ are **volume-averaged**. The on-axis values
+so the solved $T_e$, $T_i$ are **volume-averaged**. The electron and ion
+temperature profiles are shaped by **independent** exponents $p_{Te}$
+(`Temp peaking (electron)`) and $p_{Ti}$ (`Temp peaking (ion)`; a value $<0$
+means "use $p_{Te}$"), so the on-axis values are
 
 $$
-T_{e0} = \langle T_e\rangle\,(1+2\,p_T), \qquad
-T_{i0} = \langle T_i\rangle\,(1+2\,p_T)
+T_{e0} = \langle T_e\rangle\,(1+2\,p_{Te}), \qquad
+T_{i0} = \langle T_i\rangle\,(1+2\,p_{Ti}).
 $$
 
-are reported alongside (Dashboard row "on-axis $T_{e0}/T_{i0}$"), and are what
-the fusion, pressure and $\beta_t$ integrals use as their central values (with
-the $(1-\rho^2)$ shape from $p_n$, $p_T$). Set $p_n$ (`Density peaking`) and
-$p_T$ (`Temperature peaking`) to values that describe the real profile —
-$p_T\simeq0.5$–$0.75$ gives $T_0/\langle T\rangle\simeq2$–$2.5$, typical of an
-L- or H-mode. With both peaking parameters at $0$ the correction is a no-op.
+They are reported (Dashboard row "on-axis $T_{e0}/T_{i0}$") and are what the
+fusion, pressure and $\beta_t$ integrals use as their central values — the
+reactivity integrals with the $(1-\rho^2)^{2p_{Ti}}$ ion shape, the beam
+slowing-down kernel with the $(1-\rho^2)^{2p_{Te}}$ electron shape. Set $p_n$
+(`Density peaking`), $p_{Te}$ and $p_{Ti}$ to match the real profiles;
+$p\simeq0.5$–$0.75$ gives $X_0/\langle X\rangle\simeq2$–$2.5$ (L-/H-mode), while
+a **hot-ion mode** on a compact ST needs $p_{Ti}\gg p_{Te}$ ($T_{i0}/\langle
+T_i\rangle\simeq3$–$4$ with $T_e$ nearly flat). With all peaking parameters at
+$0$ the correction is a no-op.
 
 ## Confinement time
 
@@ -920,6 +926,7 @@ The Plasma tab defines the requested scan range with `n_e_min` and `n_e_max`. Th
 - $P_{f,DT}$, $P_{f,DD}$: D-T and D-D fusion power ($P_{f,tot}=P_{f,DT}+P_{f,DD}$)
 - $R_n$: neutron rate (14 MeV D-T + 2.45 MeV D-D branch)
 - $\langle T\rangle$, $T_0$: volume-averaged and on-axis temperature (profile-corrected 0-D)
+- $p_n$, $p_{Te}$, $p_{Ti}$: density and electron / ion temperature profile exponents ($(1-\rho^2)^{2p}$)
 - $\tau_{IE}$: effective electron-ion exchange time
 - $p_{th}$, $p_{fast}$: thermal and fast-ion pressure
 - $\beta_t$: toroidal beta

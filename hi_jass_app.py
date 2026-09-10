@@ -227,7 +227,8 @@ class HIJassApp(ctk.CTk):
         ("B0 [T]", "toroidal_field", 1.5),
         ("Ip [MA]", "plasma_current_MA", 1.5),
         ("Density peaking", "density_peaking", 0.1),
-        ("Temperature peaking", "temp_peaking", 1.0),
+        ("Temp peaking (electron)", "temp_peaking", 1.0),
+        ("Temp peaking (ion, -1=same)", "temp_peaking_i", -1.0),
         ("Central n_e [m^-3]", "central_density", 1.5e20),
         ("Scan n_e min [m^-3]", "n_e_min", 1.0e19),
         ("Scan n_e max [m^-3]", "n_e_max", 1.0e20),
@@ -1326,8 +1327,11 @@ class HIJassApp(ctk.CTk):
         plasma = model.plasma
         rho = model.rho_grid()
         density = model.density_profile(rho)
-        te_profile = model.temperature_profile(rho, op.Te_keV or 0.0)
-        ti_profile = model.temperature_profile(rho, op.Ti_keV or 0.0)
+        prof_on = getattr(plasma, "profile_averaging", False)
+        te_c = (op.Te0_keV if prof_on and op.Te0_keV is not None else op.Te_keV) or 0.0
+        ti_c = (op.Ti0_keV if prof_on and op.Ti0_keV is not None else op.Ti_keV) or 0.0
+        te_profile = model.temperature_profile(rho, te_c)
+        ti_profile = model.temperature_profile(rho, ti_c, ion=True)
 
         fig = self.prof_fig
         fig.clear()
@@ -1341,7 +1345,9 @@ class HIJassApp(ctk.CTk):
         ax_t = fig.add_subplot(222)
         ax_t.plot(rho, te_profile, label=r"$T_e$")
         ax_t.plot(rho, ti_profile, label=r"$T_i$")
-        ax_t.set(title=r"$T_e(\rho),\ T_i(\rho)$, $p_T=%.2f$" % plasma.temp_peaking,
+        p_ti_show = plasma.temp_peaking if plasma.temp_peaking_i < 0 else plasma.temp_peaking_i
+        ax_t.set(title=r"$T_e(\rho),\ T_i(\rho)$; $p_{Te}=%.2f$, $p_{Ti}=%.2f$"
+                 % (plasma.temp_peaking, p_ti_show),
                  xlabel=r"$\rho$", ylabel=r"$T$ [keV]")
         ax_t.grid(alpha=0.3)
         ax_t.legend()
@@ -1562,14 +1568,17 @@ class HIJassApp(ctk.CTk):
         lines.append(f"CX loss fraction: {plasma.cx_loss_fraction:.3g} (flat efficiency knob)")
         lines.append(f"e-i equipartition: {'ON (coupled Te/Ti solve)' if plasma.enable_equipartition else 'off (decoupled Te, Ti)'}")
         if getattr(plasma, "profile_averaging", False):
+            p_ti = plasma.temp_peaking if plasma.temp_peaking_i < 0 else plasma.temp_peaking_i
             pkn = 1.0 + 2.0 * max(plasma.density_peaking, 0.0)
-            pkt = 1.0 + 2.0 * max(plasma.temp_peaking, 0.0)
-            lines.append(f"Profile-corrected 0-D: ON  -- balance runs on <n_e> = n_e0 / {pkn:.2f}")
-            lines.append(f"  (from density peaking {plasma.density_peaking:.2g}); T reported as <T> and")
-            lines.append(f"  T0 = <T> x {pkt:.2f} (from temperature peaking {plasma.temp_peaking:.2g}). Fusion")
-            lines.append(f"  uses the on-axis values with the (1-rho^2) profile shape.")
+            pkte = 1.0 + 2.0 * max(plasma.temp_peaking, 0.0)
+            pkti = 1.0 + 2.0 * max(p_ti, 0.0)
+            lines.append(f"Profile-corrected 0-D: ON  -- balance runs on <n_e> = n_e0 / {pkn:.2f} "
+                         f"(density peaking {plasma.density_peaking:.2g}).")
+            lines.append(f"  Te0 = <Te> x {pkte:.2f} (p_Te={plasma.temp_peaking:.2g}),  "
+                         f"Ti0 = <Ti> x {pkti:.2f} (p_Ti={p_ti:.2g}).")
             lines.append(f"  Te0 = {op.Te0_keV:.2f} keV, Ti0 = {op.Ti0_keV:.2f} keV,  "
-                         f"neutrons = {op.neutron_rate_s:.2e} n/s.")
+                         f"neutrons = {op.neutron_rate_s:.2e} n/s.  Fusion / pressure use the")
+            lines.append(f"  on-axis values with the separate (1-rho^2) Te and Ti profile shapes.")
         else:
             lines.append("Profile-corrected 0-D: off  -- n_e0 and T treated as uniform "
                          "(reported T is a flat-plasma effective value).")
