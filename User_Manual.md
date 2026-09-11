@@ -944,10 +944,12 @@ D(d,n) branch. Reported on the Dashboard and as `R_neutron` in a scan.
 
 The Plasma tab defines the requested scan range with `n_e_min` and `n_e_max`. The Results tab reports the physically valid interval separately. Points below the HotJass charge-neutrality feasibility limit are not assigned physical output values and are omitted from plots.
 
-The $T_e,T_i$ scan plot caps its y-axis at 100 keV (the upper edge of the
-Bosch-Hale fits' validated range) so a runaway hot-ion point doesn't wash out
-the rest of the curve; values above that are simply clipped off the top of
-the plot, not altered.
+The $T_e,T_i$ scan plot's y-axis top is $\min(\max(T_e,T_i),100\,\mathrm{keV})$
+-- the actual data maximum, unless it exceeds 100 keV (the upper edge of the
+Bosch-Hale fits' validated range), in which case the axis is capped there so
+one runaway hot-ion point doesn't wash out the rest of the curve. The bottom
+is fixed at 0 (not autoscaled) so a fixed top never stretches the axis into
+an apparent negative margin.
 
 The $n_D,n_T,n_{b0}$ scan group's otherwise-empty 4th panel shows the
 fast-ion / target-ion density ratio $n_{b0}/n_{\mathrm{Target}}$, where

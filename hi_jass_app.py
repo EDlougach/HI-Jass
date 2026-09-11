@@ -1519,7 +1519,9 @@ class HIJassApp(ctk.CTk):
             ax.grid(alpha=0.3)
             ax.legend()
             if set(keys) == {"Te", "Ti"}:
-                ax.set_ylim(top=100.0)
+                all_vals = np.concatenate([self.scan[k][np.isfinite(self.scan[k])] for k in keys])
+                top = min(float(all_vals.max()), 100.0) if all_vals.size else 100.0
+                ax.set_ylim(0.0, top)
         vmin = self.scan["n_e_valid_min"][0]
         vmax = self.scan["n_e_valid_max"][0]
         plasma = self.model.plasma
