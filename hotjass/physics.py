@@ -1355,3 +1355,99 @@ def beam_target_dd_fusion_power(
         Rn = volume_m3 * profile_volume_average(radn, rho)
     P = Rp * (E_DDP_MEV * 1e6 * E_CHARGE) + Rn * (E_DDN_MEV * 1e6 * E_CHARGE)
     return P, Rn
+
+
+# ---------------------------------------------------------------- GUI-only
+# local (per-rho) fusion power density profiles -- P_fus(rho) visualization
+# on the Profiles tab. NOT used by the solver (which only ever needs the
+# volume-averaged totals above); these mirror the same (1-rho^2)^(2p) shapes
+# and, for beam-target, the same local-tau/local-nb rescaling as the
+# profile-averaged branches above, just returned per-rho instead of
+# collapsed to a single volume average.
+
+def thermal_fusion_power_density_profile(
+    rho: np.ndarray, nD0: float, nT0: float, Ti_keV: float,
+    density_peaking: float = 0.0, temperature_peaking: float = 0.0,
+) -> np.ndarray:
+    """Local thermal D-T fusion power density [W/m^3] vs normalised radius --
+    same shape as thermal_fusion_power()."""
+    rho = np.asarray(rho, dtype=float)
+    if nD0 <= 0.0 or nT0 <= 0.0 or Ti_keV <= 0.0:
+        return np.zeros_like(rho)
+    dprof = np.maximum(1.0 - rho**2, 0.0) ** (2.0 * max(density_peaking, 0.0))
+    tprof = np.maximum(1.0 - rho**2, 0.0) ** (2.0 * max(temperature_peaking, 0.0))
+    reactivity = bosch_hale_dt_reactivity(Ti_keV * tprof)
+    return nD0 * dprof * nT0 * dprof * reactivity * E_FUSION_J
+
+
+def thermal_dd_power_density_profile(
+    rho: np.ndarray, nD0: float, Ti_keV: float,
+    density_peaking: float = 0.0, temperature_peaking: float = 0.0,
+) -> np.ndarray:
+    """Local thermal D-D fusion power density [W/m^3] vs normalised radius --
+    same shape (and 1/2 identical-particle factor) as thermal_dd_fusion_power()."""
+    rho = np.asarray(rho, dtype=float)
+    if nD0 <= 0.0 or Ti_keV <= 0.0:
+        return np.zeros_like(rho)
+    d2 = (np.maximum(1.0 - rho**2, 0.0) ** (2.0 * max(density_peaking, 0.0))) ** 2
+    tprof = np.maximum(1.0 - rho**2, 0.0) ** (2.0 * max(temperature_peaking, 0.0))
+    Tloc = Ti_keV * tprof
+    rate_p = 0.5 * nD0**2 * d2 * bosch_hale_dd_reactivity(Tloc, "p")
+    rate_n = 0.5 * nD0**2 * d2 * bosch_hale_dd_reactivity(Tloc, "n")
+    return rate_p * (E_DDP_MEV * 1e6 * E_CHARGE) + rate_n * (E_DDN_MEV * 1e6 * E_CHARGE)
+
+
+def beam_target_power_density_profile(
+    rho: np.ndarray, nb0: float, n_target0: float, Te_keV: float, Eb_keV: float,
+    species: str, ne0: float, density_peaking: float = 0.0, temperature_peaking: float = 0.0,
+) -> np.ndarray:
+    """Local beam-target D-T fusion power density [W/m^3] vs normalised
+    radius -- the same local-tau/local-nb rescaling as the profile-averaged
+    branch of beam_target_fusion_power(), returned per-rho."""
+    rho = np.asarray(rho, dtype=float)
+    if nb0 <= 0.0 or n_target0 <= 0.0:
+        return np.zeros_like(rho)
+    energies = np.linspace(1.0e-3, Eb_keV, 601)
+    sigma_v = beam_target_reactivity_spectrum(energies, species)
+    dprof = np.maximum(1.0 - rho**2, 0.0) ** (2.0 * max(density_peaking, 0.0))
+    tprof = np.maximum(1.0 - rho**2, 0.0) ** (2.0 * max(temperature_peaking, 0.0))
+    ref_tau = thermalization_time(ne0, Te_keV, Eb_keV, species)
+    out = np.zeros_like(rho)
+    for i, (df, tf) in enumerate(zip(dprof, tprof)):
+        local_ne = ne0 * df
+        local_te = Te_keV * tf
+        local_tau = thermalization_time(float(local_ne), float(local_te), Eb_keV, species)
+        local_nb = nb0 * local_tau / max(ref_tau, 1e-30)
+        dist = slowing_down_distribution(float(local_te), local_nb, Eb_keV, energies, species)
+        out[i] = n_target0 * df * _trapezoidal_integral(energies, dist * sigma_v) * E_FUSION_J
+    return out
+
+
+def beam_target_dd_power_density_profile(
+    rho: np.ndarray, nb0: float, nD_target0: float, Te_keV: float, Eb_keV: float,
+    ne0: float, density_peaking: float = 0.0, temperature_peaking: float = 0.0,
+) -> np.ndarray:
+    """Local beam-target D-D fusion power density [W/m^3] vs normalised
+    radius -- the same local-tau/local-nb rescaling as the profile-averaged
+    branch of beam_target_dd_fusion_power(), returned per-rho."""
+    rho = np.asarray(rho, dtype=float)
+    if nb0 <= 0.0 or nD_target0 <= 0.0:
+        return np.zeros_like(rho)
+    energies = np.linspace(1.0e-3, Eb_keV, 601)
+    v = beam_velocity(energies, "D")
+    svp = bosch_hale_dd_cross_section(energies, "p") * v
+    svn = bosch_hale_dd_cross_section(energies, "n") * v
+    dprof = np.maximum(1.0 - rho**2, 0.0) ** (2.0 * max(density_peaking, 0.0))
+    tprof = np.maximum(1.0 - rho**2, 0.0) ** (2.0 * max(temperature_peaking, 0.0))
+    ref_tau = thermalization_time(ne0, Te_keV, Eb_keV, "D")
+    out = np.zeros_like(rho)
+    for i, (df, tf) in enumerate(zip(dprof, tprof)):
+        local_ne = ne0 * df
+        local_te = Te_keV * tf
+        local_tau = thermalization_time(float(local_ne), float(local_te), Eb_keV, "D")
+        local_nb = nb0 * local_tau / max(ref_tau, 1e-30)
+        f = slowing_down_distribution(float(local_te), local_nb, Eb_keV, energies, "D")
+        Rp = nD_target0 * df * _trapezoidal_integral(energies, f * svp)
+        Rn = nD_target0 * df * _trapezoidal_integral(energies, f * svn)
+        out[i] = Rp * (E_DDP_MEV * 1e6 * E_CHARGE) + Rn * (E_DDN_MEV * 1e6 * E_CHARGE)
+    return out

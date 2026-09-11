@@ -736,19 +736,32 @@ The underlying HotJass calculation still evaluates each beam separately before f
 
 - **Dashboard** — scalar table of the operating point (temperatures, and their
   on-axis values when profile-corrected 0-D is on; densities, power balance
-  terms, orbit widths, D-T / D-D fusion power, neutron rate, Greenwald ratio).
+  terms, orbit widths, D-T / D-D fusion power, neutron rate, Greenwald ratio,
+  edge safety factor $q_*$, beta).  $q_*$ is reported using whichever formula
+  the active orbit-loss model actually uses -- the bare cylindrical
+  `safety_factor_cyl_edge` for "large-aspect", or the arbitrary-$A$
+  `safety_factor_cyl_edge_arbitrary_A` ($q_a$) for either ST orbit variant --
+  so it stays consistent with the orbit widths shown just above it.
 - **Deposition** — (1) beam targeting geometry in the torus top view (titled
   with the active device), tangent to each beam's $R_t$ with its
   co-/counter-current sense; (2) neutral-beam survival $I(s)/I_0$ and the
   fast-ion birth rate $n_e\sigma\,I(s)/I_0$ along the beam, annotated with each
-  beam's shine-through percentage; (3) the resulting fast-ion birth versus
-  normalised radius $\rho$, per beam and total (chord-sampled, midplane circular
-  approximation), with the prompt first-orbit-loss zone $\rho>\rho_{cut}$ shaded
-  and a per-beam $\rho_{cut}$ line (from the same criteria as the orbit-loss
-  model in use); (4) the steady-state slowing-down distribution $f(E)$ with the
-  $E_b$ edge marked.
+  beam's shine-through percentage, with the normalised flux label $\rho(s)$
+  along the same chord overlaid (dashed green) so the tangency point and any
+  centre-post block are visible directly against the survival/birth curves;
+  (3) the resulting fast-ion birth versus normalised radius $\rho$, per beam
+  and total (chord-sampled, midplane circular approximation), with the prompt
+  first-orbit-loss zone $\rho>\rho_{cut}$ shaded and a per-beam $\rho_{cut}$
+  line (from the same criteria as the orbit-loss model in use); (4) the
+  steady-state slowing-down distribution $f(E)$ with the $E_b$ edge marked.
 - **Power flow** — waterfall / Sankey / pie of injected power to its sinks.
-- **Profiles** — $n_e(\rho)$, $T_{e,i}(\rho)$ and the plasma shape.
+- **Profiles** — $n_e(\rho)$, $T_{e,i}(\rho)$, the plasma shape,
+  $\tau_S(\rho)$ (local thermalization time, from the same local $n_e(\rho)$,
+  $T_e(\rho)$ used elsewhere in this panel -- log scale, since it rises
+  sharply toward the edge as $n_e\to0$), and $P_{fus}(\rho)$ (local D-T + D-D
+  fusion power density, thermal vs. beam-plasma / beam-target, built from the
+  same on-axis densities and $(1-\rho^2)^{2p}$ shapes as the volume-integrated
+  totals on the Dashboard -- see "Fusion power" below).
 - **Assumptions** — the full validity / fit-range read-out and any warnings.
 - **References** — the literature behind the *currently selected* models
   (beam stopping, confinement scaling, orbit-loss model) and the active machine
@@ -930,6 +943,17 @@ D(d,n) branch. Reported on the Dashboard and as `R_neutron` in a scan.
 ## Density scan
 
 The Plasma tab defines the requested scan range with `n_e_min` and `n_e_max`. The Results tab reports the physically valid interval separately. Points below the HotJass charge-neutrality feasibility limit are not assigned physical output values and are omitted from plots.
+
+The $T_e,T_i$ scan plot caps its y-axis at 100 keV (the upper edge of the
+Bosch-Hale fits' validated range) so a runaway hot-ion point doesn't wash out
+the rest of the curve; values above that are simply clipped off the top of
+the plot, not altered.
+
+The $n_D,n_T,n_{b0}$ scan group's otherwise-empty 4th panel shows the
+fast-ion / target-ion density ratio $n_{b0}/n_{\mathrm{Target}}$, where
+$n_{\mathrm{Target}}$ is whichever thermal D-T species the *dominant* (by
+injected power) NBI beam reacts with in the beam-target channel -- $n_T$ for
+a D beam, $n_D$ for a T beam.
 
 ## Important notation
 

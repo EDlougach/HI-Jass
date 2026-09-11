@@ -306,6 +306,7 @@ class HIJassApp(ctk.CTk):
         ("  D-D (thermal / beam-target) [MW]", "Pf_dd"),
         ("neutron rate [n/s]", "R_n"), ("Q = P_fus / P_NB", "Q"),
         ("<E_fast> [keV]", "E_fast"), ("beta_t [%]", "beta_t"),
+        ("q* (edge safety factor)", "q_star"),
         ("<n_e>/n_GW  (Greenwald, at ne_c)", "f_gw"),
         ("Dominant loss", "dominant"),
     ]
@@ -531,7 +532,8 @@ class HIJassApp(ctk.CTk):
         ).pack(side="left")
         self.pf_fig, self.pf_canvas, holder = self._plot_area(pf_tab, figsize=(9.5, 6.2))
         holder.pack(fill="both", expand=True)
-        self.prof_fig, self.prof_canvas, holder = self._plot_area(self.tv_op.tab("Profiles"))
+        self.prof_fig, self.prof_canvas, holder = self._plot_area(
+            self.tv_op.tab("Profiles"), figsize=(11.0, 6.2))
         holder.pack(fill="both", expand=True)
         self._build_assumptions(self.tv_op.tab("Assumptions"))
         self._build_references(self.tv_op.tab("References"))
@@ -848,6 +850,15 @@ class HIJassApp(ctk.CTk):
                     f"rho_Li={rho_li * 100:.1f} cm ({rho_li / a:.2f} a),  "
                     f"dr={dr * 100:.1f} cm ({dr / a:.2f} a),  f_orbit={f_orb:.3f}")
         n_line, n_gw, f_gw = self._greenwald()
+        Ip_MA = plasma.plasma_current / 1e6
+        if st_orbit:
+            q_star = physics.safety_factor_cyl_edge_arbitrary_A(
+                Ip_MA, plasma.toroidal_field, plasma.major_radius, a, plasma.elongation, plasma.triangularity)
+            q_star_label = f"{q_star:.2f}  (arbitrary-A / q_a form)"
+        else:
+            q_star = physics.safety_factor_cyl_edge(
+                Ip_MA, plasma.toroidal_field, plasma.major_radius, a, plasma.elongation)
+            q_star_label = f"{q_star:.2f}  (large-aspect cylindrical form)"
 
         prof_on = getattr(self.model.plasma, "profile_averaging", False)
         te0 = op.Te0_keV if op.Te0_keV is not None else op.Te_keV
@@ -879,6 +890,7 @@ class HIJassApp(ctk.CTk):
             "Q": self._fmt(op.pf_total_w / op.P_NB_total_w if op.P_NB_total_w else None, "{:.3g}"),
             "E_fast": self._fmt(op.avg_fast_energy_keV),
             "beta_t": self._fmt(op.beta_t * 100.0),
+            "q_star": q_star_label,
             "orb1": orb["orb1"], "orb2": orb["orb2"],
             "f_gw": f"{f_gw:.3f}   (<n_e>={n_line:.2e}, n_GW={n_gw:.2e} m^-3)",
             "dominant": f"{dominant_name}: {dominant_mw:.2f} MW ({pct:.0f}% of P_NB)",
@@ -1135,8 +1147,10 @@ class HIJassApp(ctk.CTk):
             f_capt = op.f_capture[i] if op.f_capture else ch["f_capt"]
             shine_lines.append(f"NBI-{i + 1}: shine-through {100.0 * (1.0 - f_capt):.1f}%  "
                                f"(capture {100.0 * f_capt:.1f}%)")
+            ax.plot(ch["s"], ch["rho"], color="tab:green", ls="--", lw=1.1, alpha=0.8,
+                    label=r"$\rho(s)$" if i == 0 else None)
         ax.set_xlabel("distance along beam from plasma entry [m]")
-        ax.set_ylabel(r"neutral survival $I(s)/I_0$")
+        ax.set_ylabel(r"neutral survival $I(s)/I_0$   /   $\rho(s)$")
         ax.set_ylim(0.0, 1.03)
         ax2.set_ylabel("fast-ion birth rate (norm.)")
         ax2.set_ylim(0.0, 1.05)
@@ -1354,14 +1368,14 @@ class HIJassApp(ctk.CTk):
 
         fig = self.prof_fig
         fig.clear()
-        ax_n = fig.add_subplot(221)
+        ax_n = fig.add_subplot(231)
         ax_n.plot(rho, density / 1e20, label=r"$n_e$")
         ax_n.set(title=r"$n_e(\rho)$, $p_n=%.2f$" % plasma.density_peaking,
                  xlabel=r"$\rho$", ylabel=r"$n_e$ [$10^{20}\,\mathrm{m}^{-3}$]")
         ax_n.grid(alpha=0.3)
         ax_n.legend()
 
-        ax_t = fig.add_subplot(222)
+        ax_t = fig.add_subplot(232)
         ax_t.plot(rho, te_profile, label=r"$T_e$")
         ax_t.plot(rho, ti_profile, label=r"$T_i$")
         p_ti_show = plasma.temp_peaking if plasma.temp_peaking_i < 0 else plasma.temp_peaking_i
@@ -1371,7 +1385,32 @@ class HIJassApp(ctk.CTk):
         ax_t.grid(alpha=0.3)
         ax_t.legend()
 
-        ax_s = fig.add_subplot(223)
+        # tau_S(rho): local thermalization time from the local n_e(rho), T_e(rho).
+        # n_e and T_e can have very different peaking, so they don't reach their
+        # (unphysical, edge-of-grid) zero at the same rho -- floor each one
+        # independently as a safety net against div-by-zero, but also drop the
+        # last few grid points, where whichever profile floors first would
+        # otherwise show up as an artificial kink right at rho=1.
+        ax_tau = fig.add_subplot(233)
+        edge_cut = max(len(rho) - 4, 1)
+        rho_tau = rho[:edge_cut]
+        ne_floor = np.maximum(density[:edge_cut], 1.0e17)
+        te_floor = np.maximum(te_profile[:edge_cut], 0.05)
+        for i, beam in enumerate(model.beams):
+            sp = beam.species.upper()
+            eb = beam.beam_energy_keV
+            tau_prof = np.array([
+                physics.thermalization_time(float(ne_i), float(te_i), eb, sp)
+                for ne_i, te_i in zip(ne_floor, te_floor)
+            ])
+            ax_tau.plot(rho_tau, tau_prof * 1e3, label=f"NBI-{i + 1} {sp} {eb:.0f} keV")
+        ax_tau.set(title=r"$\tau_S(\rho)$ (thermalization time)",
+                   xlabel=r"$\rho$", ylabel=r"$\tau_S$ [ms]")
+        ax_tau.set_yscale("log")
+        ax_tau.grid(alpha=0.3, which="both")
+        ax_tau.legend(fontsize=7)
+
+        ax_s = fig.add_subplot(234)
         theta = np.linspace(0, 2 * np.pi, 400)
         delta = np.clip(plasma.triangularity, -0.999, 0.999)
         ax_s.plot(plasma.major_radius + plasma.minor_radius * np.cos(theta + np.arcsin(delta) * np.sin(theta)),
@@ -1383,7 +1422,45 @@ class HIJassApp(ctk.CTk):
         ax_s.set_aspect("equal")
         ax_s.grid(alpha=0.3)
 
-        ax_f = fig.add_subplot(224)
+        # P_fus(rho): local D-T + D-D fusion power density, thermal vs beam-plasma
+        # (beam-target). Densities are converted from the OperatingPoint's
+        # volume-balance nD0/nT0 to their on-axis value (pk_n) exactly as
+        # solve.py does internally for the volume-integrated totals -- this
+        # panel just exposes the same local density per rho instead.
+        ax_pf = fig.add_subplot(235)
+        pk_n = 1.0 + 2.0 * max(plasma.density_peaking, 0.0) if prof_on else 1.0
+        nD0_axis = op.nD0_m3 * pk_n
+        nT0_axis = op.nT0_m3 * pk_n
+        ne_axis = op.ne0_m3
+        p_te = plasma.temp_peaking
+        th_total = (
+            physics.thermal_fusion_power_density_profile(rho, nD0_axis, nT0_axis, ti_c, plasma.density_peaking, p_ti_show)
+            + physics.thermal_dd_power_density_profile(rho, nD0_axis, ti_c, plasma.density_peaking, p_ti_show)
+        )
+        bt_total = np.zeros_like(rho)
+        vol = result.volume_m3
+        for i, beam in enumerate(model.beams):
+            sp = beam.species.upper()
+            eb = beam.beam_energy_keV
+            f_capt = op.f_capture[i] if op.f_capture else 1.0
+            f_orb = op.f_orbit_loss[i] if op.f_orbit_loss else 0.0
+            p_use = beam.power_MW * 1e6 * f_capt * (1.0 - f_orb) * (1.0 - plasma.cx_loss_fraction)
+            tau_s0 = physics.thermalization_time(ne_axis, te_c, eb, sp)
+            nb0_axis = p_use * tau_s0 / (eb * 1e3 * physics.E_CHARGE * max(vol, 1e-9))
+            target_n = nT0_axis if sp == "D" else nD0_axis
+            bt_total += physics.beam_target_power_density_profile(
+                rho, nb0_axis, target_n, te_c, eb, sp, ne_axis, plasma.density_peaking, p_te)
+            if sp == "D" and nD0_axis > 0.0:
+                bt_total += physics.beam_target_dd_power_density_profile(
+                    rho, nb0_axis, nD0_axis, te_c, eb, ne_axis, plasma.density_peaking, p_te)
+        ax_pf.plot(rho, th_total / 1e3, label="thermal")
+        ax_pf.plot(rho, bt_total / 1e3, label="beam-plasma")
+        ax_pf.set(title=r"$P_{fus}(\rho)$  (D-T + D-D)",
+                  xlabel=r"$\rho$", ylabel=r"$P_{fus}$ [kW/m$^3$]")
+        ax_pf.grid(alpha=0.3)
+        ax_pf.legend(fontsize=7)
+
+        ax_f = fig.add_subplot(236)
         ax_f.axis("off")
         ax_f.text(0, 0.85, "Profiles / 0-D balance", fontsize=11, weight="bold")
         ax_f.text(0, 0.60, r"$n_e(\rho)=n_{e0}(1-\rho^2)^{2p_n}$", fontsize=9)
@@ -1402,8 +1479,8 @@ class HIJassApp(ctk.CTk):
         fig.clear()
         density_axis = self.scan["n_e"] / 1e20
         if len(keys) > 2:
-            axes = fig.subplots(2, 2, squeeze=False).flat
-            for ax, key in zip(axes, keys):
+            axes_list = list(fig.subplots(2, 2, squeeze=False).flat)
+            for ax, key in zip(axes_list, keys):
                 finite = np.isfinite(self.scan[key])
                 ax.plot(density_axis[finite], self.scan[key][finite], marker="o", ms=3,
                         label=self.LATEX_NAMES[key])
@@ -1411,6 +1488,27 @@ class HIJassApp(ctk.CTk):
                 ax.set_xlabel(r"$n_e$ [$10^{20}\,\mathrm{m}^{-3}$]")
                 ax.grid(alpha=0.3)
                 ax.legend()
+            # 4th (otherwise unused) panel of the n_D/n_T/n_b group: the
+            # fast-ion / target-ion density ratio -- n_Target is whichever
+            # thermal D-T species the DOMINANT NBI beam reacts with (n_T for
+            # a D beam, n_D for a T beam), i.e. the species driving the
+            # beam-target fusion yield.
+            if len(axes_list) > len(keys) and set(keys) == {"n_D", "n_T", "n_b"}:
+                major_beam = max(self.model.beams, key=lambda b: b.power_MW, default=None)
+                major_species = major_beam.species.upper() if major_beam else "D"
+                target_key = "n_T" if major_species == "D" else "n_D"
+                target = self.scan[target_key]
+                with np.errstate(divide="ignore", invalid="ignore"):
+                    ratio = np.where(target > 0.0, self.scan["n_b"] / np.where(target > 0.0, target, 1.0), np.nan)
+                ax4 = axes_list[len(keys)]
+                finite = np.isfinite(ratio)
+                target_sub = target_key[-1]
+                ax4.plot(density_axis[finite], ratio[finite], marker="o", ms=3, color="tab:purple",
+                         label=fr"$n_{{b0}}/n_{{{target_sub}}}$")
+                ax4.set_title(fr"$n_{{b0}}/n_{{{target_sub}}}$  (fast-ion / target-ion ratio)")
+                ax4.set_xlabel(r"$n_e$ [$10^{20}\,\mathrm{m}^{-3}$]")
+                ax4.grid(alpha=0.3)
+                ax4.legend()
         else:
             ax = fig.add_subplot(111)
             for key in keys:
@@ -1420,6 +1518,8 @@ class HIJassApp(ctk.CTk):
             ax.set_xlabel(r"$n_e$ [$10^{20}\,\mathrm{m}^{-3}$]")
             ax.grid(alpha=0.3)
             ax.legend()
+            if set(keys) == {"Te", "Ti"}:
+                ax.set_ylim(top=100.0)
         vmin = self.scan["n_e_valid_min"][0]
         vmax = self.scan["n_e_valid_max"][0]
         plasma = self.model.plasma
