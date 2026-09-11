@@ -177,9 +177,9 @@ class HIJassApp(ctk.CTk):
         "DANTE": {
             "major_radius": 0.65, "minor_radius": 0.35, "elongation": 2.2,
             "triangularity": -0.35, "effective_charge": 2.0, "toroidal_field": 1.5,
-            "plasma_current_MA": 1.5, "central_density": 1.5e20,
-            "n_e_min": 1.0e19, "n_e_max": 1.0e20, "density_peaking": 0.1, "temp_peaking": 1.0,
-            "deuterium_fraction": 0.5, "tritium_fraction": 0.5, "tauE_e": 0.02, "tauE_i": 0.05,
+            "plasma_current_MA": 1.5, "central_density": 1.0e20,
+            "n_e_min": 1.0e19, "n_e_max": 1.5e20, "density_peaking": 0.1, "temp_peaking": 1.0,
+            "deuterium_fraction": 0.2, "tritium_fraction": 0.8, "tauE_e": 0.15, "tauE_i": 0.15,
         },
         "ITER": {
             "major_radius": 6.2, "minor_radius": 2.0, "elongation": 1.85,
@@ -230,13 +230,13 @@ class HIJassApp(ctk.CTk):
         ("Temp peaking (electron)", "temp_peaking", 1.0),
         ("Temp peaking (ion, -1=same)", "temp_peaking_i", -1.0),
         ("Centre-post R [m] (-1=R0-a)", "centrepost_radius", -1.0),
-        ("Central n_e [m^-3]", "central_density", 1.5e20),
+        ("Central n_e [m^-3]", "central_density", 1.0e20),
         ("Scan n_e min [m^-3]", "n_e_min", 1.0e19),
-        ("Scan n_e max [m^-3]", "n_e_max", 1.0e20),
-        ("D fraction", "deuterium_fraction", 0.5),
-        ("T fraction", "tritium_fraction", 0.5),
-        ("tauE,e [s]", "tauE_e", 0.02),
-        ("tauE,i [s]", "tauE_i", 0.05),
+        ("Scan n_e max [m^-3]", "n_e_max", 1.5e20),
+        ("D fraction", "deuterium_fraction", 0.2),
+        ("T fraction", "tritium_fraction", 0.8),
+        ("tauE,e [s]", "tauE_e", 0.15),
+        ("tauE,i [s]", "tauE_i", 0.15),
     ]
 
     OBSERVABLES = {
@@ -394,7 +394,8 @@ class HIJassApp(ctk.CTk):
                 ("Species", "species", beam.species),
                 ("P_NB [MW]", "power_MW", beam.power_MW),
                 ("E_b [keV]", "beam_energy_keV", beam.beam_energy_keV),
-                ("Tangent R_t [m]", "tangent_R_m", self.model.plasma.major_radius),
+                ("Tangent R_t [m]", "tangent_R_m",
+                 beam.tangent_R_m if beam.tangent_R_m is not None else self.model.plasma.major_radius),
                 ("Tangent Z_t [m]", "tangent_Z_m", beam.tangent_Z_m),
                 ("Manual shine-through frac", "manual_shine_through_fraction",
                  beam.manual_shine_through_fraction),
@@ -438,14 +439,14 @@ class HIJassApp(ctk.CTk):
         ctk.CTkOptionMenu(
             models.body, values=list(CONFINEMENT_MODES), variable=self.confinement_var,
         ).grid(row=0, column=1, padx=8, pady=4, sticky="ew")
-        self.orbit_var = ctk.BooleanVar(value=self._saved.get("_orbit_loss", False))
+        self.orbit_var = ctk.BooleanVar(value=self._saved.get("_orbit_loss", True))
         ctk.CTkCheckBox(
             models.body, text="First-orbit loss (direction set per NBI)", variable=self.orbit_var,
         ).grid(row=1, column=0, columnspan=2, padx=8, pady=4, sticky="w")
         ctk.CTkLabel(models.body, text="Orbit model", anchor="w").grid(
             row=2, column=0, padx=8, pady=4, sticky="w")
         self.orbit_model_var = ctk.StringVar(
-            value=self._saved.get("_orbit_model", "Large-aspect (q* rho_Li)"))
+            value=self._saved.get("_orbit_model", "ST orbits - pitch-resolved"))
         ctk.CTkOptionMenu(
             models.body, values=list(ORBIT_MODELS), variable=self.orbit_model_var,
         ).grid(row=2, column=1, padx=8, pady=4, sticky="ew")
@@ -453,7 +454,7 @@ class HIJassApp(ctk.CTk):
             ("CX loss fraction (0-1)", "cx_loss_fraction",
              self._saved.get("models.cx_loss_fraction", 0.0)),
         ], start_row=3)
-        self.equip_var = ctk.BooleanVar(value=self._saved.get("_equipartition", False))
+        self.equip_var = ctk.BooleanVar(value=self._saved.get("_equipartition", True))
         ctk.CTkCheckBox(
             models.body, text="e-i equipartition (couple Te, Ti)", variable=self.equip_var,
         ).grid(row=4, column=0, columnspan=2, padx=8, pady=4, sticky="w")
@@ -1147,10 +1148,8 @@ class HIJassApp(ctk.CTk):
             f_capt = op.f_capture[i] if op.f_capture else ch["f_capt"]
             shine_lines.append(f"NBI-{i + 1}: shine-through {100.0 * (1.0 - f_capt):.1f}%  "
                                f"(capture {100.0 * f_capt:.1f}%)")
-            ax.plot(ch["s"], ch["rho"], color="tab:green", ls="--", lw=1.1, alpha=0.8,
-                    label=r"$\rho(s)$" if i == 0 else None)
         ax.set_xlabel("distance along beam from plasma entry [m]")
-        ax.set_ylabel(r"neutral survival $I(s)/I_0$   /   $\rho(s)$")
+        ax.set_ylabel(r"neutral survival $I(s)/I_0$")
         ax.set_ylim(0.0, 1.03)
         ax2.set_ylabel("fast-ion birth rate (norm.)")
         ax2.set_ylim(0.0, 1.05)

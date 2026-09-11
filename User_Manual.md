@@ -22,10 +22,10 @@ The launcher creates the virtual environment, installs the dependencies, and sta
 
 The default configuration contains two neutral beams:
 
-| Beam | Species | Injection energy | Injected power |
-|---|---:|---:|---:|
-| NBI-1 | D | 120 keV | 5 MW |
-| NBI-2 | T | 180 keV | 5 MW |
+| Beam | Species | Injection energy | Injected power | Tangent $R_t$ | Direction |
+|---|---:|---:|---:|---:|---|
+| NBI-1 | D | 120 keV | 10 MW | 0.5 m | co |
+| NBI-2 | T | 180 keV | 0.1 MW | 0.6 m | counter |
 
 ## Two-beam slowing-down model
 
@@ -746,10 +746,7 @@ The underlying HotJass calculation still evaluates each beam separately before f
   with the active device), tangent to each beam's $R_t$ with its
   co-/counter-current sense; (2) neutral-beam survival $I(s)/I_0$ and the
   fast-ion birth rate $n_e\sigma\,I(s)/I_0$ along the beam, annotated with each
-  beam's shine-through percentage, with the normalised flux label $\rho(s)$
-  along the same chord overlaid (dashed green) so the tangency point and any
-  centre-post block are visible directly against the survival/birth curves;
-  (3) the resulting fast-ion birth versus normalised radius $\rho$, per beam
+  beam's shine-through percentage; (3) the resulting fast-ion birth versus normalised radius $\rho$, per beam
   and total (chord-sampled, midplane circular approximation), with the prompt
   first-orbit-loss zone $\rho>\rho_{cut}$ shaded and a per-beam $\rho_{cut}$
   line (from the same criteria as the orbit-loss model in use); (4) the

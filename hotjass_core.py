@@ -16,9 +16,9 @@ class PlasmaParams:
     minor_radius: float = 0.35
     elongation: float = 2.2
     triangularity: float = -0.35
-    central_density: float = 1.5e20
+    central_density: float = 1.0e20
     n_e_min: float = 1.0e19
-    n_e_max: float = 1.0e20
+    n_e_max: float = 1.5e20
     density_peaking: float = 0.1
     temp_peaking: float = 1.0          # electron temperature profile exponent
     temp_peaking_i: float = -1.0       # ion T profile exponent; < 0 -> same as temp_peaking
@@ -26,25 +26,25 @@ class PlasmaParams:
     effective_charge: float = 2.0
     toroidal_field: float = 1.5
     plasma_current: float = 1.5e6
-    deuterium_fraction: float = 0.5
-    tritium_fraction: float = 0.5
-    tauE_e: float = 0.02
-    tauE_i: float = 0.05
+    deuterium_fraction: float = 0.2
+    tritium_fraction: float = 0.8
+    tauE_e: float = 0.15
+    tauE_i: float = 0.15
     alpha_heating: bool = False  # fusion alpha self-heating fed back into the T_e/T_i balance
     f_alpha: float = 1.0  # fraction of alpha power confined & thermalised
-    p_ecrh_MW: float = 0.0  # ECRH power (mostly to electrons)
-    ecrh_f_e: float = 0.95  # electron fraction of ECRH power (rest to ions)
+    p_ecrh_MW: float = 2.0  # ECRH power (mostly to electrons)
+    ecrh_f_e: float = 1.0  # electron fraction of ECRH power (rest to ions)
     p_icrh_MW: float = 0.0  # ICRH power
     icrh_f_e: float = 0.5  # electron fraction of ICRH power
     icrh_f_i: float = 0.5  # ion fraction of ICRH power (f_e + f_i need not sum to 1)
     tau_Ee_mode: str = "fixed"
     tau_Ei_mode: str = "fixed"
-    enable_orbit_loss: bool = False
+    enable_orbit_loss: bool = True
     orbit_loss_co_current: bool = True
-    orbit_model: str = "large_aspect"  # "large_aspect" | "st_meanshift" | "st_pitch"
+    orbit_model: str = "st_pitch"  # "large_aspect" | "st_meanshift" | "st_pitch"
     profile_averaging: bool = False  # treat central_density as ON-AXIS; balance runs on <n_e>
     cx_loss_fraction: float = 0.0
-    enable_equipartition: bool = False
+    enable_equipartition: bool = True
 
 
 @dataclass
@@ -69,8 +69,10 @@ class HotJassModel:
     def __init__(self, plasma: PlasmaParams | None = None, beams: List[BeamParams] | None = None):
         self.plasma = plasma or PlasmaParams()
         self.beams = beams or [
-            BeamParams(species="D", power_MW=5.0, beam_energy_keV=120.0),
-            BeamParams(species="T", power_MW=5.0, beam_energy_keV=180.0),
+            BeamParams(species="D", power_MW=10.0, beam_energy_keV=120.0, tangent_R_m=0.5,
+                       shine_through_model="janev_suzuki", co_current=True),
+            BeamParams(species="T", power_MW=0.1, beam_energy_keV=180.0, tangent_R_m=0.6,
+                       shine_through_model="janev_suzuki", co_current=False),
         ]
 
     def rho_grid(self, n_points: int = 200) -> np.ndarray:
