@@ -565,7 +565,7 @@ class HIJassApp(ctk.CTk):
         self.pf_fig, self.pf_canvas, holder = self._plot_area(pf_tab, figsize=(9.5, 6.2))
         holder.pack(fill="both", expand=True)
         self.prof_fig, self.prof_canvas, holder = self._plot_area(
-            self.tv_op.tab("Profiles"), figsize=(11.0, 6.2))
+            self.tv_op.tab("Profiles"), figsize=(13.5, 6.2))
         holder.pack(fill="both", expand=True)
         self._build_assumptions(self.tv_op.tab("Assumptions"))
         self._build_references(self.tv_op.tab("References"))
@@ -1435,14 +1435,14 @@ class HIJassApp(ctk.CTk):
 
         fig = self.prof_fig
         fig.clear()
-        ax_n = fig.add_subplot(231)
+        ax_n = fig.add_subplot(241)
         ax_n.plot(rho, density / 1e20, label=r"$n_e$")
         ax_n.set(title=r"$n_e(\rho)$, $p_n=%.2f$" % plasma.density_peaking,
                  xlabel=r"$\rho$", ylabel=r"$n_e$ [$10^{20}\,\mathrm{m}^{-3}$]")
         ax_n.grid(alpha=0.3)
         ax_n.legend()
 
-        ax_t = fig.add_subplot(232)
+        ax_t = fig.add_subplot(242)
         ax_t.plot(rho, te_profile, label=r"$T_e$")
         ax_t.plot(rho, ti_profile, label=r"$T_i$")
         p_ti_show = plasma.temp_peaking if plasma.temp_peaking_i < 0 else plasma.temp_peaking_i
@@ -1458,7 +1458,7 @@ class HIJassApp(ctk.CTk):
         # independently as a safety net against div-by-zero, but also drop the
         # last few grid points, where whichever profile floors first would
         # otherwise show up as an artificial kink right at rho=1.
-        ax_tau = fig.add_subplot(233)
+        ax_tau = fig.add_subplot(243)
         edge_cut = max(len(rho) - 4, 1)
         rho_tau = rho[:edge_cut]
         ne_floor = np.maximum(density[:edge_cut], 1.0e17)
@@ -1477,7 +1477,41 @@ class HIJassApp(ctk.CTk):
         ax_tau.grid(alpha=0.3, which="both")
         ax_tau.legend(fontsize=7)
 
-        ax_s = fig.add_subplot(234)
+        # n0(rho): background-neutral density behind the active CX-loss model
+        # (off / flat in "manual fraction"; a uniform value in "manual n0/ne";
+        # the real Sec.3.2 edge-penetration profile in "penetration" -- same
+        # rho~0.95 edge-shell convention as hotjass_core._cx_fraction_dicts,
+        # kept in sync with it by hand).
+        ax_n0 = fig.add_subplot(244)
+        cx_mode = getattr(plasma, "cx_model", "manual_fraction")
+        if cx_mode == "manual_fraction":
+            ax_n0.text(0.5, 0.5, "CX-loss model: manual fraction\n(no n0 profile)",
+                       ha="center", va="center", transform=ax_n0.transAxes,
+                       fontsize=9, color="0.45")
+            ax_n0.set_xticks([])
+            ax_n0.set_yticks([])
+        elif cx_mode == "manual_n0":
+            n0_flat = max(plasma.cx_n0_over_ne, 0.0) * op.ne0_m3
+            ax_n0.axhline(n0_flat, color="tab:blue", lw=1.6)
+            ax_n0.set(title=r"$n_0$ (manual, uniform)",
+                      xlabel=r"$\rho$", ylabel=r"$n_0$ [m$^{-3}$]")
+            ax_n0.set_xlim(0.0, 1.0)
+            ax_n0.grid(alpha=0.3)
+        else:  # "penetration"
+            edge_idx = max(int(0.95 * (len(rho) - 1)), 0)
+            n0_lcfs = max(plasma.cx_n0_lcfs_over_ne, 0.0) * density[edge_idx]
+            n0_profile = physics.neutral_penetration_profile(
+                rho, density, op.Te_keV or 0.0, op.Ti_keV or 0.0, plasma.minor_radius, n0_lcfs)
+            ax_n0.plot(rho, n0_profile, color="tab:blue")
+            ax_n0.axvline(rho[edge_idx], color="0.6", ls="--", lw=1.0)
+            ax_n0.text(rho[edge_idx], n0_lcfs, "  LCFS ref.\n  ($\\rho$=%.2f)" % rho[edge_idx],
+                       fontsize=7, color="0.4", va="bottom")
+            ax_n0.set(title=r"$n_0(\rho)$ (penetration)",
+                      xlabel=r"$\rho$", ylabel=r"$n_0$ [m$^{-3}$]")
+            ax_n0.set_yscale("log")
+            ax_n0.grid(alpha=0.3, which="both")
+
+        ax_s = fig.add_subplot(245)
         theta = np.linspace(0, 2 * np.pi, 400)
         delta = np.clip(plasma.triangularity, -0.999, 0.999)
         ax_s.plot(plasma.major_radius + plasma.minor_radius * np.cos(theta + np.arcsin(delta) * np.sin(theta)),
@@ -1494,7 +1528,7 @@ class HIJassApp(ctk.CTk):
         # volume-balance nD0/nT0 to their on-axis value (pk_n) exactly as
         # solve.py does internally for the volume-integrated totals -- this
         # panel just exposes the same local density per rho instead.
-        ax_pf = fig.add_subplot(235)
+        ax_pf = fig.add_subplot(246)
         pk_n = 1.0 + 2.0 * max(plasma.density_peaking, 0.0) if prof_on else 1.0
         nD0_axis = op.nD0_m3 * pk_n
         nT0_axis = op.nT0_m3 * pk_n
@@ -1528,7 +1562,7 @@ class HIJassApp(ctk.CTk):
         ax_pf.grid(alpha=0.3)
         ax_pf.legend(fontsize=7)
 
-        ax_f = fig.add_subplot(236)
+        ax_f = fig.add_subplot(247)
         ax_f.axis("off")
         ax_f.text(0, 0.85, "Profiles / 0-D balance", fontsize=11, weight="bold")
         ax_f.text(0, 0.60, r"$n_e(\rho)=n_{e0}(1-\rho^2)^{2p_n}$", fontsize=9)

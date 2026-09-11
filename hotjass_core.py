@@ -139,9 +139,11 @@ class HotJassModel:
             rho = self.rho_grid()
             ne_profile = self.density_profile(rho)
             # ne_profile hits exactly 0 at rho=1 whenever density_peaking>0 --
-            # use a near-edge shell (98% of the grid) as the physically
-            # meaningful "LCFS" density instead of that zero.
-            edge_idx = max(int(0.98 * (len(rho) - 1)), 0)
+            # use a near-edge shell (rho~0.95) as the physically meaningful
+            # "LCFS" density instead of that zero. Also used by the GUI's
+            # Profiles-tab n0(rho) panel (_render_profiles) -- keep both in
+            # sync if this fraction ever changes.
+            edge_idx = max(int(0.95 * (len(rho) - 1)), 0)
             n0_lcfs = max(config.cx_n0_lcfs_over_ne, 0.0) * ne_profile[edge_idx]
             n0_profile = physics.neutral_penetration_profile(
                 rho, ne_profile, Te_keV, Ti_keV, a, n0_lcfs)

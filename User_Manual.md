@@ -434,7 +434,14 @@ keeping the core solver a single non-iterative solve.
 
 Instead of a single uniform $n_0$, the boundary value $n_{0,\mathrm{LCFS}} =
 (n_{0,\mathrm{LCFS}}/n_e)\,n_{e,\mathrm{LCFS}}$ is set from the user ratio,
-and the core profile follows the standard penetration/recycling picture:
+and the core profile follows the standard penetration/recycling picture.
+$n_{e,\mathrm{LCFS}}$ is evaluated at $\rho=0.95$, not literally at
+$\rho=1$: the core density shape $n_e(\rho)=n_{e0}(1-\rho^2)^{2p_n}$ is
+an exact zero at $\rho=1$ whenever $p_n>0$, which would make
+$n_{0,\mathrm{LCFS}}=0$ regardless of the input ratio -- a knob that does
+nothing. $\rho=0.95$ is a compromise: with a strongly peaked profile
+($p_n\gtrsim1$–$2$) it can still sit orders of magnitude below $n_{e0}$, so
+treat this mode as unreliable for very peaked density profiles.
 
 $$
 \lambda_0(\rho) = \frac{v_0}{n_e(\rho)\left[\langle\sigma v\rangle_\mathrm{ion}(T_e)+\langle\sigma v\rangle_\mathrm{cx}(T_i)\right]},
@@ -448,12 +455,18 @@ Franck-Condon-like dissociation speed. **Caveat:** the ionization
 ($\langle\sigma v\rangle_\mathrm{ion}(T_e)$) and thermal-CX
 ($\langle\sigma v\rangle_\mathrm{cx}(T_i)$) rate coefficients used for
 $\lambda_0$ are an interim hand-built approximation (a threshold-shaped
-form for ionization, a threshold-free $\sqrt{T}$ form for CX) — a calibrated
+form for ionization, a threshold-free $\sqrt{T}$ form for CX, each capped to
+saturate at a few $\times10^{-14}\,\mathrm{m}^3/\mathrm{s}$) — a calibrated
 Voronov (1997) / ADAS `adf11` fit was not sourced/verified in this session,
 so treat $n_0(\rho)$'s absolute scale as order-of-magnitude only; the
 survival-integral physics downstream of $\langle n_0\rangle$ (same
 $\sigma_\mathrm{cx}(E)$ fit as "Manual n0/ne") is not affected by this
-caveat.
+caveat. $n_0(\rho)$ itself (per the active mode -- flat for "manual n0/ne",
+the profile above for "penetration", nothing for "manual fraction") is
+plotted on the Profiles tab; because $\lambda_0$ is typically much smaller
+than $a$, the profile can span many orders of magnitude edge-to-core (shown
+on a log axis) -- a genuine, if extreme, feature of this reduced model, not
+a numerical artifact.
 
 ### Escape probability (informational only)
 
@@ -856,10 +869,12 @@ The underlying HotJass calculation still evaluates each beam separately before f
   line (from the same criteria as the orbit-loss model in use); (4) the
   steady-state slowing-down distribution $f(E)$ with the $E_b$ edge marked.
 - **Power flow** — waterfall / Sankey / pie of injected power to its sinks.
-- **Profiles** — $n_e(\rho)$, $T_{e,i}(\rho)$, the plasma shape,
+- **Profiles** — $n_e(\rho)$, $T_{e,i}(\rho)$,
   $\tau_S(\rho)$ (local thermalization time, from the same local $n_e(\rho)$,
   $T_e(\rho)$ used elsewhere in this panel -- log scale, since it rises
-  sharply toward the edge as $n_e\to0$), and $P_{fus}(\rho)$ (local D-T + D-D
+  sharply toward the edge as $n_e\to0$), $n_0(\rho)$ (background-neutral
+  density behind the active CX-loss model -- see "Charge-exchange loss"
+  above), the plasma shape, and $P_{fus}(\rho)$ (local D-T + D-D
   fusion power density, thermal vs. beam-plasma / beam-target, built from the
   same on-axis densities and $(1-\rho^2)^{2p}$ shapes as the volume-integrated
   totals on the Dashboard -- see "Fusion power" below).

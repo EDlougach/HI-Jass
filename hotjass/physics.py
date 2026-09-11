@@ -333,13 +333,18 @@ def ionization_rate_coefficient_m3s(Te_keV: float) -> float:
 
     INTERIM APPROXIMATION: a calibrated fit (Voronov, At. Data Nucl. Data
     Tables 65, 1 (1997); or ADAS adf11/scd) was not sourced/verified in this
-    session. This uses a simple hand-built threshold form (saturating
-    around a few x1e-14 m^3/s well above the 13.6 eV ionization threshold,
-    dropping exponentially below it) as an order-of-magnitude placeholder,
-    flagged for replacement with a verified fit.
+    session. This uses a simple hand-built threshold form -- saturating
+    around a few x1e-14 m^3/s well above the 13.6 eV ionization threshold
+    (a sqrt(Te)/sqrt(Te+200) factor caps the growth that an earlier version
+    of this function left unbounded, which was blowing up
+    neutral_penetration_profile()'s decay length by hundreds of orders of
+    magnitude), dropping exponentially below threshold -- as an
+    order-of-magnitude placeholder, flagged for replacement with a
+    verified fit.
     """
     Te_eV = max(float(Te_keV), 1e-9) * 1e3
-    return 3.0e-14 * math.sqrt(Te_eV) * math.exp(-13.6 / Te_eV)
+    saturating = math.sqrt(Te_eV) / math.sqrt(Te_eV + 200.0)
+    return 3.0e-14 * saturating * math.exp(-13.6 / Te_eV)
 
 
 def cx_rate_coefficient_m3s(Ti_keV: float) -> float:
@@ -348,11 +353,13 @@ def cx_rate_coefficient_m3s(Ti_keV: float) -> float:
     the other half of neutral_penetration_profile()'s decay length.
 
     INTERIM APPROXIMATION: same caveat as ionization_rate_coefficient_m3s()
-    -- a simple threshold-free (CX has no activation energy) sqrt(T)
-    placeholder, not an independently verified ADAS/Janev-Smith fit.
+    -- a simple threshold-free (CX has no activation energy) placeholder,
+    saturating around 1.5e-14 m^3/s (sqrt(Ti)/sqrt(Ti+300)), not an
+    independently verified ADAS/Janev-Smith fit.
     """
     Ti_eV = max(float(Ti_keV), 1e-9) * 1e3
-    return 1.5e-14 * math.sqrt(Ti_eV)
+    saturating = math.sqrt(Ti_eV) / math.sqrt(Ti_eV + 300.0)
+    return 1.5e-14 * saturating
 
 
 def neutral_penetration_profile(
