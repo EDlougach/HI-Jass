@@ -1161,17 +1161,14 @@ def first_orbit_loss_fraction_st(
       the same gyro cutoff. Closer in spirit to Akers et al.'s START/MAST
       first-orbit modelling.
 
-    BIRTH PROFILE: unlike the large-aspect first_orbit_loss_fraction (which
-    reuses the Riviere attenuation shape and, with this project's default
-    "manual" shine-through, collapses to an unphysical edge spike), this
-    integral builds the fast-ion birth weight along the chord from a
-    physically-calibrated mean free path
-
-        lambda_mfp [m] ~= 5.5e19 * (Eb/A)[keV/amu] / ne0[m^-3]
-
-    (standard NBI penetration rule of thumb), clamped to [0.2 a, 8 a] so the
-    profile is neither a delta at the edge nor perfectly flat. stopping_model
-    is accepted for signature parity but only selects a mild shape tilt.
+    BIRTH PROFILE: the same Beer-Lambert deposition density already used by
+    first_orbit_loss_fraction() and the GUI's Deposition-tab chord plot --
+    n_e*sigma*exp(-n_e*sigma*x) via stopping_cross_section_m2(stopping_model)
+    -- so the ST birth profile responds to ne0 exactly like the large-aspect
+    model and the visualization do (an earlier version used a fixed
+    "NBI penetration rule of thumb" mean free path that saturated at its
+    clamp ceiling for realistic densities and left f_orbit essentially
+    ne0-independent up to ~1e22 m^-3; this was a bug, not intended physics).
 
     Refs: Akers et al., Nucl. Fusion (START NBI, tight aspect ratio ~1.4);
     Goldston, White & Boozer, PRL 47 (1981) 1004 (trapped fast-ion orbit
@@ -1192,9 +1189,8 @@ def first_orbit_loss_fraction_st(
     else:
         x, rho, R_chord_real = (np.asarray(chord[0]), np.asarray(chord[1]), np.asarray(chord[2]))
         n = len(x)
-    lam_mfp = 5.5e19 * (Eb_keV / A) / max(ne0, 1.0e17)
-    lam_mfp = min(max(lam_mfp, 0.2 * a), 8.0 * a)
-    density = np.exp(-x / lam_mfp)
+    sigma_m2 = stopping_cross_section_m2(Eb_keV / A, stopping_model, ne0 * 1e-6, Te_keV, Zeff)
+    density = np.exp(-ne0 * sigma_m2 * x)
     # Gyro-orbit prompt loss: born within ONE gyroradius of the LCFS. This
     # channel is direction-independent (gyration does not care about I_p), so
     # keeping it at 1 rho_Li rather than 2 leaves room for the co/counter

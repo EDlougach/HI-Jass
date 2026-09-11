@@ -302,10 +302,13 @@ safety factor $q_a$ (Uckan / ITER Physics Basis form, with the
 $(1.17-0.65\varepsilon)/(1-\varepsilon^2)^2$ shaping factor) is reported for
 reference but is **not** used in the widths.
 
-The birth profile in this channel is rebuilt from a physically calibrated mean
-free path $\lambda_{\mathrm{mfp}} \approx 5.5\times10^{19}\,(E_b/A)/n_{e0}$ m,
-clamped to $[0.2a, 8a]$, instead of the (with *Manual* shine-through,
-pathologically edge-peaked) Riviere weighting.
+The birth profile in this channel uses the same Beer-Lambert deposition
+density as the large-aspect model and the Deposition tab's chord plot,
+$n_e\sigma\,e^{-n_e\sigma x}$ via the selected stopping model — so it responds
+to $n_{e0}$ the same way everywhere in the code (an earlier version used a
+fixed "penetration rule of thumb" mean free path that saturated at its clamp
+for realistic densities, decoupling the ST models' loss fraction from
+$n_{e0}$; this has been fixed).
 
 The **drift-orbit shift is direction-dependent** for both populations —
 inward for co-current ($v_\parallel$ along $I_p$), outward for counter — with a
