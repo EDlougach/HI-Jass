@@ -53,6 +53,12 @@ ORBIT_MODELS = {
     "ST orbits - mean-shift (arbitrary A)": "st_meanshift",
     "ST orbits - pitch-resolved": "st_pitch",
 }
+CX_MODELS = {
+    "Manual fraction": "manual_fraction",
+    "Manual n0/ne": "manual_n0",
+    "Penetration (n0_LCFS/ne)": "penetration",
+}
+CX_MODELS_INV = {v: k for k, v in CX_MODELS.items()}
 SHINE_LABEL_TO_MODEL = {"Riviere": "riviere", "Janev": "janev_suzuki", "Manual": "manual"}
 SHINE_MODEL_TO_LABEL = {v: k for k, v in SHINE_LABEL_TO_MODEL.items()}
 
@@ -109,6 +115,15 @@ REFERENCES = {
             "https://www.nrl.navy.mil/News-Media/Publications/nrl-plasma-formulary/"),
     "stix": ("Stix, Plasma Phys. 14 (1972) 367 - heating of toroidal plasmas by neutral injection (L_e/L_i split)",
              _scholar("Stix 1972 Plasma Physics 14 367 heating toroidal plasmas neutral injection")),
+    # --- charge-exchange loss (docs/CX_model.tex) ---
+    "janev_smith_1993": ("Janev & Smith, Nucl. Fusion Suppl. 4 (1993) - CX cross-section analytic form (Sec. 2.3.1)",
+                         _scholar("Janev Smith 1993 Nuclear Fusion Suppl 4 atomic plasma-material interaction data")),
+    "swaczyna_2024": ("Swaczyna, Bzowski & Kubiak, arXiv:2411.13174 (2024) - refit CX cross-section (Eq. A1) used here",
+                      "https://arxiv.org/abs/2411.13174"),
+    "freeman_jones_1974": ("Freeman & Jones, Culham CLM-R137 (1974) - analytic atomic cross-section fits",
+                          _scholar("Freeman Jones 1974 CLM-R137 analytic cross sections rate coefficients")),
+    "pppl1280_cx": ("PPPL-1280, Sect. 6.2.2-6.2.3 - CX loss quoted as up to 10% of injected power (Zeff=1)",
+                    _scholar("PPPL-1280 neutral beam injection heating tokamak")),
 }
 
 # Active-machine geometry references (keyed by preset name).
@@ -294,7 +309,10 @@ class HIJassApp(ctk.CTk):
         ("P captured [MW]", "P_capt"), ("P first-orbit loss [MW]", "P_orbit"),
         ("  NBI-1  orbit widths / f_orbit", "orb1"),
         ("  NBI-2  orbit widths / f_orbit", "orb2"),
-        ("P charge-exchange loss [MW]", "P_cx"), ("P useful (to plasma) [MW]", "P_useful"),
+        ("P charge-exchange loss [MW]", "P_cx"),
+        ("  NBI-1  CX: f_cx,P / f_cx,N / gamma_cx", "cx1"),
+        ("  NBI-2  CX: f_cx,P / f_cx,N / gamma_cx", "cx2"),
+        ("P useful (to plasma) [MW]", "P_useful"),
         ("  -> electrons P_e [MW]", "P_e"), ("  -> ions P_i [MW]", "P_i"),
         ("P_ei equipartition (e->i) [MW]", "P_ei"),
         ("P_alpha self-heating [MW]", "P_alpha"),
@@ -470,6 +488,19 @@ class HIJassApp(ctk.CTk):
             models.body, text="profile-corrected 0-D (central n_e in; <T> + T0 out)",
             variable=self.profile_var,
         ).grid(row=7, column=0, columnspan=2, padx=8, pady=4, sticky="w")
+        ctk.CTkLabel(models.body, text="CX-loss model", anchor="w").grid(
+            row=8, column=0, padx=8, pady=4, sticky="w")
+        self.cx_model_var = ctk.StringVar(
+            value=self._saved.get("_cx_model", "Manual fraction"))
+        ctk.CTkOptionMenu(
+            models.body, values=list(CX_MODELS), variable=self.cx_model_var,
+        ).grid(row=8, column=1, padx=8, pady=4, sticky="ew")
+        self._add_entries(models.body, "models", [
+            ("CX: n0/ne (manual n0)", "cx_n0_over_ne",
+             self._saved.get("models.cx_n0_over_ne", 1.0e-5)),
+            ("CX: n0_LCFS/ne (penetration)", "cx_n0_lcfs_over_ne",
+             self._saved.get("models.cx_n0_lcfs_over_ne", 0.02)),
+        ], start_row=9)
         row += 1
 
         # Second Run button at the foot of the input rail, so the user does not
@@ -655,6 +686,15 @@ class HIJassApp(ctk.CTk):
             plasma.cx_loss_fraction = min(max(cx, 0.0), 1.0)
         except ValueError:
             errors.append("CX loss fraction")
+        plasma.cx_model = CX_MODELS[self.cx_model_var.get()]
+        try:
+            plasma.cx_n0_over_ne = max(float(self.entries["models.cx_n0_over_ne"].get()), 0.0)
+        except ValueError:
+            errors.append("CX n0/ne (manual)")
+        try:
+            plasma.cx_n0_lcfs_over_ne = max(float(self.entries["models.cx_n0_lcfs_over_ne"].get()), 0.0)
+        except ValueError:
+            errors.append("CX n0_LCFS/ne (penetration)")
 
         for label, field, clamp01 in (
             ("P_ECRH", "p_ecrh_MW", False), ("ECRH f_e", "ecrh_f_e", True),
@@ -830,7 +870,9 @@ class HIJassApp(ctk.CTk):
         plasma = self.model.plasma
         a = plasma.minor_radius
         st_orbit = getattr(plasma, "orbit_model", "large_aspect") in ("st_meanshift", "st_pitch")
+        cx_mode = getattr(plasma, "cx_model", "manual_fraction")
         orb = {}
+        cx = {}
         for i, beam in enumerate(self.model.beams):
             sp = beam.species.upper()
             rho_li = physics.larmor_radius_m(beam.beam_energy_keV, plasma.toroidal_field, sp)
@@ -850,6 +892,22 @@ class HIJassApp(ctk.CTk):
                 orb[f"orb{i + 1}"] = (
                     f"rho_Li={rho_li * 100:.1f} cm ({rho_li / a:.2f} a),  "
                     f"dr={dr * 100:.1f} cm ({dr / a:.2f} a),  f_orbit={f_orb:.3f}")
+            f_p = op.f_cx_loss[i] if i < len(op.f_cx_loss) else 0.0
+            if cx_mode == "manual_fraction":
+                cx[f"cx{i + 1}"] = f"{f_p:.3f}  (flat fraction -- manual mode, no gamma_cx)"
+            else:
+                f_n = op.cx_f_particle[i] if i < len(op.cx_f_particle) else 0.0
+                gam = op.cx_gamma[i] if i < len(op.cx_gamma) else 0.0
+                esc = op.cx_escape_probability[i] if i < len(op.cx_escape_probability) else 1.0
+                n0 = op.cx_n0_m3[i] if i < len(op.cx_n0_m3) else 0.0
+                warn = ""
+                if gam > 1.0:
+                    warn += "  ** gamma_cx>1: single-pass treatment breaking down"
+                if f_p > 0.10:
+                    warn += "  ** f_cx,P>10%: above PPPL-1280's Zeff=1 rough ceiling"
+                cx[f"cx{i + 1}"] = (
+                    f"{f_p:.3f} / {f_n:.3f} / {gam:.3f}   "
+                    f"(n0={n0:.2e} m^-3, escape~{esc:.1e}){warn}")
         n_line, n_gw, f_gw = self._greenwald()
         Ip_MA = plasma.plasma_current / 1e6
         if st_orbit:
@@ -874,6 +932,7 @@ class HIJassApp(ctk.CTk):
             "P_NB": self._fmt(P_NB), "P_shine": self._fmt(op.P_shine_w * mw),
             "P_capt": self._fmt(op.P_capt_w * mw), "P_orbit": self._fmt(op.P_orbit_loss_w * mw),
             "P_cx": self._fmt(op.P_cx_loss_w * mw), "P_useful": self._fmt(op.P_useful_w * mw),
+            "cx1": cx.get("cx1", "-"), "cx2": cx.get("cx2", "-"),
             "P_e": self._fmt(op.P_e_w * mw), "P_i": self._fmt(op.P_i_w * mw),
             "P_ei": self._fmt(op.P_ei_w * mw) if self.model.plasma.enable_equipartition else "off",
             "P_alpha": self._fmt(op.P_alpha_w * mw) if self.model.plasma.alpha_heating else "off",
@@ -1177,7 +1236,8 @@ class HIJassApp(ctk.CTk):
             c = colors[i % len(colors)]
             f_capt = op.f_capture[i] if op.f_capture else ch["f_capt"]
             f_orb = op.f_orbit_loss[i] if op.f_orbit_loss else 0.0
-            w_mw = beam.power_MW * f_capt * (1.0 - f_orb) * (1.0 - plasma.cx_loss_fraction)
+            f_cx = op.f_cx_loss[i] if op.f_cx_loss else plasma.cx_loss_fraction
+            w_mw = beam.power_MW * f_capt * (1.0 - f_orb) * (1.0 - f_cx)
             hist, _ = np.histogram(ch["rho"], bins=edges, weights=ch["birth"] * ch["ds"])
             if hist.sum() > 0:
                 hist = hist / hist.sum() * w_mw / dr
@@ -1210,7 +1270,8 @@ class HIJassApp(ctk.CTk):
             eb = beam.beam_energy_keV
             f_capt = op.f_capture[i] if op.f_capture else 1.0
             f_orb = op.f_orbit_loss[i] if op.f_orbit_loss else 0.0
-            p_use = beam.power_MW * 1e6 * f_capt * (1.0 - f_orb) * (1.0 - plasma.cx_loss_fraction)
+            f_cx = op.f_cx_loss[i] if op.f_cx_loss else plasma.cx_loss_fraction
+            p_use = beam.power_MW * 1e6 * f_capt * (1.0 - f_orb) * (1.0 - f_cx)
             tau_s = physics.thermalization_time(op.ne0_m3, te, eb, sp)
             nb0_i = p_use * tau_s / (eb * 1e3 * physics.E_CHARGE * max(vol, 1e-9))
             grid = np.linspace(1e-3, eb, 300)
@@ -1317,6 +1378,13 @@ class HIJassApp(ctk.CTk):
         if self.model.plasma.enable_equipartition:
             prim.append("nrl")
         groups["Fusion & plasma primitives"] = list(dict.fromkeys(prim))
+
+        cx_mode = CX_MODELS[self.cx_model_var.get()]
+        if cx_mode == "manual_fraction":
+            groups["Charge-exchange loss"] = ["pppl1280_cx"]
+        else:
+            groups["Charge-exchange loss"] = [
+                "janev_smith_1993", "swaczyna_2024", "freeman_jones_1974", "pppl1280_cx"]
         return groups
 
     def _render_references(self):
@@ -1443,7 +1511,8 @@ class HIJassApp(ctk.CTk):
             eb = beam.beam_energy_keV
             f_capt = op.f_capture[i] if op.f_capture else 1.0
             f_orb = op.f_orbit_loss[i] if op.f_orbit_loss else 0.0
-            p_use = beam.power_MW * 1e6 * f_capt * (1.0 - f_orb) * (1.0 - plasma.cx_loss_fraction)
+            f_cx = op.f_cx_loss[i] if op.f_cx_loss else plasma.cx_loss_fraction
+            p_use = beam.power_MW * 1e6 * f_capt * (1.0 - f_orb) * (1.0 - f_cx)
             tau_s0 = physics.thermalization_time(ne_axis, te_c, eb, sp)
             nb0_axis = p_use * tau_s0 / (eb * 1e3 * physics.E_CHARGE * max(vol, 1e-9))
             target_n = nT0_axis if sp == "D" else nD0_axis
@@ -1681,11 +1750,27 @@ class HIJassApp(ctk.CTk):
             lines.append("  Drift shift is inward (co) / outward (counter) for both passing and trapped;")
             lines.append("  the gyro channel (born within 1 rho_Li of the LCFS) is direction-independent, so")
             lines.append("  co f_orbit is non-zero but < counter (split ~1.5x, not 0 vs 1).")
-            lines.append("  Birth profile: lambda_mfp ~ 5.5e19 (Eb/A)/ne0, clamped [0.2a, 8a]. 0-D estimate.")
+            lines.append("  Birth profile: same Beer-Lambert n_e*sigma*exp(-n_e*sigma*x) as the large-aspect")
+            lines.append("  model and the Deposition-tab chord plot (stopping_cross_section_m2).")
             lines.append("  Refs: Akers NF (START NBI); Goldston-White-Boozer PRL 47 (1981); Goldston & Rutherford (1995).")
         elif wide:
             lines.append("  ! orbit width >~ 0.3 a: the large-aspect estimate is crude here -- try an ST orbit model.")
-        lines.append(f"CX loss fraction: {plasma.cx_loss_fraction:.3g} (flat efficiency knob)")
+        cx_mode = getattr(plasma, "cx_model", "manual_fraction")
+        if cx_mode == "manual_fraction":
+            lines.append(f"CX loss: manual fraction = {plasma.cx_loss_fraction:.3g} (flat efficiency knob)")
+        else:
+            cx_label = "manual n0/ne" if cx_mode == "manual_n0" else "penetration (n0_LCFS/ne)"
+            ratio = plasma.cx_n0_over_ne if cx_mode == "manual_n0" else plasma.cx_n0_lcfs_over_ne
+            ratio_label = "n0/ne" if cx_mode == "manual_n0" else "n0_LCFS/ne"
+            lines.append(f"CX loss: {cx_label}, {ratio_label}={ratio:.2g}  "
+                         f"(docs/CX_model.tex Sec.2 survival integral; gamma_cx / f_cx,N / f_cx,P per beam on the Dashboard)")
+            lines.append("  sigma_cx: Janev & Smith (1993) Sec.2.3.1 form, refit by Swaczyna, Bzowski & Kubiak")
+            lines.append("  (arXiv:2411.13174, 2024, Eq. A1) -- 5% accuracy 1-100 keV/amu.")
+            if cx_mode == "penetration":
+                lines.append("  n0(rho) decay length: INTERIM approximate ionization/CX rate coefficients, not an")
+                lines.append("  independently verified ADAS/Voronov fit -- order-of-magnitude only.")
+            lines.append("  Escape probability (re-ionization before the wall) is shown but NOT applied: every")
+            lines.append("  CX event is conservatively treated as a full loss, per the doc's default.")
         lines.append(f"e-i equipartition: {'ON (coupled Te/Ti solve)' if plasma.enable_equipartition else 'off (decoupled Te, Ti)'}")
         if getattr(plasma, "profile_averaging", False):
             p_ti = plasma.temp_peaking if plasma.temp_peaking_i < 0 else plasma.temp_peaking_i
@@ -1812,7 +1897,8 @@ class HIJassApp(ctk.CTk):
             f"conf={self.confinement_var.get()}\n"
             f"tauE,e used = {tau_e_str}    tauE,i used = {tau_i_str}\n"
             f"e-i equipartition={equip_state}    alpha self-heating={alpha_state}    "
-            f"first-orbit loss={orbit_state}    CX loss frac={p.cx_loss_fraction:.3g}\n"
+            f"first-orbit loss={orbit_state}    CX model={CX_MODELS_INV.get(p.cx_model, p.cx_model)}"
+            f"{f' ({p.cx_loss_fraction:.3g})' if p.cx_model == 'manual_fraction' else ''}\n"
             f"profile-corrected 0-D={prof_state}\n"
             f"ECRH={p.p_ecrh_MW:.3g} MW (f_e={p.ecrh_f_e:.3g})    "
             f"ICRH={p.p_icrh_MW:.3g} MW (f_e={p.icrh_f_e:.3g}, f_i={p.icrh_f_i:.3g})",
@@ -1897,6 +1983,7 @@ class HIJassApp(ctk.CTk):
         data["_equipartition"] = bool(self.equip_var.get())
         data["_alpha_heating"] = bool(self.alpha_var.get())
         data["_profile_averaging"] = bool(self.profile_var.get())
+        data["_cx_model"] = self.cx_model_var.get()
         for beam_index in (0, 1):
             data[f"beam{beam_index}._shine"] = getattr(self, f"shine_var_{beam_index}").get()
             data[f"beam{beam_index}._dir"] = getattr(self, f"beam_dir_var_{beam_index}").get()

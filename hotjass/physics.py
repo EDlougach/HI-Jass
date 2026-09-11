@@ -287,6 +287,174 @@ def slowing_down_distribution(
     return nb0 * kernel / integral
 
 
+def cx_only_cross_section_m2(energy_per_amu_keV: float) -> float:
+    """Charge-exchange-ONLY cross section for H+ + H(1s) -> H + H+ (applied
+    here to D/T equivalents too, via the usual per-amu energy scaling) --
+    distinct from beam_stopping_cross_section_m2() above, which is the
+    ionization+CX COMBINED cross section for a NEUTRAL beam stopping in
+    plasma (docs/CX_model.tex Sec.5 explicitly warns not to reuse that
+    function here -- different physical process: this is a captured fast
+    ION exchanging charge with a background NEUTRAL, becoming a fast
+    neutral itself and escaping).
+
+    Janev & Smith (Nucl. Fusion Suppl. 4 (1993), Sec. 2.3.1) analytic form,
+    refit by Swaczyna, Bzowski & Kubiak, "Production and Loss Processes of
+    Hydrogen Energetic Neutral Atoms in the Heliosphere from 5 eV to 500 keV"
+    (arXiv:2411.13174, 2024, their Eq. A1) against Schultz et al. (2023)
+    theory (<1 keV/u) and the Barnett (1990) recommended tabulation
+    (1-630 keV/u) -- quoted accuracy 5% from 1-100 keV/u, 20% above/below,
+    valid 1 eV/u to 500 keV/u (comfortably covers this project's ~10-200
+    keV/amu beam range):
+
+        sigma(E) = 1e-16 * A1*ln(A2/E+A3) / (1 + A4*E + A5*E^A6 + A7*E^A8)  [cm^2]
+
+    with E in keV/u. An EARLIER version of this function (this session)
+    reused the numerator of the beam_stopping_cross_section_m2() Riviere-type
+    fit as a stand-in; that overestimated sigma_cx by ~1-2 orders of
+    magnitude at 50-100 keV/amu (it lacks this cross section's real steep
+    high-energy falloff) and has been replaced by this properly-sourced fit.
+    Accepts a scalar or an array.
+    """
+    E = np.maximum(np.asarray(energy_per_amu_keV, dtype=float), 1e-6)
+    A1, A2, A3 = 4.8569, 21.906, 31.487
+    A4, A5, A6 = 0.12018, 4.1402e-6, 3.7524
+    A7, A8 = 8.8476e-12, 6.1091
+    numerator = A1 * np.log(A2 / E + A3)
+    denominator = 1.0 + A4 * E + A5 * E ** A6 + A7 * E ** A8
+    sigma_cm2 = 1.0e-16 * numerator / denominator
+    sigma_m2 = np.maximum(sigma_cm2, 0.0) * 1e-4
+    return sigma_m2 if np.ndim(energy_per_amu_keV) else float(sigma_m2)
+
+
+def ionization_rate_coefficient_m3s(Te_keV: float) -> float:
+    """Maxwellian-averaged electron-impact ionization rate coefficient
+    <sigma v>_ion(T_e) for atomic hydrogen -- feeds the neutral-penetration
+    decay length in neutral_penetration_profile() (docs/CX_model.tex Sec.3.2).
+
+    INTERIM APPROXIMATION: a calibrated fit (Voronov, At. Data Nucl. Data
+    Tables 65, 1 (1997); or ADAS adf11/scd) was not sourced/verified in this
+    session. This uses a simple hand-built threshold form (saturating
+    around a few x1e-14 m^3/s well above the 13.6 eV ionization threshold,
+    dropping exponentially below it) as an order-of-magnitude placeholder,
+    flagged for replacement with a verified fit.
+    """
+    Te_eV = max(float(Te_keV), 1e-9) * 1e3
+    return 3.0e-14 * math.sqrt(Te_eV) * math.exp(-13.6 / Te_eV)
+
+
+def cx_rate_coefficient_m3s(Ti_keV: float) -> float:
+    """Maxwellian-averaged thermal charge-exchange rate coefficient
+    <sigma v>_cx(T_i) for atomic hydrogen on background thermal ions --
+    the other half of neutral_penetration_profile()'s decay length.
+
+    INTERIM APPROXIMATION: same caveat as ionization_rate_coefficient_m3s()
+    -- a simple threshold-free (CX has no activation energy) sqrt(T)
+    placeholder, not an independently verified ADAS/Janev-Smith fit.
+    """
+    Ti_eV = max(float(Ti_keV), 1e-9) * 1e3
+    return 1.5e-14 * math.sqrt(Ti_eV)
+
+
+def neutral_penetration_profile(
+    rho: np.ndarray, ne_profile_m3: np.ndarray, Te_keV: float, Ti_keV: float,
+    minor_radius_m: float, n0_lcfs_m3: float, v0_m_s: float = 3.0e4,
+) -> np.ndarray:
+    """Core neutral density profile n0(rho) from edge penetration
+    (docs/CX_model.tex Sec.3.2, the "recommended reduced model"):
+
+        lambda_0(rho) = v0 / (n_e(rho) * [<sv>_ion(Te) + <sv>_cx(Ti)])
+        n0(rho) = n0_LCFS * exp[-integral_rho^1 (a/lambda_0(rho')) drho']
+
+    v0 defaults to a round order-of-magnitude ~3 eV Franck-Condon
+    dissociation speed (sqrt(2*3eV/m_H) ~ 2.4e4 m/s), meant to also stand
+    in for the somewhat warmer CX-halo component the doc mentions.
+    rho must be ascending (0 -> 1, e.g. HotJassModel.rho_grid());
+    ne_profile_m3 the matching n_e(rho) (e.g. HotJassModel.density_profile).
+    """
+    rho = np.asarray(rho, dtype=float)
+    ne_profile_m3 = np.asarray(ne_profile_m3, dtype=float)
+    rate = ionization_rate_coefficient_m3s(Te_keV) + cx_rate_coefficient_m3s(Ti_keV)
+    lam0 = v0_m_s / (np.maximum(ne_profile_m3, 1.0) * max(rate, 1e-300))
+    integrand = minor_radius_m / np.maximum(lam0, 1e-300)
+    drho = np.diff(rho)
+    seg = 0.5 * (integrand[1:] + integrand[:-1]) * drho
+    tail = np.concatenate([np.cumsum(seg[::-1])[::-1], [0.0]])  # integral_rho^1 ... drho'
+    return n0_lcfs_m3 * np.exp(-tail)
+
+
+def cx_escape_probability(
+    Eb_keV: float, species: str, ne0_m3: float, minor_radius_m: float,
+    stopping_model: str = "riviere", Te_keV: float = 10.0, Zeff: float = 2.0,
+) -> float:
+    """Rough re-ionization escape-probability factor exp(-x_wall/lambda_reion)
+    (docs/CX_model.tex Sec.4): a fast NEUTRAL born from a CX event can
+    re-ionize -- via the same combined ionization+CX stopping process a
+    beam neutral undergoes, stopping_cross_section_m2() -- before reaching
+    the wall, so treating every CX event as a full loss (this project's
+    default) is a conservative UPPER BOUND, not exact. x_wall is
+    approximated as one minor radius (a representative core-to-edge escape
+    distance); the fast neutral is evaluated at the full birth energy Eb
+    (its longest-range, most-conservative component). Purely informational:
+    NOT applied to f_cx_P by default (see cx_loss_fractions()).
+    """
+    A = beam_mass_number(species)
+    sigma = stopping_cross_section_m2(Eb_keV / A, stopping_model, ne0_m3 * 1e-6, Te_keV, Zeff)
+    lam_reion = 1.0 / max(ne0_m3 * sigma, 1e-300)
+    return float(math.exp(-minor_radius_m / max(lam_reion, 1e-300)))
+
+
+def cx_loss_fractions(
+    n0_m3: float, ne0_m3: float, Te_keV: float, Eb_keV: float, species: str = "D",
+    n_grid: int = 401,
+) -> dict:
+    """Charge-exchange particle- and power-loss fractions during slowing-down
+    (docs/CX_model.tex Sec.2), given a (spatially-averaged, 0-D) background
+    cold-neutral density n0:
+
+        nu_cx(E) = n0 * sigma_cx(E) * v(E)
+        S(E)     = exp[-integral_E^Eb  nu_cx(E')/|dE'/dt|  dE']
+        f_cx,N   = 1 - S(0+)                                    (particles)
+        f_cx,P   = integral_0^Eb (E/Eb) * nu_cx(E)/|dE/dt| * S(E) dE   (power)
+
+    1/|dE/dt| = (tau_se/2) * sqrt(E)/(E^1.5+Ec^1.5) -- exactly the same
+    kernel already used by slowing_down_distribution() / thermalization_time():
+    differentiating thermalization_time's closed form
+    tau_s(E) = (tau_se/3) ln(1+(E/Ec)^1.5) w.r.t. E reproduces this kernel
+    exactly, confirming the doc's claim that no new slowing-down physics is
+    needed here, only the extra nu_cx(E) factor under the same integral.
+
+    Also returns gamma_cx = nu_cx(Eb)*tau_s (Sec.2.1's dimensionless figure
+    of merit, using the FULL thermalization time, not the raw tau_se) --
+    gamma_cx <~0.1 means CX loss is negligible; gamma_cx >~1 signals this
+    single-pass loss treatment is breaking down.
+    """
+    if n0_m3 <= 0.0 or Eb_keV <= 0.0:
+        return dict(f_cx_N=0.0, f_cx_P=0.0, gamma_cx=0.0)
+    A = beam_mass_number(species)
+    tau_se = slowing_down_time(ne0_m3, Te_keV, species)
+    tau_s = thermalization_time(ne0_m3, Te_keV, Eb_keV, species)
+    Ec = critical_energy_keV(Te_keV, species)
+    E = np.linspace(1.0e-4 * Eb_keV, Eb_keV, n_grid)
+    v = beam_velocity(E, species)
+    sigma_cx = cx_only_cross_section_m2(E / A)
+    nu_cx = n0_m3 * sigma_cx * v
+    kernel = np.sqrt(E) / (E ** 1.5 + Ec ** 1.5)
+    integrand = nu_cx * (0.5 * tau_se * kernel)  # nu_cx(E) / |dE/dt|
+    dE = np.diff(E)
+    seg = 0.5 * (integrand[1:] + integrand[:-1]) * dE
+    tail = np.concatenate([np.cumsum(seg[::-1])[::-1], [0.0]])  # integral_E^Eb ... dE'
+    S = np.exp(-tail)
+    f_cx_N = float(1.0 - S[0])
+    weight = (E / Eb_keV) * integrand * S
+    f_cx_P = float(_trapezoidal_integral(E, weight))
+    gamma_cx = float(nu_cx[-1] * tau_s)
+    return dict(
+        f_cx_N=min(max(f_cx_N, 0.0), 1.0),
+        f_cx_P=min(max(f_cx_P, 0.0), 1.0),
+        gamma_cx=gamma_cx,
+    )
+
+
 def ion_heating_fraction(x: float) -> float:
     """L_i(x), x=Eb/Ec(Te): fraction of injected beam power delivered to
     thermal IONS as a fast ion slows from Eb down to zero, under the same

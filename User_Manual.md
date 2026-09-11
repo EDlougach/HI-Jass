@@ -366,6 +366,106 @@ References: Akers *et al.*, *Nucl. Fusion* (START NBI, $A\sim1.4$); Goldston,
 White & Boozer, *Phys. Rev. Lett.* **47** (1981) 1004; Goldston & Rutherford,
 *Introduction to Plasma Physics* (1995), Ch. 12.
 
+## Charge-exchange loss
+
+A captured fast ion can charge-exchange with a background cold neutral during
+slowing-down, becoming a fast **neutral** that escapes the plasma before fully
+thermalizing — a second loss channel, applied to the post-orbit-loss captured
+power (Step 0, same ordering as first-orbit loss above). Design note:
+`docs/CX model.pdf`. A **CX-loss model** selector (rail, "Models" section)
+picks between three modes; only the active mode's inputs matter.
+
+### Manual fraction (default)
+
+The original flat efficiency knob `cx_loss_fraction` $\in[0,1]$: a fixed
+fraction of captured power is removed, independent of $E_b$, $n_e$, or any
+background-neutral density. PPPL-1280 Sect. 6.2.2/6.2.3 quotes "up to 10%" of
+injected power for $Z_\mathrm{eff}=1$ as a rough qualitative figure, not a
+formula. Default $0=$off; leaves every other result byte-identical.
+
+### Manual n0/ne — the physics-based survival integral
+
+The user supplies $n_0/n_e$ directly (a spatially uniform, 0-D background
+neutral density $n_0=(n_0/n_e)\,n_{e0}$), and the model evaluates the actual
+CX survival integral along the slowing-down path. For a fast ion at energy
+$E$:
+
+$$
+\nu_\mathrm{cx}(E) = n_0\,\sigma_\mathrm{cx}(E)\,v(E),
+\qquad
+S(E) = \exp\!\left[-\int_E^{E_b}\frac{\nu_\mathrm{cx}(E')}{|dE'/dt|}\,dE'\right],
+$$
+
+with particle- and power-loss fractions
+
+$$
+f_{\mathrm{cx},N} = 1-S(0^+),
+\qquad
+f_{\mathrm{cx},P} = \int_0^{E_b}\frac{E}{E_b}\,\frac{\nu_\mathrm{cx}(E)}{|dE/dt|}\,S(E)\,dE.
+$$
+
+$f_{\mathrm{cx},P}$ (the quantity actually applied to $P_\mathrm{useful}$) is
+smaller than $f_{\mathrm{cx},N}$ because $\sigma_\mathrm{cx}$ falls steeply
+above $\sim\!30$–$50$ keV/amu, so most CX events happen late in the cascade,
+when little energy is left to remove. $1/|dE/dt| = (\tau_{se}/2)\sqrt{E}/(E^{3/2}+E_c^{3/2})$
+is exactly the same slowing-down kernel already used by
+`thermalization_time`/`slowing_down_distribution` (differentiating
+$\tau_s(E)=(\tau_{se}/3)\ln[1+(E/E_c)^{3/2}]$ reproduces it), so no new
+slowing-down physics is introduced — only the extra $\nu_\mathrm{cx}(E)$
+factor under the same integral. $\sigma_\mathrm{cx}(E)$ is the Janev & Smith
+(1993, Sect. 2.3.1) analytic form, refit by Swaczyna, Bzowski & Kubiak
+(arXiv:2411.13174, 2024, their Eq. A1) against Schultz *et al.* (2023)
+theory and the Barnett (1990) tabulation — quoted accuracy 5% from 1–100
+keV/amu, the range this project's beams live in.
+
+Also reported, per beam, on the Dashboard: the dimensionless figure of merit
+$\gamma_\mathrm{cx}\equiv\nu_\mathrm{cx}(E_b)\,\tau_s \approx
+n_0\sigma_\mathrm{cx}(E_b)v_b\tau_s$ — negligible for $\gamma_\mathrm{cx}\ll1$,
+worth taking seriously for $\gamma_\mathrm{cx}\sim0.1$–$1$, and a sign the
+single-pass loss treatment is breaking down for $\gamma_\mathrm{cx}\gtrsim1$
+(flagged with a warning, as is $f_{\mathrm{cx},P}>10\%$, PPPL-1280's rough
+$Z_\mathrm{eff}=1$ ceiling). Because CX loss depends on $T_e$ (via
+$E_c(T_e)$) while $T_e$ itself depends on the CX-reduced $P_\mathrm{useful}$,
+this is a genuine fixed point; an outer under-relaxed Picard loop (in
+`hotjass_core`, mirroring the existing alpha-heating fixed point) closes it,
+keeping the core solver a single non-iterative solve.
+
+### Penetration (n0_LCFS/ne) — edge-penetration estimate
+
+Instead of a single uniform $n_0$, the boundary value $n_{0,\mathrm{LCFS}} =
+(n_{0,\mathrm{LCFS}}/n_e)\,n_{e,\mathrm{LCFS}}$ is set from the user ratio,
+and the core profile follows the standard penetration/recycling picture:
+
+$$
+\lambda_0(\rho) = \frac{v_0}{n_e(\rho)\left[\langle\sigma v\rangle_\mathrm{ion}(T_e)+\langle\sigma v\rangle_\mathrm{cx}(T_i)\right]},
+\qquad
+n_0(\rho) \approx n_{0,\mathrm{LCFS}}\exp\!\left[-\int_\rho^1\frac{a}{\lambda_0(\rho')}\,d\rho'\right],
+$$
+
+volume-averaged to a single $\langle n_0\rangle$ and fed through the same
+survival integral as "Manual n0/ne" above. $v_0$ is a round $\sim\!3$ eV
+Franck-Condon-like dissociation speed. **Caveat:** the ionization
+($\langle\sigma v\rangle_\mathrm{ion}(T_e)$) and thermal-CX
+($\langle\sigma v\rangle_\mathrm{cx}(T_i)$) rate coefficients used for
+$\lambda_0$ are an interim hand-built approximation (a threshold-shaped
+form for ionization, a threshold-free $\sqrt{T}$ form for CX) — a calibrated
+Voronov (1997) / ADAS `adf11` fit was not sourced/verified in this session,
+so treat $n_0(\rho)$'s absolute scale as order-of-magnitude only; the
+survival-integral physics downstream of $\langle n_0\rangle$ (same
+$\sigma_\mathrm{cx}(E)$ fit as "Manual n0/ne") is not affected by this
+caveat.
+
+### Escape probability (informational only)
+
+A fast neutral born from a CX event can re-ionize before reaching the wall,
+so treating every CX event as a full loss is a conservative upper bound, not
+exact. An escape-probability factor $\exp(-x_\mathrm{wall}/\lambda_\mathrm{reion})$
+is shown per beam (Dashboard) — $x_\mathrm{wall}\approx a$, $\lambda_\mathrm{reion}$
+from the same combined ionization+CX stopping cross section a beam neutral
+itself uses — but is **not** applied to $f_{\mathrm{cx},P}$; it is
+informational, per the design note's explicit "acceptable as the
+conservative default, but shown as such."
+
 ## Power balance (electron and ion)
 
 At each central density the model solves a 0-D steady-state power balance for
@@ -741,7 +841,11 @@ The underlying HotJass calculation still evaluates each beam separately before f
   the active orbit-loss model actually uses -- the bare cylindrical
   `safety_factor_cyl_edge` for "large-aspect", or the arbitrary-$A$
   `safety_factor_cyl_edge_arbitrary_A` ($q_a$) for either ST orbit variant --
-  so it stays consistent with the orbit widths shown just above it.
+  so it stays consistent with the orbit widths shown just above it. Per-beam
+  CX-loss rows show $f_{\mathrm{cx},P}/f_{\mathrm{cx},N}/\gamma_\mathrm{cx}$
+  (plus $n_0$ and the informational escape probability) when a physics-based
+  CX model is selected, or just the flat fraction for "Manual fraction" --
+  see "Charge-exchange loss" above.
 - **Deposition** — (1) beam targeting geometry in the torus top view (titled
   with the active device), tangent to each beam's $R_t$ with its
   co-/counter-current sense; (2) neutral-beam survival $I(s)/I_0$ and the

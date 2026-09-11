@@ -44,6 +44,9 @@ class PlasmaParams:
     orbit_model: str = "st_pitch"  # "large_aspect" | "st_meanshift" | "st_pitch"
     profile_averaging: bool = False  # treat central_density as ON-AXIS; balance runs on <n_e>
     cx_loss_fraction: float = 0.0
+    cx_model: str = "manual_fraction"  # "manual_fraction" | "manual_n0" | "penetration"
+    cx_n0_over_ne: float = 1.0e-5      # "manual_n0": uniform background-neutral n0 = ratio * ne0
+    cx_n0_lcfs_over_ne: float = 0.02   # "penetration": edge n0_LCFS/ne_LCFS boundary ratio
     enable_equipartition: bool = True
 
 
@@ -100,6 +103,9 @@ class HotJassModel:
             orbit_model=self.plasma.orbit_model,
             profile_averaging=self.plasma.profile_averaging,
             cx_loss_fraction=self.plasma.cx_loss_fraction,
+            cx_model=self.plasma.cx_model,
+            cx_n0_over_ne=self.plasma.cx_n0_over_ne,
+            cx_n0_lcfs_over_ne=self.plasma.cx_n0_lcfs_over_ne,
             enable_equipartition=self.plasma.enable_equipartition,
             enable_alpha_heating=self.plasma.alpha_heating,
             f_alpha=self.plasma.f_alpha,
@@ -118,36 +124,102 @@ class HotJassModel:
         aux_i = ecrh * (1.0 - p.ecrh_f_e) + icrh * p.icrh_f_i
         return aux_e, aux_i
 
+    def _cx_fraction_dicts(self, ne0_m3: float, Te_keV: float, Ti_keV: float,
+                            config: TokamakConfig, beams) -> List[dict]:
+        """Per-beam CX-loss diagnostic dicts (physics.cx_loss_fractions(), plus
+        escape_probability/n0_m3) for config.cx_model in ("manual_n0",
+        "penetration") -- docs/CX_model.tex Sec.4's other two selector modes
+        ("manual_fraction" never calls this; solve_operating_point's own
+        config.cx_loss_fraction path handles it, untouched).
+        """
+        a = config.geometry.minor_radius
+        if config.cx_model == "manual_n0":
+            n0 = max(config.cx_n0_over_ne, 0.0) * ne0_m3
+        elif config.cx_model == "penetration":
+            rho = self.rho_grid()
+            ne_profile = self.density_profile(rho)
+            # ne_profile hits exactly 0 at rho=1 whenever density_peaking>0 --
+            # use a near-edge shell (98% of the grid) as the physically
+            # meaningful "LCFS" density instead of that zero.
+            edge_idx = max(int(0.98 * (len(rho) - 1)), 0)
+            n0_lcfs = max(config.cx_n0_lcfs_over_ne, 0.0) * ne_profile[edge_idx]
+            n0_profile = physics.neutral_penetration_profile(
+                rho, ne_profile, Te_keV, Ti_keV, a, n0_lcfs)
+            n0 = physics.profile_volume_average(n0_profile, rho)
+        else:
+            n0 = 0.0
+        out = []
+        for beam in beams:
+            d = physics.cx_loss_fractions(n0, ne0_m3, Te_keV, beam.Eb_keV, beam.species)
+            d["escape_probability"] = physics.cx_escape_probability(
+                beam.Eb_keV, beam.species, ne0_m3, a,
+                stopping_model="riviere", Te_keV=Te_keV, Zeff=config.Zeff)
+            d["n0_m3"] = n0
+            out.append(d)
+        return out
+
     def _solve_point(self, ne_m3: float, beams, tau_e: float, tau_i: float, config: TokamakConfig):
         """One operating point. Prescribed auxiliary heating (ECRH/ICRH) is added
         to the electron/ion balances via solve_operating_point's aux source terms.
         When config.enable_alpha_heating, an under-relaxed Picard closes the fusion
         alpha term P_alpha = f_alpha*(E_alpha/E_fus)*P_fusion on top of that; the
         alpha-off path is a single plain solve_operating_point call.
+
+        When config.cx_model != "manual_fraction" (physics-based CX loss), an
+        OUTER under-relaxed Picard loop closes the second fixed point this
+        introduces: the CX-loss integral needs Te (via critical_energy_keV) --
+        and, for "penetration", Ti too -- while Te/Ti themselves depend on the
+        CX-reduced P_useful. solve_operating_point() stays a single
+        non-iterative solve throughout (same principle as the alpha loop);
+        this iterates around it instead.
         """
         aux_e, aux_i = self._aux_powers_w()
-        op = solve_operating_point(ne_m3, beams, tau_e, config, tau_i,
-                                   aux_e_source_w=aux_e, aux_i_source_w=aux_i)
-        if not (config.enable_alpha_heating and op.feasible):
+
+        def _run(cx_override):
+            op = solve_operating_point(ne_m3, beams, tau_e, config, tau_i,
+                                       aux_e_source_w=aux_e, aux_i_source_w=aux_i,
+                                       cx_loss_fraction_override=cx_override)
+            if not (config.enable_alpha_heating and op.feasible):
+                return op
+            ratio = config.f_alpha * (physics.E_ALPHA_MEV / physics.E_FUSION_MEV)
+            p_alpha = 0.0
+            for _ in range(30):
+                # alphas come from D-T only -- not the D-D channel
+                target = ratio * op.pf_dt_w
+                step = 0.5 * (target - p_alpha)
+                if abs(step) <= 1.0e-3 * max(target, 1.0e-9):
+                    break
+                p_alpha += step
+                le = physics.alpha_electron_heating_fraction(max(op.Te_keV, 1.0e-3))
+                trial = solve_operating_point(
+                    ne_m3, beams, tau_e, config, tau_i,
+                    extra_e_source_w=le * p_alpha, extra_i_source_w=(1.0 - le) * p_alpha,
+                    aux_e_source_w=aux_e, aux_i_source_w=aux_i,
+                    cx_loss_fraction_override=cx_override,
+                )
+                if not trial.feasible:
+                    return trial
+                op = trial
             return op
-        ratio = config.f_alpha * (physics.E_ALPHA_MEV / physics.E_FUSION_MEV)
-        p_alpha = 0.0
-        for _ in range(30):
-            # alphas come from D-T only -- not the D-D channel
-            target = ratio * op.pf_dt_w
-            step = 0.5 * (target - p_alpha)
-            if abs(step) <= 1.0e-3 * max(target, 1.0e-9):
-                break
-            p_alpha += step
-            le = physics.alpha_electron_heating_fraction(max(op.Te_keV, 1.0e-3))
-            trial = solve_operating_point(
-                ne_m3, beams, tau_e, config, tau_i,
-                extra_e_source_w=le * p_alpha, extra_i_source_w=(1.0 - le) * p_alpha,
-                aux_e_source_w=aux_e, aux_i_source_w=aux_i,
-            )
+
+        if config.cx_model == "manual_fraction" or not beams:
+            return _run(None)
+
+        op = _run(None)  # seed pass: Te/Ti with no CX loss yet
+        if not op.feasible:
+            return op
+        for _ in range(8):
+            cx = self._cx_fraction_dicts(ne_m3, op.Te_keV, op.Ti_keV, config, beams)
+            trial = _run(cx)
             if not trial.feasible:
                 return trial
+            converged = (
+                op.Te_keV is not None and trial.Te_keV is not None
+                and abs(trial.Te_keV - op.Te_keV) <= 1.0e-4 * max(abs(op.Te_keV), 1e-9)
+            )
             op = trial
+            if converged:
+                break
         return op
 
     def _beam_specs(self) -> List[BeamSpec]:

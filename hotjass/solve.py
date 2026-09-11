@@ -103,6 +103,25 @@ class TokamakConfig:
     # Default False: leaves the existing (co_current=True -> exactly zero)
     # first-orbit-loss result unaffected unless explicitly enabled.
     cx_loss_fraction: float = 0.0
+    # Charge-exchange model selector (docs/CX_model.tex Sec.4):
+    #   "manual_fraction" (default): the flat cx_loss_fraction knob above,
+    #     UNCHANGED -- byte-identical to every existing result.
+    #   "manual_n0": user supplies n0/ne directly (cx_n0_over_ne); the real
+    #     Sec.2 survival integral (physics.cx_loss_fractions) replaces the
+    #     flat knob. n0 is spatially uniform (0-D), applied via
+    #     solve_operating_point's cx_loss_fraction_override -- see that
+    #     function's docstring for why it stays a passthrough rather than
+    #     computing this itself (Te-dependence -> a fixed point, closed by
+    #     an outer Picard loop in hotjass_core, same pattern as alpha
+    #     heating below).
+    #   "penetration": n0 is instead derived from cx_n0_lcfs_over_ne via the
+    #     Sec.3.2 edge-penetration profile (physics.neutral_penetration_profile),
+    #     volume-averaged, then fed through the same Sec.2 integral.
+    # Only engaged when cx_model != "manual_fraction"; default leaves this
+    # whole feature inert.
+    cx_model: str = "manual_fraction"
+    cx_n0_over_ne: float = 1.0e-5
+    cx_n0_lcfs_over_ne: float = 0.02
     enable_equipartition: bool = False
     # Fusion alpha self-heating. When enable_alpha_heating is True the caller
     # (hotjass_core) closes a fixed-point P_alpha = f_alpha*(3.5/17.6)*P_fusion,
@@ -215,6 +234,11 @@ class OperatingPoint:
     P_orbit_loss_w: float = 0.0  # first-orbit loss (fraction of P_capt_w), only if config.enable_orbit_loss
     f_orbit_loss: list[float] = field(default_factory=list)  # per-beam first-orbit-loss fraction
     P_cx_loss_w: float = 0.0  # charge-exchange loss during slowing-down (fraction of post-orbit-loss power)
+    f_cx_loss: list[float] = field(default_factory=list)  # per-beam CX power-loss fraction actually applied
+    cx_f_particle: list[float] = field(default_factory=list)  # per-beam f_cx,N (0 in "manual_fraction" mode)
+    cx_gamma: list[float] = field(default_factory=list)  # per-beam gamma_cx figure of merit (0 in "manual_fraction" mode)
+    cx_escape_probability: list[float] = field(default_factory=list)  # per-beam informational escape factor (1.0 in "manual_fraction" mode)
+    cx_n0_m3: list[float] = field(default_factory=list)  # per-beam background-neutral density actually used (0 in "manual_fraction" mode)
     P_useful_w: float = 0.0  # P_capt_w - P_orbit_loss_w - P_cx_loss_w == P_e_w + P_i_w -- what actually heats the plasma
     pf_thermal_w: float = 0.0   # D-T thermal fusion power
     pf_beam_w: float = 0.0      # D-T beam-target fusion power
@@ -488,6 +512,7 @@ def solve_operating_point(
     extra_i_source_w: float = 0.0,
     aux_e_source_w: float = 0.0,
     aux_i_source_w: float = 0.0,
+    cx_loss_fraction_override: list[dict] | None = None,
 ) -> OperatingPoint:
     """The full steps 0-7 cascade (docs/model.md) at one scanned n_e0.
 
@@ -499,6 +524,17 @@ def solve_operating_point(
     transport time. Defaulting tau_Ei_s to tau_E_s when omitted (the
     common-tau_E case) reproduces every existing call site and result
     exactly -- this parameter is purely additive.
+
+    cx_loss_fraction_override: one dict per beam (physics.cx_loss_fractions()'s
+    return value, plus "escape_probability" and "n0_m3"), used in place of
+    the flat config.cx_loss_fraction when config.cx_model != "manual_fraction".
+    This function stays a pure passthrough for that dict -- the physics-based
+    CX modes need Te (via Ec(Te)) to compute it, which Te itself is being
+    solved for here, so the Te-dependence is a genuine fixed point closed by
+    an outer Picard loop in hotjass_core (same architectural pattern as the
+    alpha-heating fixed point: this function itself stays a single
+    non-iterative solve). None (default) reproduces every existing result
+    exactly -- purely additive.
     """
     tau_Ei_s = tau_E_s if tau_Ei_s is None else tau_Ei_s
     if config.tau_Ee_mode not in ("fixed", "kaye_nstx_lmode", "kaye_nstx_hmode", "iter98y2"):
@@ -546,12 +582,17 @@ def solve_operating_point(
     # docs/model.md.
     f_capture_list: list[float] = []
     f_orbit_loss_list: list[float] = []
+    f_cx_loss_list: list[float] = []
+    cx_f_particle_list: list[float] = []
+    cx_gamma_list: list[float] = []
+    cx_escape_list: list[float] = []
+    cx_n0_list: list[float] = []
     useful_beams: list[BeamSpec] = []
     P_NB_total_w = 0.0
     P_capt_w = 0.0
     P_orbit_loss_w = 0.0
     P_useful_w = 0.0
-    for beam in beams:
+    for beam_index, beam in enumerate(beams):
         f_capt = physics.captured_power_fraction(
             ne0_m3, beam.Eb_keV, beam.species, path_length_m, config.density_peaking,
             geometry=config.geometry, tangent_R_m=beam.tangent_R_m, tangent_Z_m=beam.tangent_Z_m,
@@ -625,7 +666,21 @@ def solve_operating_point(
         P_after_orbit_i = P_capt_i * (1.0 - f_orbit)
         P_orbit_loss_w += P_capt_i - P_after_orbit_i
 
-        P_useful_i = P_after_orbit_i * (1.0 - config.cx_loss_fraction)
+        if cx_loss_fraction_override is not None:
+            cx_d = cx_loss_fraction_override[beam_index]
+            f_cx = cx_d["f_cx_P"]
+            cx_f_particle_list.append(cx_d.get("f_cx_N", 0.0))
+            cx_gamma_list.append(cx_d.get("gamma_cx", 0.0))
+            cx_escape_list.append(cx_d.get("escape_probability", 1.0))
+            cx_n0_list.append(cx_d.get("n0_m3", 0.0))
+        else:
+            f_cx = config.cx_loss_fraction
+            cx_f_particle_list.append(f_cx)
+            cx_gamma_list.append(0.0)
+            cx_escape_list.append(1.0)
+            cx_n0_list.append(0.0)
+        f_cx_loss_list.append(f_cx)
+        P_useful_i = P_after_orbit_i * (1.0 - f_cx)
         P_useful_w += P_useful_i
         useful_beams.append(
             BeamSpec(
@@ -722,7 +777,9 @@ def solve_operating_point(
             tau_E_s=tau_E_s, tau_Ei_s=tau_Ei_s,
             P_NB_total_w=P_NB_total_w, P_shine_w=P_shine_w, P_capt_w=P_capt_w, f_capture=f_capture_list,
             P_orbit_loss_w=P_orbit_loss_w, f_orbit_loss=f_orbit_loss_list,
-            P_cx_loss_w=P_cx_loss_w, P_useful_w=P_useful_w,
+            P_cx_loss_w=P_cx_loss_w, f_cx_loss=f_cx_loss_list, cx_f_particle=cx_f_particle_list,
+            cx_gamma=cx_gamma_list, cx_escape_probability=cx_escape_list, cx_n0_m3=cx_n0_list,
+            P_useful_w=P_useful_w,
             infeasible_reason=(
                 f"n_thermal={n_thermal:.3e} <= 0: fast-ion density {nb0_total:.3e} m^-3 required to "
                 f"sustain P_useful={P_useful_w/1e6:.3f} MW (of P_NB={P_NB_total_w/1e6:.3f} MW injected) "
@@ -829,7 +886,9 @@ def solve_operating_point(
         Le=Le_list, Li=Li_list,
         P_NB_total_w=P_NB_total_w, P_shine_w=P_shine_w, P_capt_w=P_capt_w, f_capture=f_capture_list,
         P_orbit_loss_w=P_orbit_loss_w, f_orbit_loss=f_orbit_loss_list,
-        P_cx_loss_w=P_cx_loss_w, P_useful_w=P_useful_w,
+        P_cx_loss_w=P_cx_loss_w, f_cx_loss=f_cx_loss_list, cx_f_particle=cx_f_particle_list,
+        cx_gamma=cx_gamma_list, cx_escape_probability=cx_escape_list, cx_n0_m3=cx_n0_list,
+        P_useful_w=P_useful_w,
         pf_thermal_w=pf_thermal, pf_beam_w=pf_beam, pf_dt_w=pf_dt,
         pf_dd_thermal_w=pf_dd_thermal, pf_dd_beam_w=pf_dd_beam, pf_dd_w=pf_dd,
         pf_total_w=pf_total, neutron_rate_s=neutron_rate,
