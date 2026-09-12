@@ -592,32 +592,37 @@ class HIJassApp(ctk.CTk):
         for name in ("Scan", "Summary"):
             self.tv_scan.add(name)
 
+        # Plot-heavy tabs (each a matplotlib Figure + FigureCanvasTkAgg +
+        # NavigationToolbar2Tk) are the dominant cost of building this
+        # window in CustomTkinter. Only the tab shown by default (Dashboard)
+        # plus the always-referenced Assumptions/References tabs are built
+        # eagerly; the rest are built on first visit via _ensure_tab_built,
+        # wired to each CTkTabview's command= callback below -- so startup
+        # (and the very first solve's render pass) no longer pays for tabs
+        # the user hasn't opened yet.
+        self._built_tabs: set[str] = set()
+        self._tab_builders = {
+            "Deposition": self._build_deposition_tab,
+            "Power flow": self._build_powerflow_tab,
+            "Profiles": self._build_profiles_tab,
+            "Fusion": self._build_fusion_tab,
+            "Scan": self._build_scan_tab,
+            "Summary": self._build_summary_tab,
+        }
+        self._tab_renderers = {
+            "Deposition": lambda r: self._render_deposition(r),
+            "Power flow": lambda r: self._render_powerflow(r),
+            "Profiles": lambda r: self._render_profiles(r),
+            "Fusion": lambda r: self._render_fusion(r),
+            "Scan": lambda r: self._render_scan_tab(r),
+            "Summary": lambda r: self._render_summary(r),
+        }
+        self.tv_op.configure(command=lambda: self._ensure_tab_built(self.tv_op.get()))
+        self.tv_scan.configure(command=lambda: self._ensure_tab_built(self.tv_scan.get()))
+
         self._build_dashboard(self.tv_op.tab("Dashboard"))
-        self.dep_fig, self.dep_canvas, holder = self._plot_area(
-            self.tv_op.tab("Deposition"), figsize=(9.5, 7.2))
-        holder.pack(fill="both", expand=True)
-        pf_tab = self.tv_op.tab("Power flow")
-        pf_bar = ctk.CTkFrame(pf_tab, fg_color="transparent")
-        pf_bar.pack(fill="x", pady=(2, 0))
-        ctk.CTkLabel(pf_bar, text="View:").pack(side="left", padx=(4, 6))
-        self.pf_view_var = ctk.StringVar(value="all")
-        ctk.CTkSegmentedButton(
-            pf_bar, values=["all", "waterfall", "sankey", "pie"], variable=self.pf_view_var,
-            command=lambda _: self._render_powerflow(self.last_result) if self.last_result else None,
-        ).pack(side="left")
-        self.pf_fig, self.pf_canvas, holder = self._plot_area(pf_tab, figsize=(9.5, 6.2))
-        holder.pack(fill="both", expand=True)
-        self.prof_fig, self.prof_canvas, holder = self._plot_area(
-            self.tv_op.tab("Profiles"), figsize=(13.5, 6.2))
-        holder.pack(fill="both", expand=True)
-        self.fusion_fig, self.fusion_canvas, holder = self._plot_area(
-            self.tv_op.tab("Fusion"), figsize=(7.5, 7.0))
-        holder.pack(fill="both", expand=True)
         self._build_assumptions(self.tv_op.tab("Assumptions"))
         self._build_references(self.tv_op.tab("References"))
-        self._build_scan(self.tv_scan.tab("Scan"))
-        self.sum_fig, self.sum_canvas, holder = self._plot_area(self.tv_scan.tab("Summary"), figsize=(11, 8))
-        holder.pack(fill="both", expand=True)
 
         # Two visually distinct rows -- "Export" (send results out) and
         # "Import" (bring inputs back in) are opposite directions of data
@@ -644,6 +649,51 @@ class HIJassApp(ctk.CTk):
                       command=self._import_json).pack(side="left", padx=4)
 
         self._render_references()
+
+    def _ensure_tab_built(self, name: str):
+        """Lazily construct a plot-heavy result tab the first time it is shown."""
+        builder = self._tab_builders.get(name)
+        if builder is None or name in self._built_tabs:
+            return
+        self._built_tabs.add(name)
+        builder()
+        if self.last_result is not None:
+            self._tab_renderers[name](self.last_result)
+
+    def _build_deposition_tab(self):
+        self.dep_fig, self.dep_canvas, holder = self._plot_area(
+            self.tv_op.tab("Deposition"), figsize=(9.5, 7.2))
+        holder.pack(fill="both", expand=True)
+
+    def _build_powerflow_tab(self):
+        pf_tab = self.tv_op.tab("Power flow")
+        pf_bar = ctk.CTkFrame(pf_tab, fg_color="transparent")
+        pf_bar.pack(fill="x", pady=(2, 0))
+        ctk.CTkLabel(pf_bar, text="View:").pack(side="left", padx=(4, 6))
+        self.pf_view_var = ctk.StringVar(value="all")
+        ctk.CTkSegmentedButton(
+            pf_bar, values=["all", "waterfall", "sankey", "pie"], variable=self.pf_view_var,
+            command=lambda _: self._render_powerflow(self.last_result) if self.last_result else None,
+        ).pack(side="left")
+        self.pf_fig, self.pf_canvas, holder = self._plot_area(pf_tab, figsize=(9.5, 6.2))
+        holder.pack(fill="both", expand=True)
+
+    def _build_profiles_tab(self):
+        self.prof_fig, self.prof_canvas, holder = self._plot_area(
+            self.tv_op.tab("Profiles"), figsize=(13.5, 6.2))
+        holder.pack(fill="both", expand=True)
+
+    def _build_fusion_tab(self):
+        self.fusion_fig, self.fusion_canvas, holder = self._plot_area(
+            self.tv_op.tab("Fusion"), figsize=(7.5, 7.0))
+        holder.pack(fill="both", expand=True)
+
+    def _build_scan_tab(self):
+        self._build_scan(self.tv_scan.tab("Scan"))
+
+    def _build_summary_tab(self):
+        self.sum_fig, self.sum_canvas, holder = self._plot_area(self.tv_scan.tab("Summary"), figsize=(11, 8))
+        holder.pack(fill="both", expand=True)
 
     def _plot_area(self, parent, figsize=(7.5, 5.5)):
         """Build a figure + canvas + toolbar inside a holder frame.
@@ -704,6 +754,7 @@ class HIJassApp(ctk.CTk):
         if mode == "Scan":
             self.tv_op.grid_remove()
             self.tv_scan.grid()
+            self._ensure_tab_built(self.tv_scan.get())
         else:
             self.tv_scan.grid_remove()
             self.tv_op.grid()
@@ -907,13 +958,14 @@ class HIJassApp(ctk.CTk):
         else:
             self._last_infeasible_key = None
         self._render_dashboard(result)
-        self._render_deposition(result)
-        self._render_powerflow(result)
-        self._render_profiles(result)
-        self._render_fusion(result)
+        for name in ("Deposition", "Power flow", "Profiles", "Fusion", "Scan", "Summary"):
+            if name in self._built_tabs:
+                self._tab_renderers[name](result)
         self.assump_box.delete("1.0", "end")
         self.assump_box.insert("end", self._assess(self.model, result.op))
         self._render_references()
+
+    def _render_scan_tab(self, result: Result):
         eq_on = self.model.plasma.enable_equipartition
         self.scan_equip_label.configure(
             text=("●  e-i equipartition: ON  (Te, Ti coupled)" if eq_on
@@ -925,7 +977,6 @@ class HIJassApp(ctk.CTk):
                   else "○  alpha self-heating: off"),
             text_color=("#2f7d32" if al_on else "gray"))
         self._render_scan_plot()
-        self._render_summary(result)
 
     # --------------------------------------------------------------- renders
     @staticmethod
@@ -2118,6 +2169,7 @@ class HIJassApp(ctk.CTk):
 
     # --------------------------------------------------------------- export
     def _export_summary(self, kind: str):
+        self._ensure_tab_built("Summary")
         extension = ".pdf" if kind == "pdf" else ".png"
         path = filedialog.asksaveasfilename(
             title="Save HI-Jass summary sheet", defaultextension=extension,
