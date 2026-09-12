@@ -1209,9 +1209,10 @@ Four further scan groups:
 - **$P_e,P_i,P_{ie},Q$** ("Powers") -- $Q=P_{f,tot}/P_{NB}$ replaces the flat
   shine-through power here (moved to "Losses" below, where it belongs with
   the other loss channels).
-- **$P_{f,tot},P_{f,th},P_{f,b},P_{useful}$** ("Pf") -- the previously-empty
-  4th panel now shows $P_\mathrm{useful}=P_{NB}-P_\mathrm{lost}$, the power
-  that actually reaches the electron/ion balance.
+- **$P_{f,tot},P_{f,th},P_{f,b},P_{f,bb}$** ("Pf") -- the previously-empty
+  4th panel now shows $P_{f,bb}$ (Sec. "Beam-beam fusion" above -- a flat
+  zero while that's off), alongside the thermal and beam-target D-T/D-D
+  totals; $P_\mathrm{useful}$ is still available from the Dashboard.
 - **$P_\mathrm{shine},P_\mathrm{orbit},P_\mathrm{cx},P_\mathrm{lost}$**
   ("Losses") -- the three loss channels (whichever CX-loss model is active
   feeds $P_\mathrm{cx}$) plus their sum

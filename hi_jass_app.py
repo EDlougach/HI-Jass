@@ -261,7 +261,7 @@ class HIJassApp(ctk.CTk):
         "Te, Ti": ["Te", "Ti"],
         "P_e, P_i, Pi_e, Q": ["P_e", "P_i", "Pi_e", "Q"],
         "n_D, n_T, n_b": ["n_D", "n_T", "n_b"],
-        "Pf_tot, Pf_th, Pf_b, P_useful": ["Pf_tot", "Pf_th", "Pf_b", "P_useful"],
+        "Pf_tot, Pf_th, Pf_b, Pf_bb": ["Pf_tot", "Pf_th", "Pf_b", "Pf_bb"],
         "P_shine, P_orbit, P_cx, P_lost": ["P_shine-through", "P_orbit", "P_cx", "P_lost"],
         "Y_beam, Y_thermal, Y_bb, Y_full": ["Y_neutron_b", "Y_neutron_th", "Y_neutron_bb", "Y_neutron"],
         "<E_fast>": ["E_fast"],
@@ -272,12 +272,12 @@ class HIJassApp(ctk.CTk):
     }
     EQUIP_SENSITIVE = {"Tₑ, Tᵢ", "Pₑ, Pᵢ, Pᵢₑ, Q", "τS, τE,e, τE,i, τIE"}
     ALPHA_SENSITIVE = EQUIP_SENSITIVE | {
-        "Pƒ,tot, Pƒ,th, Pƒ,b, Pᵤ", "Y_beam, Y_thermal, Y_bb, Y_full", "pₜₕ, pfast", "βt", "R = ufast / Uₜₕ"}
+        "Pƒ,tot, Pƒ,th, Pƒ,b, Pƒ,bb", "Y_beam, Y_thermal, Y_bb, Y_full", "pₜₕ, pfast", "βt", "R = ufast / Uₜₕ"}
     DISPLAY_GROUPS = {
         "Tₑ, Tᵢ": "Te, Ti",
         "Pₑ, Pᵢ, Pᵢₑ, Q": "P_e, P_i, Pi_e, Q",
         "nᴅ, nₜ, nᵦ": "n_D, n_T, n_b",
-        "Pƒ,tot, Pƒ,th, Pƒ,b, Pᵤ": "Pf_tot, Pf_th, Pf_b, P_useful",
+        "Pƒ,tot, Pƒ,th, Pƒ,b, Pƒ,bb": "Pf_tot, Pf_th, Pf_b, Pf_bb",
         "P_shine, P_orbit, P_cx, P_lost": "P_shine, P_orbit, P_cx, P_lost",
         "Y_beam, Y_thermal, Y_bb, Y_full": "Y_beam, Y_thermal, Y_bb, Y_full",
         "⟨Efast⟩": "<E_fast>",
@@ -289,7 +289,7 @@ class HIJassApp(ctk.CTk):
     UNITS = {
         "Te": "keV", "Ti": "keV", "P_e": "MW", "P_i": "MW", "Pi_e": "MW",
         "P_shine-through": "MW", "n_D": "m^-3", "n_T": "m^-3", "n_b": "m^-3",
-        "Pf_tot": "MW", "Pf_th": "MW", "Pf_b": "MW", "P_useful": "MW", "Q": "1",
+        "Pf_tot": "MW", "Pf_th": "MW", "Pf_b": "MW", "Pf_bb": "MW", "P_useful": "MW", "Q": "1",
         "P_orbit": "MW", "P_cx": "MW", "P_lost": "MW",
         "Y_neutron_b": "1/s", "Y_neutron_th": "1/s", "Y_neutron_bb": "1/s", "Y_neutron": "1/s",
         "E_fast": "keV",
@@ -304,7 +304,7 @@ class HIJassApp(ctk.CTk):
         "Te": r"$T_e$", "Ti": r"$T_i$", "P_e": r"$P_e$", "P_i": r"$P_i$",
         "Pi_e": r"$P_{ie}$", "P_shine-through": r"$P_{shine}$",
         "n_D": r"$n_D$", "n_T": r"$n_T$", "n_b": r"$n_{b0}$",
-        "Pf_tot": r"$P_{f,tot}$", "Pf_th": r"$P_{f,th}$", "Pf_b": r"$P_{f,b}$",
+        "Pf_tot": r"$P_{f,tot}$", "Pf_th": r"$P_{f,th}$", "Pf_b": r"$P_{f,b}$", "Pf_bb": r"$P_{f,bb}$",
         "P_useful": r"$P_{useful}$", "Q": r"$Q$",
         "P_orbit": r"$P_{orbit}$", "P_cx": r"$P_{cx}$", "P_lost": r"$P_{lost}$",
         "Y_neutron_b": r"$Y_{n,beam}$", "Y_neutron_th": r"$Y_{n,th}$",
