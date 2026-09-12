@@ -651,8 +651,8 @@ evaluated once.
 
 ### Fixed (input)
 
-$\tau_{E,e}$ and $\tau_{E,i}$ are the values entered on the Plasma tab,
-used unchanged.
+$\tau_{E,e}$ and $\tau_{E,i}$ are the values entered in the Losses section
+(under the Confinement selector), used unchanged.
 
 ### IPB98(y,2) ELMy H-mode
 

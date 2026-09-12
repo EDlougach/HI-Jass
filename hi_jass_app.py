@@ -250,8 +250,6 @@ class HIJassApp(ctk.CTk):
         ("Scan n_e max [m^-3]", "n_e_max", 1.5e20),
         ("D fraction", "deuterium_fraction", 0.2),
         ("T fraction", "tritium_fraction", 0.8),
-        ("tauE,e [s]", "tauE_e", 0.15),
-        ("tauE,i [s]", "tauE_i", 0.15),
     ]
 
     OBSERVABLES = {
@@ -470,24 +468,28 @@ class HIJassApp(ctk.CTk):
         ctk.CTkOptionMenu(
             losses.body, values=list(CONFINEMENT_MODES), variable=self.confinement_var,
         ).grid(row=0, column=1, padx=8, pady=4, sticky="ew")
+        self._add_entries(losses.body, "plasma", [
+            ("tauE,e [s]", "tauE_e", self._saved.get("plasma.tauE_e", 0.15)),
+            ("tauE,i [s]", "tauE_i", self._saved.get("plasma.tauE_i", 0.15)),
+        ], start_row=1)
         self.orbit_var = ctk.BooleanVar(value=self._saved.get("_orbit_loss", True))
         ctk.CTkCheckBox(
             losses.body, text="First-orbit loss (direction set per NBI)", variable=self.orbit_var,
-        ).grid(row=1, column=0, columnspan=2, padx=8, pady=4, sticky="w")
+        ).grid(row=3, column=0, columnspan=2, padx=8, pady=4, sticky="w")
         ctk.CTkLabel(losses.body, text="Orbit model", anchor="w").grid(
-            row=2, column=0, padx=8, pady=4, sticky="w")
+            row=4, column=0, padx=8, pady=4, sticky="w")
         self.orbit_model_var = ctk.StringVar(
             value=self._saved.get("_orbit_model", "ST orbits - pitch-resolved"))
         ctk.CTkOptionMenu(
             losses.body, values=list(ORBIT_MODELS), variable=self.orbit_model_var,
-        ).grid(row=2, column=1, padx=8, pady=4, sticky="ew")
+        ).grid(row=4, column=1, padx=8, pady=4, sticky="ew")
         ctk.CTkLabel(losses.body, text="CX-loss model", anchor="w").grid(
-            row=3, column=0, padx=8, pady=4, sticky="w")
+            row=5, column=0, padx=8, pady=4, sticky="w")
         self.cx_model_var = ctk.StringVar(
             value=self._saved.get("_cx_model", "Manual fraction"))
         ctk.CTkOptionMenu(
             losses.body, values=list(CX_MODELS), variable=self.cx_model_var,
-        ).grid(row=3, column=1, padx=8, pady=4, sticky="ew")
+        ).grid(row=5, column=1, padx=8, pady=4, sticky="ew")
         self._add_entries(losses.body, "models", [
             ("CX loss fraction (0-1)", "cx_loss_fraction",
              self._saved.get("models.cx_loss_fraction", 0.1)),
@@ -495,7 +497,7 @@ class HIJassApp(ctk.CTk):
              self._saved.get("models.cx_n0_over_ne", 1.0e-5)),
             ("CX: n0_LCFS/ne (penetration)", "cx_n0_lcfs_over_ne",
              self._saved.get("models.cx_n0_lcfs_over_ne", 0.02)),
-        ], start_row=4)
+        ], start_row=6)
         row += 1
 
         aux = CollapsibleSection(rail, "Aux heating (ECRH / ICRH)", expanded=False)
@@ -673,6 +675,15 @@ class HIJassApp(ctk.CTk):
             errors.append("scan n_e range")
         if plasma.central_density <= 0:
             errors.append("central n_e")
+
+        # tauE,e / tauE,i live in the Losses section (Confinement subsection),
+        # not the PLASMA_FIELDS loop above, since they're only meaningful
+        # under "Fixed tauE (input)" -- parsed the same way, just separately.
+        for label, field in (("tauE,e", "tauE_e"), ("tauE,i", "tauE_i")):
+            try:
+                setattr(plasma, field, float(self.entries[f"plasma.{field}"].get()))
+            except ValueError:
+                errors.append(label)
 
         ee_mode, ei_mode = CONFINEMENT_MODES[self.confinement_var.get()]
         plasma.tau_Ee_mode, plasma.tau_Ei_mode = ee_mode, ei_mode
