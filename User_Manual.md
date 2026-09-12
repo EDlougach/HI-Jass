@@ -553,6 +553,50 @@ $M=v_\phi/c_s$ ($c_s=\sqrt{(T_{e0}+T_{i0})/m_i}$, a simple ion-acoustic
 estimate, not a rigorous sound speed), plus the net torque $T_\mathrm{NBI}$
 for the momentum-balance mode.
 
+## Beam-beam fusion
+
+Off by default (checkbox, Losses section, below the rotation fields). Fast
+ions from **two separate NBI sources** can fuse with each other directly --
+a third fusion channel alongside thermal-thermal and beam-target. This is a
+**reduced** model, not a full treatment: instead of integrating over both
+beams' slowing-down spectra (a genuine 2-D relative-velocity integral), each
+population is approximated by a single characteristic velocity at its own
+average fast-ion energy (`average_fast_energy_keV`, the same representative
+energy this project already uses for pressure/energy-density diagnostics),
+signed by its own co/counter direction. Only the **first two** useful beams
+are paired -- this project's tested scope is exactly two NBI sources.
+
+The relevant physical quantity is the beam-beam **relative** velocity:
+
+$$
+v_\mathrm{rel} = \left|\, s_1 v_1 - s_2 v_2 \,\right|,
+\qquad s = +1\ (\text{co}),\ -1\ (\text{counter}),
+$$
+
+fed into the same deuteron-equivalent-energy cross-section evaluation as
+the rotation correction to beam-target fusion (Sec. "Bulk toroidal
+rotation" above) -- structurally the same construction, with the *other
+beam's own velocity* playing the role $v_\phi$ played there. **This is why
+counter-injecting the second beam matters physically**: two co-current
+beams at similar per-amu energy have a small $v_\mathrm{rel}$ (their
+velocities nearly cancel) and thus a negligible beam-beam yield, while
+opposite directions maximize $v_\mathrm{rel}$ -- exactly DANTE's default
+configuration (D co-current, T counter-current). D-T and D-D pairs are
+handled (the only cross-section fits this project carries); T-T pairs, or
+a beam-beam calculation with fewer than two useful beams, contribute
+nothing.
+
+The result is folded into the existing D-T/D-D fusion power and neutron-
+rate totals (`pf_dt_w`, `pf_dd_w`, `neutron_rate_s`) exactly like the
+thermal and beam-target contributions, so it is automatically included in
+the alpha-heating closure (Sec. "Alpha self-heating" below) with no
+separate wiring needed. The Dashboard's D-T/D-D fusion-power rows show all
+three contributions (thermal / beam-target / beam-beam); the Scan tab's
+"Neutrons" group breaks the neutron rate out the same way, with the
+beam-beam panel showing a genuine (if usually small, for DANTE's default
+0.1 MW counter-beam) nonzero curve once enabled, rather than the flat zero
+it shows while off.
+
 ## Power balance (electron and ion)
 
 At each central density the model solves a 0-D steady-state power balance for

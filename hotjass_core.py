@@ -50,6 +50,7 @@ class PlasmaParams:
     rotation_model: str = "off"        # "off" | "manual" | "momentum_balance"
     manual_v_phi_m_s: float = 0.0      # "manual": bulk toroidal rotation velocity (positive = co-current)
     tau_phi_over_tauEi: float = 1.0    # "momentum_balance": tau_phi = this * tau_Ei (no validated tau_phi scaling exists)
+    enable_beam_beam: bool = False     # reduced monoenergetic beam-beam fusion between the first two NBI sources
     enable_equipartition: bool = True
 
 
@@ -112,6 +113,7 @@ class HotJassModel:
             rotation_model=self.plasma.rotation_model,
             manual_v_phi_m_s=self.plasma.manual_v_phi_m_s,
             tau_phi_over_tauEi=self.plasma.tau_phi_over_tauEi,
+            enable_beam_beam=self.plasma.enable_beam_beam,
             enable_equipartition=self.plasma.enable_equipartition,
             enable_alpha_heating=self.plasma.alpha_heating,
             f_alpha=self.plasma.f_alpha,
@@ -336,7 +338,7 @@ class HotJassModel:
                 "Pf_DT": values("pf_dt_w", 1.0e-6), "Pf_DD": values("pf_dd_w", 1.0e-6),
                 "R_neutron": values("neutron_rate_s"),
                 "R_neutron_th": values("neutron_rate_thermal_s"), "R_neutron_b": values("neutron_rate_beam_s"),
-                "R_neutron_bb": np.zeros_like(densities),  # beam-beam fusion is not modelled
+                "R_neutron_bb": values("neutron_rate_bb_s"),  # 0 unless plasma.enable_beam_beam
                 "P_orbit": values("P_orbit_loss_w", 1.0e-6), "P_cx": values("P_cx_loss_w", 1.0e-6),
                 "P_useful": p_useful, "P_lost": p_nb - p_useful, "Q": q_values,
                 "Te0": values("Te0_keV"), "Ti0": values("Ti0_keV"),

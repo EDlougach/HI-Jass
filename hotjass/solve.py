@@ -141,6 +141,16 @@ class TokamakConfig:
     rotation_model: str = "off"  # "off" | "manual" | "momentum_balance"
     manual_v_phi_m_s: float = 0.0
     tau_phi_over_tauEi: float = 1.0
+    # Beam-beam fusion (physics.beam_beam_fusion_power): a reduced,
+    # monoenergetic-population estimate for the ONE pairwise beam-beam
+    # reaction between two distinct NBI sources (D-T or D-D; see that
+    # function's docstring for why counter-injecting the second beam
+    # matters here -- it maximizes the beam-beam relative velocity). Off by
+    # default: leaves every existing pf_dt_w/pf_dd_w/neutron_rate_s result
+    # unaffected unless explicitly enabled. Only the first two useful beams
+    # are paired (this project's tested scope is exactly two NBI sources);
+    # a third beam, if ever added, would need generalizing to all pairs.
+    enable_beam_beam: bool = False
     enable_equipartition: bool = False
     # Fusion alpha self-heating. When enable_alpha_heating is True the caller
     # (hotjass_core) closes a fixed-point P_alpha = f_alpha*(3.5/17.6)*P_fusion,
@@ -269,8 +279,10 @@ class OperatingPoint:
     neutron_rate_s: float = 0.0  # 14 MeV (D-T) + 2.45 MeV (D-D n-branch) neutrons per second
     neutron_rate_thermal_s: float = 0.0  # thermal-thermal contribution (D-T + D-D) to neutron_rate_s
     neutron_rate_beam_s: float = 0.0     # beam-target contribution (D-T + D-D) to neutron_rate_s
-    # neutron_rate_thermal_s + neutron_rate_beam_s == neutron_rate_s exactly -- beam-beam
-    # (fast ion on fast ion) reactions are not modelled (no third term); see docs.
+    neutron_rate_bb_s: float = 0.0       # beam-beam contribution (D-T + D-D) to neutron_rate_s; 0 unless config.enable_beam_beam
+    pf_bb_dt_w: float = 0.0  # beam-beam D-T fusion power (already folded into pf_dt_w)
+    pf_bb_dd_w: float = 0.0  # beam-beam D-D fusion power (already folded into pf_dd_w)
+    # neutron_rate_thermal_s + neutron_rate_beam_s + neutron_rate_bb_s == neutron_rate_s exactly.
     v_phi_m_s: float = 0.0  # bulk toroidal rotation velocity (positive = co-current); 0 unless config.rotation_model != "off"
     torque_total_Nm: float = 0.0  # net NBI torque actually used to close v_phi ("momentum_balance" only; 0 otherwise)
     Te0_keV: float | None = None  # on-axis T_e (== Te_keV unless config.profile_averaging)
@@ -860,6 +872,7 @@ def solve_operating_point(
     pf_beam = 0.0
     pf_dd_beam = 0.0
     dd_beam_neutrons = 0.0
+    nb0_per_beam: list[float] = []
     for beam in useful_beams:
         # Per-beam fast-ion density, recomputed (cheap) rather than stored,
         # to keep beam_target_fusion_power's existing per-beam signature.
@@ -868,6 +881,7 @@ def solve_operating_point(
         # and charge-exchange become fast ions.
         tau_s = physics.thermalization_time(ne_axis, Te0_keV, beam.Eb_keV, beam.species)
         nb0_i = beam.P_NB_W * tau_s / (beam.Eb_keV * 1e3 * physics.E_CHARGE * V)
+        nb0_per_beam.append(nb0_i)
         target_n = nT0_axis if beam.species == "D" else nD0_axis
         pf_beam += physics.beam_target_fusion_power(
             nb0_i, target_n, Te0_keV, beam.Eb_keV, V, beam.species,
@@ -886,15 +900,36 @@ def solve_operating_point(
     pf_dd_thermal, dd_thermal_neutrons = physics.thermal_dd_fusion_power(
         nD0_axis, Ti0_keV, V, config.density_peaking, p_ti
     )
-    pf_dt = pf_thermal + pf_beam
-    pf_dd = pf_dd_thermal + pf_dd_beam
+
+    # Beam-beam fusion (config.enable_beam_beam): the ONE pairwise reaction
+    # between the first two useful beams (this project's tested scope).
+    # Off by default -- pf_bb_dt/pf_bb_dd/neutron_rate_bb all stay 0.0.
+    pf_bb_dt = 0.0
+    pf_bb_dd = 0.0
+    neutron_rate_bb = 0.0
+    if config.enable_beam_beam and len(useful_beams) >= 2:
+        b1, b2 = useful_beams[0], useful_beams[1]
+        e1 = physics.average_fast_energy_keV(Te0_keV, b1.Eb_keV, b1.species)
+        e2 = physics.average_fast_energy_keV(Te0_keV, b2.Eb_keV, b2.species)
+        bb = physics.beam_beam_fusion_power(
+            nb0_per_beam[0], e1, b1.species, b1.co_current,
+            nb0_per_beam[1], e2, b2.species, b2.co_current,
+            V,
+        )
+        pf_bb_dt = bb["pf_dt_w"]
+        pf_bb_dd = bb["pf_dd_w"]
+        neutron_rate_bb = bb["neutron_rate_s"]
+
+    pf_dt = pf_thermal + pf_beam + pf_bb_dt
+    pf_dd = pf_dd_thermal + pf_dd_beam + pf_bb_dd
     pf_total = pf_dt + pf_dd
     # One 14 MeV neutron per D-T reaction, plus the D-D n-branch's 2.45 MeV
-    # neutron -- split by thermal-thermal vs beam-target so the two can be
-    # reported (and plotted) separately; their sum is neutron_rate exactly.
+    # neutron -- split by thermal-thermal / beam-target / beam-beam so the
+    # three can be reported (and plotted) separately; their sum is
+    # neutron_rate exactly.
     neutron_rate_thermal = pf_thermal / physics.E_FUSION_J + dd_thermal_neutrons
     neutron_rate_beam = pf_beam / physics.E_FUSION_J + dd_beam_neutrons
-    neutron_rate = neutron_rate_thermal + neutron_rate_beam
+    neutron_rate = neutron_rate_thermal + neutron_rate_beam + neutron_rate_bb
 
     # Diagnostics -- reported, never enforced (see TokamakConfig docstring).
     # P_useful_w==0 (e.g. cx_loss_fraction=1.0, or ne0 low enough that
@@ -946,6 +981,7 @@ def solve_operating_point(
         pf_dd_thermal_w=pf_dd_thermal, pf_dd_beam_w=pf_dd_beam, pf_dd_w=pf_dd,
         pf_total_w=pf_total, neutron_rate_s=neutron_rate,
         neutron_rate_thermal_s=neutron_rate_thermal, neutron_rate_beam_s=neutron_rate_beam,
+        neutron_rate_bb_s=neutron_rate_bb, pf_bb_dt_w=pf_bb_dt, pf_bb_dd_w=pf_bb_dd,
         v_phi_m_s=v_phi_m_s, torque_total_Nm=torque_total_Nm,
         Te0_keV=Te0_keV, Ti0_keV=Ti0_keV,
         pressure_pa=pressure_pa, beta_t=beta_t,

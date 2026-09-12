@@ -1605,6 +1605,60 @@ def toroidal_rotation_velocity_ms(
     return torque_total_Nm * tau_phi_s / denom
 
 
+def beam_beam_fusion_power(
+    nb1_m3: float, Echar1_keV: float, species1: str, co_current1: bool,
+    nb2_m3: float, Echar2_keV: float, species2: str, co_current2: bool,
+    volume_m3: float,
+) -> dict:
+    """Reduced (monoenergetic) beam-beam fusion power [W] and neutron rate
+    [1/s] between two DISTINCT fast-ion populations (e.g. from two separate
+    NBI sources) -- NOT a full 2-D relative-velocity integral over both
+    slowing-down spectra (which would need a double integral over each
+    beam's own f(E), a materially heavier calculation); instead each
+    population is approximated by a single characteristic velocity at its
+    OWN average fast-ion energy (average_fast_energy_keV -- the same
+    representative energy this project already uses for pressure/energy-
+    density diagnostics elsewhere), signed by its own co/counter direction
+    (same convention as bulk rotation: +1 co, -1 counter). The physically
+    relevant quantity is then the RELATIVE velocity between the two
+    populations:
+
+        v_rel = |s1*v1 - s2*v2|
+
+    exactly the same construction as beam_target_reactivity_spectrum()'s
+    rotation correction, just with a second beam's own velocity playing the
+    role v_phi played there. A COUNTER-injected second beam (e.g. this
+    project's DANTE default: D co-current, T counter-current) MAXIMIZES
+    v_rel -- physically the point of injecting two beams in opposite
+    directions for a beam-beam-driven neutron source.
+
+    Handles D-T and D-D pairs (the only cross-section fits this project
+    carries) -- returns zero power/rate for T-T (no fit here) or if either
+    population is absent (nb<=0).
+
+    Returns ``{"pf_dt_w", "pf_dd_w", "neutron_rate_s"}`` -- exactly one of
+    the two power keys is nonzero (the channel matching species1/species2),
+    letting the caller add both into its running pf_dt/pf_dd sums uniformly.
+    """
+    zero = dict(pf_dt_w=0.0, pf_dd_w=0.0, neutron_rate_s=0.0)
+    if nb1_m3 <= 0.0 or nb2_m3 <= 0.0:
+        return zero
+    species_set = {species1, species2}
+    v1 = (1.0 if co_current1 else -1.0) * beam_velocity(Echar1_keV, species1)
+    v2 = (1.0 if co_current2 else -1.0) * beam_velocity(Echar2_keV, species2)
+    v_rel = abs(v1 - v2)
+    e_rel_keV = 0.5 * M_D * v_rel ** 2 / (1.0e3 * E_CHARGE)
+    if species_set == {"D", "T"}:
+        rate = nb1_m3 * nb2_m3 * bosch_hale_dt_cross_section(e_rel_keV) * v_rel * volume_m3
+        return dict(pf_dt_w=rate * E_FUSION_J, pf_dd_w=0.0, neutron_rate_s=rate)
+    if species_set == {"D"}:
+        rate_p = nb1_m3 * nb2_m3 * bosch_hale_dd_cross_section(e_rel_keV, "p") * v_rel * volume_m3
+        rate_n = nb1_m3 * nb2_m3 * bosch_hale_dd_cross_section(e_rel_keV, "n") * v_rel * volume_m3
+        power = rate_p * (E_DDP_MEV * 1e6 * E_CHARGE) + rate_n * (E_DDN_MEV * 1e6 * E_CHARGE)
+        return dict(pf_dt_w=0.0, pf_dd_w=power, neutron_rate_s=rate_n)
+    return zero  # T-T or unsupported combination -- no fit available
+
+
 # ---------------------------------------------------------------- GUI-only
 # local (per-rho) fusion power density profiles -- P_fus(rho) visualization
 # on the Profiles tab. NOT used by the solver (which only ever needs the

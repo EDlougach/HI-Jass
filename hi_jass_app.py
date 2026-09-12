@@ -335,8 +335,8 @@ class HIJassApp(ctk.CTk):
         ("P_ICRH -> e / i [MW]", "p_icrh"),
         ("P_heat total (NBI + aux + alpha) [MW]", "P_heat"),
         ("P_fusion total [MW]", "Pf_tot"),
-        ("  D-T (thermal / beam-target) [MW]", "Pf_dt"),
-        ("  D-D (thermal / beam-target) [MW]", "Pf_dd"),
+        ("  D-T (thermal / beam-target / beam-beam) [MW]", "Pf_dt"),
+        ("  D-D (thermal / beam-target / beam-beam) [MW]", "Pf_dd"),
         ("neutron rate [n/s]", "R_n"), ("Q = P_fus / P_NB", "Q"),
         ("<E_fast> [keV]", "E_fast"), ("beta_t [%]", "beta_t"),
         ("q* (edge safety factor)", "q_star"),
@@ -529,6 +529,10 @@ class HIJassApp(ctk.CTk):
             ("tau_phi / tauE,i (mom. balance)", "tau_phi_over_tauEi",
              self._saved.get("models.tau_phi_over_tauEi", 1.0)),
         ], start_row=10)
+        self.beam_beam_var = ctk.BooleanVar(value=self._saved.get("_beam_beam", False))
+        ctk.CTkCheckBox(
+            losses.body, text="Beam-beam fusion (reduced, NBI-1 x NBI-2)", variable=self.beam_beam_var,
+        ).grid(row=12, column=0, columnspan=2, padx=8, pady=4, sticky="w")
         row += 1
 
         aux = CollapsibleSection(rail, "Aux heating (ECRH / ICRH)", expanded=False)
@@ -752,6 +756,7 @@ class HIJassApp(ctk.CTk):
             plasma.tau_phi_over_tauEi = max(float(self.entries["models.tau_phi_over_tauEi"].get()), 0.0)
         except ValueError:
             errors.append("tau_phi / tauE,i")
+        plasma.enable_beam_beam = bool(self.beam_beam_var.get())
 
         for label, field, clamp01 in (
             ("P_ECRH", "p_ecrh_MW", False), ("ECRH f_e", "ecrh_f_e", True),
@@ -1012,8 +1017,8 @@ class HIJassApp(ctk.CTk):
                        if plasma.p_icrh_MW > 0 else "off"),
             "P_heat": self._fmt((op.P_useful_w + op.P_alpha_w + op.P_aux_e_w + op.P_aux_i_w) * mw),
             "Pf_tot": self._fmt(op.pf_total_w * mw),
-            "Pf_dt": f"{op.pf_thermal_w * mw:.3g} / {op.pf_beam_w * mw:.3g}   (= {op.pf_dt_w * mw:.3g})",
-            "Pf_dd": f"{op.pf_dd_thermal_w * mw:.3g} / {op.pf_dd_beam_w * mw:.3g}   (= {op.pf_dd_w * mw:.3g})",
+            "Pf_dt": f"{op.pf_thermal_w * mw:.3g} / {op.pf_beam_w * mw:.3g} / {op.pf_bb_dt_w * mw:.3g}   (= {op.pf_dt_w * mw:.3g})",
+            "Pf_dd": f"{op.pf_dd_thermal_w * mw:.3g} / {op.pf_dd_beam_w * mw:.3g} / {op.pf_bb_dd_w * mw:.3g}   (= {op.pf_dd_w * mw:.3g})",
             "R_n": self._fmt(op.neutron_rate_s, "{:.3e}"),
             "Q": self._fmt(op.pf_total_w / op.P_NB_total_w if op.P_NB_total_w else None, "{:.3g}"),
             "E_fast": self._fmt(op.avg_fast_energy_keV),
@@ -1662,9 +1667,9 @@ class HIJassApp(ctk.CTk):
                 ax.set_xlabel(r"$n_e$ [$10^{20}\,\mathrm{m}^{-3}$]")
                 ax.grid(alpha=0.3)
                 ax.legend()
-                if key == "R_neutron_bb":
+                if key == "R_neutron_bb" and not getattr(self.model.plasma, "enable_beam_beam", False):
                     ax.set_ylim(-1.0, 1.0)
-                    ax.text(0.5, 0.5, "beam-beam fusion\nnot modelled", ha="center", va="center",
+                    ax.text(0.5, 0.5, "beam-beam fusion off\n(Losses section)", ha="center", va="center",
                             transform=ax.transAxes, fontsize=9, color="0.45")
             # 4th (otherwise unused) panel of the n_D/n_T/n_b group: the
             # fast-ion / target-ion density ratio -- n_Target is whichever
@@ -1894,6 +1899,13 @@ class HIJassApp(ctk.CTk):
             lines.append("  direction) -- shine-through, first-orbit and CX loss are unaffected (v_phi << v_beam).")
             lines.append("  No validated tau_phi (momentum confinement time) scaling exists; tau_phi~tau_E,i is a")
             lines.append("  crude, commonly-used stand-in, so treat v_phi's absolute scale as order-of-magnitude.")
+        if getattr(plasma, "enable_beam_beam", False):
+            lines.append("Beam-beam fusion: ON -- reduced, monoenergetic-population estimate (NBI-1 x NBI-2 only,")
+            lines.append("  each at its own average fast-ion energy); NOT a full 2-D slowing-down-spectrum integral.")
+            lines.append("  Folded into the D-T/D-D fusion power and neutron-rate totals above and into the")
+            lines.append("  Scan tab's Neutrons group; T-T pairs (no cross-section fit here) contribute nothing.")
+        else:
+            lines.append("Beam-beam fusion: off")
         lines.append(f"e-i equipartition: {'ON (coupled Te/Ti solve)' if plasma.enable_equipartition else 'off (decoupled Te, Ti)'}")
         if getattr(plasma, "profile_averaging", False):
             p_ti = plasma.temp_peaking if plasma.temp_peaking_i < 0 else plasma.temp_peaking_i
@@ -2108,6 +2120,7 @@ class HIJassApp(ctk.CTk):
         data["_profile_averaging"] = bool(self.profile_var.get())
         data["_cx_model"] = self.cx_model_var.get()
         data["_rotation_model"] = self.rotation_model_var.get()
+        data["_beam_beam"] = bool(self.beam_beam_var.get())
         for beam_index in (0, 1):
             data[f"beam{beam_index}._shine"] = getattr(self, f"shine_var_{beam_index}").get()
             data[f"beam{beam_index}._dir"] = getattr(self, f"beam_dir_var_{beam_index}").get()
