@@ -263,7 +263,7 @@ class HIJassApp(ctk.CTk):
         "n_D, n_T, n_b": ["n_D", "n_T", "n_b"],
         "Pf_tot, Pf_th, Pf_b, P_useful": ["Pf_tot", "Pf_th", "Pf_b", "P_useful"],
         "P_shine, P_orbit, P_cx, P_lost": ["P_shine-through", "P_orbit", "P_cx", "P_lost"],
-        "R_beam, R_thermal, R_bb, R_full": ["R_neutron_b", "R_neutron_th", "R_neutron_bb", "R_neutron"],
+        "Y_beam, Y_thermal, Y_bb, Y_full": ["Y_neutron_b", "Y_neutron_th", "Y_neutron_bb", "Y_neutron"],
         "<E_fast>": ["E_fast"],
         "tau_S, tauE_e, tauE_i, tau_IE": ["tau_S", "tauE_e", "tauE_i", "tau_IE"],
         "R = U_fast / U_th": ["R"],
@@ -272,14 +272,14 @@ class HIJassApp(ctk.CTk):
     }
     EQUIP_SENSITIVE = {"Tₑ, Tᵢ", "Pₑ, Pᵢ, Pᵢₑ, Q", "τS, τE,e, τE,i, τIE"}
     ALPHA_SENSITIVE = EQUIP_SENSITIVE | {
-        "Pƒ,tot, Pƒ,th, Pƒ,b, Pᵤ", "R_beam, R_thermal, R_bb, R_full", "pₜₕ, pfast", "βt", "R = ufast / Uₜₕ"}
+        "Pƒ,tot, Pƒ,th, Pƒ,b, Pᵤ", "Y_beam, Y_thermal, Y_bb, Y_full", "pₜₕ, pfast", "βt", "R = ufast / Uₜₕ"}
     DISPLAY_GROUPS = {
         "Tₑ, Tᵢ": "Te, Ti",
         "Pₑ, Pᵢ, Pᵢₑ, Q": "P_e, P_i, Pi_e, Q",
         "nᴅ, nₜ, nᵦ": "n_D, n_T, n_b",
         "Pƒ,tot, Pƒ,th, Pƒ,b, Pᵤ": "Pf_tot, Pf_th, Pf_b, P_useful",
         "P_shine, P_orbit, P_cx, P_lost": "P_shine, P_orbit, P_cx, P_lost",
-        "R_beam, R_thermal, R_bb, R_full": "R_beam, R_thermal, R_bb, R_full",
+        "Y_beam, Y_thermal, Y_bb, Y_full": "Y_beam, Y_thermal, Y_bb, Y_full",
         "⟨Efast⟩": "<E_fast>",
         "τS, τE,e, τE,i, τIE": "tau_S, tauE_e, tauE_i, tau_IE",
         "R = ufast / Uₜₕ": "R = U_fast / U_th",
@@ -291,7 +291,7 @@ class HIJassApp(ctk.CTk):
         "P_shine-through": "MW", "n_D": "m^-3", "n_T": "m^-3", "n_b": "m^-3",
         "Pf_tot": "MW", "Pf_th": "MW", "Pf_b": "MW", "P_useful": "MW", "Q": "1",
         "P_orbit": "MW", "P_cx": "MW", "P_lost": "MW",
-        "R_neutron_b": "1/s", "R_neutron_th": "1/s", "R_neutron_bb": "1/s", "R_neutron": "1/s",
+        "Y_neutron_b": "1/s", "Y_neutron_th": "1/s", "Y_neutron_bb": "1/s", "Y_neutron": "1/s",
         "E_fast": "keV",
         "tau_S": "s", "tauE_e": "s", "tauE_i": "s", "tau_IE": "s", "R": "1",
         "Pr_th": "Pa", "Pr_fast": "Pa", "beta_T": "%",
@@ -307,8 +307,8 @@ class HIJassApp(ctk.CTk):
         "Pf_tot": r"$P_{f,tot}$", "Pf_th": r"$P_{f,th}$", "Pf_b": r"$P_{f,b}$",
         "P_useful": r"$P_{useful}$", "Q": r"$Q$",
         "P_orbit": r"$P_{orbit}$", "P_cx": r"$P_{cx}$", "P_lost": r"$P_{lost}$",
-        "R_neutron_b": r"$R_{n,beam}$", "R_neutron_th": r"$R_{n,th}$",
-        "R_neutron_bb": r"$R_{n,bb}$", "R_neutron": r"$R_{n,full}$",
+        "Y_neutron_b": r"$Y_{n,beam}$", "Y_neutron_th": r"$Y_{n,th}$",
+        "Y_neutron_bb": r"$Y_{n,bb}$", "Y_neutron": r"$Y_{n,full}$",
         "E_fast": r"$\langle E_{fast}\rangle$", "tau_S": r"$\tau_S$",
         "tauE_e": r"$\tau_{E,e}$", "tauE_i": r"$\tau_{E,i}$", "tau_IE": r"$\tau_{IE}$",
         "R": r"$R = u_{fast}/U_t$", "Pr_th": r"$p_{th}$", "Pr_fast": r"$p_{fast}$",
@@ -337,7 +337,7 @@ class HIJassApp(ctk.CTk):
         ("P_fusion total [MW]", "Pf_tot"),
         ("  D-T (thermal / beam-target / beam-beam) [MW]", "Pf_dt"),
         ("  D-D (thermal / beam-target / beam-beam) [MW]", "Pf_dd"),
-        ("neutron rate [n/s]", "R_n"), ("Q = P_fus / P_NB", "Q"),
+        ("neutron rate [n/s]", "Y_n"), ("Q = P_fus / P_NB", "Q"),
         ("<E_fast> [keV]", "E_fast"), ("beta_t [%]", "beta_t"),
         ("q* (edge safety factor)", "q_star"),
         ("Toroidal rotation v_phi [km/s] (Mach)", "v_phi"),
@@ -587,7 +587,7 @@ class HIJassApp(ctk.CTk):
         for tv in (self.tv_op, self.tv_scan):
             tv.grid(row=0, column=0, sticky="nsew")
 
-        for name in ("Dashboard", "Deposition", "Power flow", "Profiles", "Assumptions", "References"):
+        for name in ("Dashboard", "Deposition", "Power flow", "Profiles", "Fusion", "Assumptions", "References"):
             self.tv_op.add(name)
         for name in ("Scan", "Summary"):
             self.tv_scan.add(name)
@@ -609,6 +609,9 @@ class HIJassApp(ctk.CTk):
         holder.pack(fill="both", expand=True)
         self.prof_fig, self.prof_canvas, holder = self._plot_area(
             self.tv_op.tab("Profiles"), figsize=(13.5, 6.2))
+        holder.pack(fill="both", expand=True)
+        self.fusion_fig, self.fusion_canvas, holder = self._plot_area(
+            self.tv_op.tab("Fusion"), figsize=(7.5, 7.0))
         holder.pack(fill="both", expand=True)
         self._build_assumptions(self.tv_op.tab("Assumptions"))
         self._build_references(self.tv_op.tab("References"))
@@ -893,6 +896,7 @@ class HIJassApp(ctk.CTk):
         self._render_deposition(result)
         self._render_powerflow(result)
         self._render_profiles(result)
+        self._render_fusion(result)
         self.assump_box.delete("1.0", "end")
         self.assump_box.insert("end", self._assess(self.model, result.op))
         self._render_references()
@@ -1019,7 +1023,7 @@ class HIJassApp(ctk.CTk):
             "Pf_tot": self._fmt(op.pf_total_w * mw),
             "Pf_dt": f"{op.pf_thermal_w * mw:.3g} / {op.pf_beam_w * mw:.3g} / {op.pf_bb_dt_w * mw:.3g}   (= {op.pf_dt_w * mw:.3g})",
             "Pf_dd": f"{op.pf_dd_thermal_w * mw:.3g} / {op.pf_dd_beam_w * mw:.3g} / {op.pf_bb_dd_w * mw:.3g}   (= {op.pf_dd_w * mw:.3g})",
-            "R_n": self._fmt(op.neutron_rate_s, "{:.3e}"),
+            "Y_n": self._fmt(op.neutron_rate_s, "{:.3e}"),
             "Q": self._fmt(op.pf_total_w / op.P_NB_total_w if op.P_NB_total_w else None, "{:.3g}"),
             "E_fast": self._fmt(op.avg_fast_energy_keV),
             "beta_t": self._fmt(op.beta_t * 100.0),
@@ -1135,6 +1139,42 @@ class HIJassApp(ctk.CTk):
         except Exception:
             ax.text(0.5, 0.5, "Sankey unavailable\nfor this operating point",
                     ha="center", va="center", fontsize=9)
+
+    # ------------------------------------------------------------ fusion tab
+    def _render_fusion(self, result: Result):
+        op = result.op
+        mw = 1.0e-6
+        fig = self.fusion_fig
+        fig.clear()
+        wedges = [
+            (op.pf_thermal_w * mw, "D-T thermal", "#4f9d5d"),
+            (op.pf_beam_w * mw, "D-T beam-target", "#3fa7a7"),
+            (op.pf_bb_dt_w * mw, "D-T beam-beam", "#8064a2"),
+            (op.pf_dd_thermal_w * mw, "D-D thermal", "#e0913a"),
+            (op.pf_dd_beam_w * mw, "D-D beam-target", "#c0504d"),
+            (op.pf_bb_dd_w * mw, "D-D beam-beam", "#4bacc6"),
+        ]
+        pf_tot_mw = op.pf_total_w * mw
+        # A relative (not absolute) threshold: a slice under 0.5% of the total
+        # would just clutter the pie with an unreadable sliver and an
+        # overlapping label -- still fully available in the Dashboard's
+        # D-T/D-D breakdown rows, just not worth a wedge here.
+        keep = [(w, n, c) for w, n, c in wedges if w > 0.005 * max(pf_tot_mw, 1.0e-9)]
+        ax = fig.add_subplot(111)
+        if keep:
+            ws, ns, cs = zip(*keep)
+            ax.pie(ws, labels=[f"{n}\n{w:.3g} MW" for n, w in zip(ns, ws)],
+                   colors=cs, autopct="%1.1f%%", pctdistance=0.75,
+                   textprops={"fontsize": 8}, startangle=90)
+        else:
+            ax.text(0.5, 0.5, "no fusion power\nat this operating point",
+                    ha="center", va="center", fontsize=10, transform=ax.transAxes)
+        q_val = op.pf_total_w / op.P_NB_total_w if op.P_NB_total_w else float("nan")
+        ax.set_title(
+            f"$P_{{fus}}$ = {pf_tot_mw:.3g} MW   (Q={q_val:.3g},  "
+            f"$Y_n$={op.neutron_rate_s:.3g} s$^{{-1}}$)", fontsize=10)
+        fig.tight_layout()
+        self.fusion_canvas.draw_idle()
 
     # --------------------------------------------------------- deposition tab
     def _beam_chord_samples(self, beam, plasma, Te_keV, n=3000):
@@ -1667,7 +1707,7 @@ class HIJassApp(ctk.CTk):
                 ax.set_xlabel(r"$n_e$ [$10^{20}\,\mathrm{m}^{-3}$]")
                 ax.grid(alpha=0.3)
                 ax.legend()
-                if key == "R_neutron_bb" and not getattr(self.model.plasma, "enable_beam_beam", False):
+                if key == "Y_neutron_bb" and not getattr(self.model.plasma, "enable_beam_beam", False):
                     ax.set_ylim(-1.0, 1.0)
                     ax.text(0.5, 0.5, "beam-beam fusion off\n(Losses section)", ha="center", va="center",
                             transform=ax.transAxes, fontsize=9, color="0.45")
@@ -1761,18 +1801,25 @@ class HIJassApp(ctk.CTk):
             ("Heating [MW]", lambda ax: (ax.plot(density_axis, scan["P_e"], label=r"$P_e$"),
                                          ax.plot(density_axis, scan["P_i"], label=r"$P_i$"))),
             (r"$P_{ie}$ [MW]", lambda ax: ax.plot(density_axis, scan["Pi_e"])),
-            (r"$P_{shine}$ [MW]", lambda ax: ax.plot(density_axis, scan["P_shine-through"])),
+            ("Losses [MW]", lambda ax: (ax.plot(density_axis, scan["P_shine-through"], label=r"$P_{shine}$"),
+                                        ax.plot(density_axis, scan["P_orbit"], label=r"$P_{orbit}$"),
+                                        ax.plot(density_axis, scan["P_cx"], label=r"$P_{cx}$"),
+                                        ax.plot(density_axis, scan["P_lost"], label=r"$P_{lost}$", color="k"))),
             (r"Species n [$\mathrm{m}^{-3}$]", lambda ax: (ax.plot(density_axis, scan["n_D"], label=r"$n_D$"),
                                                            ax.plot(density_axis, scan["n_T"], label=r"$n_T$"),
                                                            ax.plot(density_axis, scan["n_b"], label=r"$n_b$"))),
             ("Fusion power [MW]", lambda ax: (ax.plot(density_axis, scan["Pf_tot"], label=r"$P_{f,tot}$"),
                                               ax.plot(density_axis, scan["Pf_th"], label=r"$P_{f,th}$"),
-                                              ax.plot(density_axis, scan["Pf_b"], label=r"$P_{f,b}$"))),
+                                              ax.plot(density_axis, scan["Pf_b"], label=r"$P_{f,b}$"),
+                                              ax.plot(density_axis, scan["Pf_bb"], label=r"$P_{f,bb}$"))),
             ("Times [s]", lambda ax: (ax.plot(density_axis, scan["tau_S"], label=r"$\tau_S$"),
                                       ax.plot(density_axis, scan["tauE_e"], label=r"$\tau_{E,e}$"),
                                       ax.plot(density_axis, scan["tauE_i"], label=r"$\tau_{E,i}$"),
                                       ax.plot(density_axis, scan["tau_IE"], label=r"$\tau_{IE}$"))),
-            ("<E_fast> [keV]", lambda ax: ax.plot(density_axis, scan["E_fast"])),
+            ("Neutron rate [1/s]", lambda ax: (ax.plot(density_axis, scan["Y_neutron_b"], label=r"$Y_{beam}$"),
+                                               ax.plot(density_axis, scan["Y_neutron_th"], label=r"$Y_{th}$"),
+                                               ax.plot(density_axis, scan["Y_neutron_bb"], label=r"$Y_{bb}$"),
+                                               ax.plot(density_axis, scan["Y_neutron"], label=r"$Y_{full}$", color="k"))),
             ("R = U_fast / U_th", lambda ax: ax.plot(density_axis, scan["R"])),
             ("Pressure [Pa]", lambda ax: (ax.plot(density_axis, scan["Pr_th"], label=r"$p_{th}$"),
                                           ax.plot(density_axis, scan["Pr_fast"], label=r"$p_{fast}$"))),
@@ -1788,7 +1835,7 @@ class HIJassApp(ctk.CTk):
             else:
                 ax.set_xlabel(r"$n_e$ [$10^{20}\,\mathrm{m}^{-3}$]", fontsize=7)
             if title in ("Temperature [keV]", "Heating [MW]", r"Species n [$\mathrm{m}^{-3}$]",
-                         "Fusion power [MW]", "Times [s]", "Pressure [Pa]"):
+                         "Fusion power [MW]", "Times [s]", "Pressure [Pa]", "Losses [MW]", "Neutron rate [1/s]"):
                 ax.legend(fontsize=6, ncol=2)
         fig.text(0.02, 0.005, self._summary_parameters(), fontsize=7, va="bottom", family="monospace")
         fig.subplots_adjust(left=0.06, right=0.98, top=0.95, bottom=0.22, wspace=0.3, hspace=0.42)

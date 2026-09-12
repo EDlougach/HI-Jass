@@ -999,6 +999,11 @@ The underlying HotJass calculation still evaluates each beam separately before f
   fusion power density, thermal vs. beam-plasma / beam-target, built from the
   same on-axis densities and $(1-\rho^2)^{2p}$ shapes as the volume-integrated
   totals on the Dashboard -- see "Fusion power" below).
+- **Fusion** — a pie chart of $P_{fus}$ split into its six channel/reaction
+  combinations (D-T and D-D, each thermal / beam-target / beam-beam), with
+  MW values and percentages; slices under 0.5% of the total are hidden to
+  keep the chart readable (still fully available in the Dashboard's D-T/D-D
+  breakdown rows). Title also shows $Q$ and the full neutron rate $Y_n$.
 - **Assumptions** — the full validity / fit-range read-out and any warnings.
 - **References** — the literature behind the *currently selected* models
   (beam stopping, confinement scaling, orbit-loss model) and the active machine
@@ -1163,12 +1168,17 @@ fixed-point closes on the D-T power only ($P_\alpha = f_\alpha(3.5/17.6)P_{f,DT}
 ### Neutron rate
 
 $$
-R_n = \frac{P_{f,DT}}{17.6\,\mathrm{MeV}}
-\;+\; R_{ddn}^{\mathrm{th}} + R_{ddn}^{\mathrm{beam}},
+Y_n = \frac{P_{f,DT}}{17.6\,\mathrm{MeV}}
+\;+\; R_{ddn}^{\mathrm{th}} + R_{ddn}^{\mathrm{beam}} \;(+\, Y_n^\mathrm{bb}),
 $$
 
 i.e. one 14.06 MeV neutron per D-T reaction plus the 2.45 MeV neutrons from the
-D(d,n) branch. Reported on the Dashboard and as `R_neutron` in a scan.
+D(d,n) branch, plus the beam-beam contribution when that's enabled (see "Beam-beam
+fusion" above). Named $Y_n$, not $R_n$, to avoid confusion with the fast/thermal
+energy-density ratio $R$ reported elsewhere. Reported on the Dashboard, broken
+down by channel (beam-target / thermal / beam-beam / full) in the Scan tab's
+`Y_beam, Y_thermal, Y_bb, Y_full` group and the Summary tab's "Neutron rate"
+panel, and as a slice of the Fusion tab's pie chart.
 
 ### Current model limitations
 
@@ -1206,12 +1216,13 @@ Four further scan groups:
   ("Losses") -- the three loss channels (whichever CX-loss model is active
   feeds $P_\mathrm{cx}$) plus their sum
   $P_\mathrm{lost}=P_{NB}-P_\mathrm{useful}$.
-- **$R_\mathrm{beam},R_\mathrm{thermal},R_\mathrm{bb},R_\mathrm{full}$**
+- **$Y_\mathrm{beam},Y_\mathrm{thermal},Y_\mathrm{bb},Y_\mathrm{full}$**
   ("Neutrons") -- the neutron rate split by reaction channel: beam-target
-  (D-T + D-D), thermal-thermal (D-T + D-D), beam-beam (not modelled, shown
-  as an explicit flat zero), and the full total
-  ($R_\mathrm{beam}+R_\mathrm{thermal}+R_\mathrm{bb}=R_\mathrm{full}$
-  exactly, since beam-beam contributes nothing).
+  (D-T + D-D), thermal-thermal (D-T + D-D), beam-beam (Sec. "Beam-beam
+  fusion" above -- a flat zero while that's off), and the full total
+  ($Y_\mathrm{beam}+Y_\mathrm{thermal}+Y_\mathrm{bb}=Y_\mathrm{full}$
+  exactly). Named $Y$, not $R$, so it isn't confused with the
+  $R=u_\mathrm{fast}/U_\mathrm{th}$ scan group.
 
 ## Important notation
 

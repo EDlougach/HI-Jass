@@ -335,10 +335,12 @@ class HotJassModel:
                 "P_aux_e": values("P_aux_e_w", 1.0e-6), "P_aux_i": values("P_aux_i_w", 1.0e-6),
                 "n_D": values("nD0_m3"), "n_T": values("nT0_m3"), "n_b": values("nb0_m3"),
                 "Pf_tot": pf_tot_mw, "Pf_th": values("pf_thermal_w", 1.0e-6), "Pf_b": values("pf_beam_w", 1.0e-6),
+                "Pf_bb": values("pf_bb_dt_w", 1.0e-6) + values("pf_bb_dd_w", 1.0e-6),
                 "Pf_DT": values("pf_dt_w", 1.0e-6), "Pf_DD": values("pf_dd_w", 1.0e-6),
-                "R_neutron": values("neutron_rate_s"),
-                "R_neutron_th": values("neutron_rate_thermal_s"), "R_neutron_b": values("neutron_rate_beam_s"),
-                "R_neutron_bb": values("neutron_rate_bb_s"),  # 0 unless plasma.enable_beam_beam
+                # Neutron rates (Y, not R -- R is already the u_fast/u_thermal ratio elsewhere).
+                "Y_neutron": values("neutron_rate_s"),
+                "Y_neutron_th": values("neutron_rate_thermal_s"), "Y_neutron_b": values("neutron_rate_beam_s"),
+                "Y_neutron_bb": values("neutron_rate_bb_s"),  # 0 unless plasma.enable_beam_beam
                 "P_orbit": values("P_orbit_loss_w", 1.0e-6), "P_cx": values("P_cx_loss_w", 1.0e-6),
                 "P_useful": p_useful, "P_lost": p_nb - p_useful, "Q": q_values,
                 "Te0": values("Te0_keV"), "Ti0": values("Ti0_keV"),
