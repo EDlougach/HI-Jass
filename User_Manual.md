@@ -1009,6 +1009,31 @@ The underlying HotJass calculation still evaluates each beam separately before f
   (beam stopping, confinement scaling, orbit-loss model) and the active machine
   geometry, each with a link, plus a feedback button.
 
+## Saving and loading a run
+
+Below the results tabs, **Export** has three buttons plus a fourth for the
+reverse direction:
+
+- **Summary PNG / Summary PDF** — a snapshot of the Summary tab (the fixed
+  3x4 scan-panel grid) as an image.
+- **Run record (JSON)** — every plasma/beam input, every model toggle, the
+  full solved operating point, and the Summary sheet's scan arrays, as one
+  JSON file (needs a completed run; disabled with a status message
+  otherwise).
+- **Load run record...** — the reverse of the above: pick a previously
+  saved run-record JSON, and every input field and toggle (confinement,
+  orbit loss, CX-loss model, rotation, beam-beam, equipartition, alpha
+  self-heating, profile-corrected 0-D, both NBI sections) is restored from
+  it, then the point is re-solved automatically. Tolerant of a record
+  written by an older or newer HI-Jass version: a field this version
+  doesn't recognise is ignored, and a field this version expects but the
+  record lacks simply keeps its current value instead of raising an error.
+  Only the solved *inputs* are restored -- the record's own `operating_point`
+  /`summary` output is historical reference only, not re-applied (the fresh
+  re-solve after loading is what actually reproduces those numbers, so
+  loading a record from a much older HI-Jass version may reproduce a
+  slightly different result if the underlying physics changed meanwhile).
+
 ## Electron-ion exchange time
 
 The electron-ion exchange time is based on the NRL Plasma Formulary thermal-equilibration rate. For each thermal ion species $s$ (D or T):

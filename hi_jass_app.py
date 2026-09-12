@@ -628,6 +628,8 @@ class HIJassApp(ctk.CTk):
                       command=lambda: self._export_summary("pdf")).pack(side="left", padx=4)
         ctk.CTkButton(export, text="Run record (JSON)", width=150,
                       command=self._export_json).pack(side="left", padx=4)
+        ctk.CTkButton(export, text="Load run record...", width=150,
+                      command=self._import_json).pack(side="left", padx=(16, 4))
 
         self._render_references()
 
@@ -2138,6 +2140,85 @@ class HIJassApp(ctk.CTk):
             json.dump(record, handle, indent=2,
                       default=lambda o: float(o) if hasattr(o, "__float__") else str(o))
         self.status.configure(text=f"Wrote {Path(path).name}", text_color="gray")
+
+    # "plasma.<field>" is the entry key for most PlasmaParams fields, but a
+    # few live under a different prefix (left over from the Models -> Losses
+    # rail reorganisation, or the aux-heating section) -- redirect those.
+    _PLASMA_ENTRY_PREFIX_OVERRIDE = {
+        "cx_loss_fraction": "models", "cx_n0_over_ne": "models",
+        "cx_n0_lcfs_over_ne": "models", "manual_v_phi_m_s": "models",
+        "tau_phi_over_tauEi": "models", "f_alpha": "models",
+        "p_ecrh_MW": "aux", "ecrh_f_e": "aux", "p_icrh_MW": "aux",
+        "icrh_f_e": "aux", "icrh_f_i": "aux",
+    }
+
+    def _import_json(self):
+        """Load a "Run record (JSON)" previously written by _export_json():
+        restores every plasma/beam input field and model toggle, then
+        re-solves. Tolerant of a record from an older/newer HI-Jass version
+        (a field this version doesn't have is ignored; a field this version
+        expects but the record lacks keeps its current value).
+        """
+        path = filedialog.askopenfilename(
+            title="Load HI-Jass run record", filetypes=[("JSON file", "*.json"), ("All files", "*.*")],
+        )
+        if not path:
+            return
+        try:
+            with open(path, "r", encoding="utf-8") as handle:
+                record = json.load(handle)
+        except Exception as exc:
+            self.status.configure(text=f"Could not read {Path(path).name}: {exc}", text_color="#c0504d")
+            return
+        plasma_dict = record.get("plasma")
+        beam_dicts = record.get("beams")
+        if not isinstance(plasma_dict, dict) or not isinstance(beam_dicts, list) or len(beam_dicts) < 2:
+            self.status.configure(text="Not a HI-Jass run record (missing plasma/beams)", text_color="#c0504d")
+            return
+
+        def set_entry(key, value):
+            if key in self.entries:
+                self.entries[key].delete(0, "end")
+                self.entries[key].insert(0, str(value))
+
+        for field, value in plasma_dict.items():
+            if field == "plasma_current":
+                set_entry("plasma.plasma_current_MA", value / 1.0e6)
+                continue
+            prefix = self._PLASMA_ENTRY_PREFIX_OVERRIDE.get(field, "plasma")
+            set_entry(f"{prefix}.{field}", value)
+
+        def set_by_label(var, mapping, wanted):
+            for label, key in mapping.items():
+                if key == wanted:
+                    var.set(label)
+                    return
+
+        set_by_label(self.confinement_var, CONFINEMENT_MODES,
+                     (plasma_dict.get("tau_Ee_mode", "fixed"), plasma_dict.get("tau_Ei_mode", "fixed")))
+        self.orbit_var.set(bool(plasma_dict.get("enable_orbit_loss", False)))
+        set_by_label(self.orbit_model_var, ORBIT_MODELS, plasma_dict.get("orbit_model", "large_aspect"))
+        set_by_label(self.cx_model_var, CX_MODELS, plasma_dict.get("cx_model", "manual_fraction"))
+        set_by_label(self.rotation_model_var, ROTATION_MODELS, plasma_dict.get("rotation_model", "off"))
+        self.beam_beam_var.set(bool(plasma_dict.get("enable_beam_beam", False)))
+        self.equip_var.set(bool(plasma_dict.get("enable_equipartition", False)))
+        self.alpha_var.set(bool(plasma_dict.get("alpha_heating", False)))
+        self.profile_var.set(bool(plasma_dict.get("profile_averaging", False)))
+
+        for i, beam in enumerate(beam_dicts[:2]):
+            prefix = f"beam{i}"
+            for field in ("species", "power_MW", "beam_energy_keV", "tangent_R_m",
+                          "tangent_Z_m", "manual_shine_through_fraction"):
+                if field in beam and beam[field] is not None:
+                    set_entry(f"{prefix}.{field}", beam[field])
+            set_by_label(getattr(self, f"shine_var_{i}"), SHINE_LABEL_TO_MODEL,
+                         beam.get("shine_through_model", "manual"))
+            getattr(self, f"beam_dir_var_{i}").set("co" if beam.get("co_current", True) else "counter")
+
+        self.active_device = record.get("device", "custom")
+        self._highlight_active_preset()
+        self._run()
+        self.status.configure(text=f"Loaded {Path(path).name}", text_color="gray")
 
     @staticmethod
     def _git_sha() -> str:
