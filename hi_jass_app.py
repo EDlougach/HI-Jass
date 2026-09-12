@@ -402,6 +402,23 @@ class HIJassApp(ctk.CTk):
         plasma = CollapsibleSection(rail, "Plasma", expanded=True)
         plasma.grid(row=row, column=0, sticky="ew", pady=4)
         self._add_entries(plasma.body, "plasma", self._plasma_defaults())
+        n_plasma_fields = len(self.PLASMA_FIELDS)
+        self.profile_var = ctk.BooleanVar(value=self._saved.get("_profile_averaging", False))
+        ctk.CTkCheckBox(
+            plasma.body, text="profile-corrected 0-D (central n_e in; <T> + T0 out)",
+            variable=self.profile_var,
+        ).grid(row=n_plasma_fields, column=0, columnspan=2, padx=8, pady=4, sticky="w")
+        self.equip_var = ctk.BooleanVar(value=self._saved.get("_equipartition", True))
+        ctk.CTkCheckBox(
+            plasma.body, text="e-i equipartition (couple Te, Ti)", variable=self.equip_var,
+        ).grid(row=n_plasma_fields + 1, column=0, columnspan=2, padx=8, pady=4, sticky="w")
+        self.alpha_var = ctk.BooleanVar(value=self._saved.get("_alpha_heating", False))
+        ctk.CTkCheckBox(
+            plasma.body, text="alpha self-heating (P_a into Te, Ti)", variable=self.alpha_var,
+        ).grid(row=n_plasma_fields + 2, column=0, columnspan=2, padx=8, pady=4, sticky="w")
+        self._add_entries(plasma.body, "models", [
+            ("f_alpha (confined fraction 0-1)", "f_alpha", self._saved.get("models.f_alpha", 1.0)),
+        ], start_row=n_plasma_fields + 3)
         row += 1
 
         for beam_index in (0, 1):
@@ -437,6 +454,50 @@ class HIJassApp(ctk.CTk):
             ).grid(row=r + 1, column=1, padx=8, pady=(6, 2), sticky="ew")
             row += 1
 
+        # "Losses" groups every "how is this computed" selector (confinement
+        # time, first-orbit loss, charge-exchange loss) in one place, right
+        # below the two NBI sections whose power these losses act on --
+        # separated from the plain physics toggles now living in "Plasma"
+        # (profile-corrected 0-D, e-i equipartition, alpha self-heating),
+        # which aren't loss mechanisms. Shine-through's own selector stays
+        # inline in each NBI-n section (already compact there).
+        losses = CollapsibleSection(rail, "Losses", expanded=False)
+        losses.grid(row=row, column=0, sticky="ew", pady=4)
+        ctk.CTkLabel(losses.body, text="Confinement", anchor="w").grid(
+            row=0, column=0, padx=8, pady=4, sticky="w")
+        self.confinement_var = ctk.StringVar(
+            value=self._saved.get("_confinement", "Fixed tauE (input)"))
+        ctk.CTkOptionMenu(
+            losses.body, values=list(CONFINEMENT_MODES), variable=self.confinement_var,
+        ).grid(row=0, column=1, padx=8, pady=4, sticky="ew")
+        self.orbit_var = ctk.BooleanVar(value=self._saved.get("_orbit_loss", True))
+        ctk.CTkCheckBox(
+            losses.body, text="First-orbit loss (direction set per NBI)", variable=self.orbit_var,
+        ).grid(row=1, column=0, columnspan=2, padx=8, pady=4, sticky="w")
+        ctk.CTkLabel(losses.body, text="Orbit model", anchor="w").grid(
+            row=2, column=0, padx=8, pady=4, sticky="w")
+        self.orbit_model_var = ctk.StringVar(
+            value=self._saved.get("_orbit_model", "ST orbits - pitch-resolved"))
+        ctk.CTkOptionMenu(
+            losses.body, values=list(ORBIT_MODELS), variable=self.orbit_model_var,
+        ).grid(row=2, column=1, padx=8, pady=4, sticky="ew")
+        ctk.CTkLabel(losses.body, text="CX-loss model", anchor="w").grid(
+            row=3, column=0, padx=8, pady=4, sticky="w")
+        self.cx_model_var = ctk.StringVar(
+            value=self._saved.get("_cx_model", "Manual fraction"))
+        ctk.CTkOptionMenu(
+            losses.body, values=list(CX_MODELS), variable=self.cx_model_var,
+        ).grid(row=3, column=1, padx=8, pady=4, sticky="ew")
+        self._add_entries(losses.body, "models", [
+            ("CX loss fraction (0-1)", "cx_loss_fraction",
+             self._saved.get("models.cx_loss_fraction", 0.1)),
+            ("CX: n0/ne (manual n0)", "cx_n0_over_ne",
+             self._saved.get("models.cx_n0_over_ne", 1.0e-5)),
+            ("CX: n0_LCFS/ne (penetration)", "cx_n0_lcfs_over_ne",
+             self._saved.get("models.cx_n0_lcfs_over_ne", 0.02)),
+        ], start_row=4)
+        row += 1
+
         aux = CollapsibleSection(rail, "Aux heating (ECRH / ICRH)", expanded=False)
         aux.grid(row=row, column=0, sticky="ew", pady=4)
         self._add_entries(aux.body, "aux", [
@@ -446,61 +507,6 @@ class HIJassApp(ctk.CTk):
             ("ICRH f_e", "icrh_f_e", self.model.plasma.icrh_f_e),
             ("ICRH f_i", "icrh_f_i", self.model.plasma.icrh_f_i),
         ])
-        row += 1
-
-        models = CollapsibleSection(rail, "Models", expanded=False)
-        models.grid(row=row, column=0, sticky="ew", pady=4)
-        ctk.CTkLabel(models.body, text="Confinement", anchor="w").grid(
-            row=0, column=0, padx=8, pady=4, sticky="w")
-        self.confinement_var = ctk.StringVar(
-            value=self._saved.get("_confinement", "Fixed tauE (input)"))
-        ctk.CTkOptionMenu(
-            models.body, values=list(CONFINEMENT_MODES), variable=self.confinement_var,
-        ).grid(row=0, column=1, padx=8, pady=4, sticky="ew")
-        self.orbit_var = ctk.BooleanVar(value=self._saved.get("_orbit_loss", True))
-        ctk.CTkCheckBox(
-            models.body, text="First-orbit loss (direction set per NBI)", variable=self.orbit_var,
-        ).grid(row=1, column=0, columnspan=2, padx=8, pady=4, sticky="w")
-        ctk.CTkLabel(models.body, text="Orbit model", anchor="w").grid(
-            row=2, column=0, padx=8, pady=4, sticky="w")
-        self.orbit_model_var = ctk.StringVar(
-            value=self._saved.get("_orbit_model", "ST orbits - pitch-resolved"))
-        ctk.CTkOptionMenu(
-            models.body, values=list(ORBIT_MODELS), variable=self.orbit_model_var,
-        ).grid(row=2, column=1, padx=8, pady=4, sticky="ew")
-        self._add_entries(models.body, "models", [
-            ("CX loss fraction (0-1)", "cx_loss_fraction",
-             self._saved.get("models.cx_loss_fraction", 0.0)),
-        ], start_row=3)
-        self.equip_var = ctk.BooleanVar(value=self._saved.get("_equipartition", True))
-        ctk.CTkCheckBox(
-            models.body, text="e-i equipartition (couple Te, Ti)", variable=self.equip_var,
-        ).grid(row=4, column=0, columnspan=2, padx=8, pady=4, sticky="w")
-        self.alpha_var = ctk.BooleanVar(value=self._saved.get("_alpha_heating", False))
-        ctk.CTkCheckBox(
-            models.body, text="alpha self-heating (P_a into Te, Ti)", variable=self.alpha_var,
-        ).grid(row=5, column=0, columnspan=2, padx=8, pady=4, sticky="w")
-        self._add_entries(models.body, "models", [
-            ("f_alpha (confined fraction 0-1)", "f_alpha", self._saved.get("models.f_alpha", 1.0)),
-        ], start_row=6)
-        self.profile_var = ctk.BooleanVar(value=self._saved.get("_profile_averaging", False))
-        ctk.CTkCheckBox(
-            models.body, text="profile-corrected 0-D (central n_e in; <T> + T0 out)",
-            variable=self.profile_var,
-        ).grid(row=7, column=0, columnspan=2, padx=8, pady=4, sticky="w")
-        ctk.CTkLabel(models.body, text="CX-loss model", anchor="w").grid(
-            row=8, column=0, padx=8, pady=4, sticky="w")
-        self.cx_model_var = ctk.StringVar(
-            value=self._saved.get("_cx_model", "Manual fraction"))
-        ctk.CTkOptionMenu(
-            models.body, values=list(CX_MODELS), variable=self.cx_model_var,
-        ).grid(row=8, column=1, padx=8, pady=4, sticky="ew")
-        self._add_entries(models.body, "models", [
-            ("CX: n0/ne (manual n0)", "cx_n0_over_ne",
-             self._saved.get("models.cx_n0_over_ne", 1.0e-5)),
-            ("CX: n0_LCFS/ne (penetration)", "cx_n0_lcfs_over_ne",
-             self._saved.get("models.cx_n0_lcfs_over_ne", 0.02)),
-        ], start_row=9)
         row += 1
 
         # Second Run button at the foot of the input rail, so the user does not

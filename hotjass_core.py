@@ -43,7 +43,7 @@ class PlasmaParams:
     orbit_loss_co_current: bool = True
     orbit_model: str = "st_pitch"  # "large_aspect" | "st_meanshift" | "st_pitch"
     profile_averaging: bool = False  # treat central_density as ON-AXIS; balance runs on <n_e>
-    cx_loss_fraction: float = 0.0
+    cx_loss_fraction: float = 0.1
     cx_model: str = "manual_fraction"  # "manual_fraction" | "manual_n0" | "penetration"
     cx_n0_over_ne: float = 1.0e-5      # "manual_n0": uniform background-neutral n0 = ratio * ne0
     cx_n0_lcfs_over_ne: float = 0.02   # "penetration": edge n0_LCFS/ne_LCFS boundary ratio

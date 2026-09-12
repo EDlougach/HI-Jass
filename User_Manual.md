@@ -117,13 +117,13 @@ cross-section calculation for shine-through.
 ## First-orbit loss (reduced model)
 
 First-orbit loss is an **opt-in** channel (the *First-orbit loss* checkbox in
-the Models section). When enabled, it estimates the fraction of *captured* fast
+the Losses section). When enabled, it estimates the fraction of *captured* fast
 ions that leave the plasma promptly — on their first drift orbit, before any
 slowing-down or charge-exchange — because they are born close enough to the last
 closed flux surface (LCFS) that their guiding-centre orbit, or their gyro-orbit,
 crosses it.
 
-The **Orbit model** selector (Models section) chooses how the orbit widths and
+The **Orbit model** selector (Losses section) chooses how the orbit widths and
 the loss criterion are built:
 
 - **Large-aspect ($q_\ast\rho_{Li}$)** — the original reduced model described in
@@ -372,7 +372,7 @@ A captured fast ion can charge-exchange with a background cold neutral during
 slowing-down, becoming a fast **neutral** that escapes the plasma before fully
 thermalizing — a second loss channel, applied to the post-orbit-loss captured
 power (Step 0, same ordering as first-orbit loss above). Design note:
-`docs/CX model.pdf`. A **CX-loss model** selector (rail, "Models" section)
+`docs/CX model.pdf`. A **CX-loss model** selector (rail, "Losses" section)
 picks between three modes; only the active mode's inputs matter.
 
 ### Manual fraction (default)
@@ -594,7 +594,7 @@ and $P_{\mathrm{aux}}$ are reported separately.
 
 The balance above is genuinely 0-D: one density, one $T_e$, one $T_i$, treated
 as uniform over the volume. With the **profile-corrected 0-D** checkbox
-(Models section) *off* — the default — the entered central density is used
+(Plasma section) *off* — the default — the entered central density is used
 directly as that uniform value and the solved $T$ is a flat-plasma effective
 temperature; comparing it to a measured on-axis $T_0$ then needs a peaking
 factor supplied by the reader (validation runs use $\simeq 2$).
@@ -631,7 +631,7 @@ $0$ the correction is a no-op.
 ## Confinement time
 
 $\tau_{E,e}$ and $\tau_{E,i}$ in the balances above are set per channel by the
-*Confinement* selector in the Models section; the electron and ion channels are
+*Confinement* selector in the Losses section; the electron and ion channels are
 chosen independently. When a physics-based scaling is selected the manual
 `tauE,e` / `tauE,i` inputs are ignored, and the Summary sheet reports the
 computed value (or its range across a scan) instead.
