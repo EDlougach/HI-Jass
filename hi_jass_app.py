@@ -259,22 +259,27 @@ class HIJassApp(ctk.CTk):
 
     OBSERVABLES = {
         "Te, Ti": ["Te", "Ti"],
-        "P_e, P_i, Pi_e, P_shine-through": ["P_e", "P_i", "Pi_e", "P_shine-through"],
+        "P_e, P_i, Pi_e, Q": ["P_e", "P_i", "Pi_e", "Q"],
         "n_D, n_T, n_b": ["n_D", "n_T", "n_b"],
-        "Pf_tot, Pf_th, Pf_b": ["Pf_tot", "Pf_th", "Pf_b"],
+        "Pf_tot, Pf_th, Pf_b, P_useful": ["Pf_tot", "Pf_th", "Pf_b", "P_useful"],
+        "P_shine, P_orbit, P_cx, P_lost": ["P_shine-through", "P_orbit", "P_cx", "P_lost"],
+        "R_beam, R_thermal, R_bb, R_full": ["R_neutron_b", "R_neutron_th", "R_neutron_bb", "R_neutron"],
         "<E_fast>": ["E_fast"],
         "tau_S, tauE_e, tauE_i, tau_IE": ["tau_S", "tauE_e", "tauE_i", "tau_IE"],
         "R = U_fast / U_th": ["R"],
         "Pr_th, Pr_fast (isotropic)": ["Pr_th", "Pr_fast"],
         "beta_T": ["beta_T"],
     }
-    EQUIP_SENSITIVE = {"Tₑ, Tᵢ", "Pₑ, Pᵢ, Pᵢₑ, Pshine", "τS, τE,e, τE,i, τIE"}
-    ALPHA_SENSITIVE = EQUIP_SENSITIVE | {"Pƒ,tot, Pƒ,th, Pƒ,b", "pₜₕ, pfast", "βt", "R = ufast / Uₜₕ"}
+    EQUIP_SENSITIVE = {"Tₑ, Tᵢ", "Pₑ, Pᵢ, Pᵢₑ, Q", "τS, τE,e, τE,i, τIE"}
+    ALPHA_SENSITIVE = EQUIP_SENSITIVE | {
+        "Pƒ,tot, Pƒ,th, Pƒ,b, Pᵤ", "R_beam, R_thermal, R_bb, R_full", "pₜₕ, pfast", "βt", "R = ufast / Uₜₕ"}
     DISPLAY_GROUPS = {
         "Tₑ, Tᵢ": "Te, Ti",
-        "Pₑ, Pᵢ, Pᵢₑ, Pshine": "P_e, P_i, Pi_e, P_shine-through",
+        "Pₑ, Pᵢ, Pᵢₑ, Q": "P_e, P_i, Pi_e, Q",
         "nᴅ, nₜ, nᵦ": "n_D, n_T, n_b",
-        "Pƒ,tot, Pƒ,th, Pƒ,b": "Pf_tot, Pf_th, Pf_b",
+        "Pƒ,tot, Pƒ,th, Pƒ,b, Pᵤ": "Pf_tot, Pf_th, Pf_b, P_useful",
+        "P_shine, P_orbit, P_cx, P_lost": "P_shine, P_orbit, P_cx, P_lost",
+        "R_beam, R_thermal, R_bb, R_full": "R_beam, R_thermal, R_bb, R_full",
         "⟨Efast⟩": "<E_fast>",
         "τS, τE,e, τE,i, τIE": "tau_S, tauE_e, tauE_i, tau_IE",
         "R = ufast / Uₜₕ": "R = U_fast / U_th",
@@ -284,19 +289,26 @@ class HIJassApp(ctk.CTk):
     UNITS = {
         "Te": "keV", "Ti": "keV", "P_e": "MW", "P_i": "MW", "Pi_e": "MW",
         "P_shine-through": "MW", "n_D": "m^-3", "n_T": "m^-3", "n_b": "m^-3",
-        "Pf_tot": "MW", "Pf_th": "MW", "Pf_b": "MW", "E_fast": "keV",
+        "Pf_tot": "MW", "Pf_th": "MW", "Pf_b": "MW", "P_useful": "MW", "Q": "1",
+        "P_orbit": "MW", "P_cx": "MW", "P_lost": "MW",
+        "R_neutron_b": "1/s", "R_neutron_th": "1/s", "R_neutron_bb": "1/s", "R_neutron": "1/s",
+        "E_fast": "keV",
         "tau_S": "s", "tauE_e": "s", "tauE_i": "s", "tau_IE": "s", "R": "1",
         "Pr_th": "Pa", "Pr_fast": "Pa", "beta_T": "%",
     }
     LATEX_UNITS = {
         "keV": r"\mathrm{keV}", "MW": r"\mathrm{MW}", "m^-3": r"\mathrm{m}^{-3}",
-        "s": r"\mathrm{s}", "Pa": r"\mathrm{Pa}", "%": r"\%", "1": "1",
+        "s": r"\mathrm{s}", "1/s": r"\mathrm{s}^{-1}", "Pa": r"\mathrm{Pa}", "%": r"\%", "1": "1",
     }
     LATEX_NAMES = {
         "Te": r"$T_e$", "Ti": r"$T_i$", "P_e": r"$P_e$", "P_i": r"$P_i$",
         "Pi_e": r"$P_{ie}$", "P_shine-through": r"$P_{shine}$",
         "n_D": r"$n_D$", "n_T": r"$n_T$", "n_b": r"$n_{b0}$",
         "Pf_tot": r"$P_{f,tot}$", "Pf_th": r"$P_{f,th}$", "Pf_b": r"$P_{f,b}$",
+        "P_useful": r"$P_{useful}$", "Q": r"$Q$",
+        "P_orbit": r"$P_{orbit}$", "P_cx": r"$P_{cx}$", "P_lost": r"$P_{lost}$",
+        "R_neutron_b": r"$R_{n,beam}$", "R_neutron_th": r"$R_{n,th}$",
+        "R_neutron_bb": r"$R_{n,bb}$", "R_neutron": r"$R_{n,full}$",
         "E_fast": r"$\langle E_{fast}\rangle$", "tau_S": r"$\tau_S$",
         "tauE_e": r"$\tau_{E,e}$", "tauE_i": r"$\tau_{E,i}$", "tau_IE": r"$\tau_{IE}$",
         "R": r"$R = u_{fast}/U_t$", "Pr_th": r"$p_{th}$", "Pr_fast": r"$p_{fast}$",
@@ -1650,6 +1662,10 @@ class HIJassApp(ctk.CTk):
                 ax.set_xlabel(r"$n_e$ [$10^{20}\,\mathrm{m}^{-3}$]")
                 ax.grid(alpha=0.3)
                 ax.legend()
+                if key == "R_neutron_bb":
+                    ax.set_ylim(-1.0, 1.0)
+                    ax.text(0.5, 0.5, "beam-beam fusion\nnot modelled", ha="center", va="center",
+                            transform=ax.transAxes, fontsize=9, color="0.45")
             # 4th (otherwise unused) panel of the n_D/n_T/n_b group: the
             # fast-ion / target-ion density ratio -- n_Target is whichever
             # thermal D-T species the DOMINANT NBI beam reacts with (n_T for

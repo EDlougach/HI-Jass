@@ -1150,6 +1150,25 @@ $n_{\mathrm{Target}}$ is whichever thermal D-T species the *dominant* (by
 injected power) NBI beam reacts with in the beam-target channel -- $n_T$ for
 a D beam, $n_D$ for a T beam.
 
+Four further scan groups:
+
+- **$P_e,P_i,P_{ie},Q$** ("Powers") -- $Q=P_{f,tot}/P_{NB}$ replaces the flat
+  shine-through power here (moved to "Losses" below, where it belongs with
+  the other loss channels).
+- **$P_{f,tot},P_{f,th},P_{f,b},P_{useful}$** ("Pf") -- the previously-empty
+  4th panel now shows $P_\mathrm{useful}=P_{NB}-P_\mathrm{lost}$, the power
+  that actually reaches the electron/ion balance.
+- **$P_\mathrm{shine},P_\mathrm{orbit},P_\mathrm{cx},P_\mathrm{lost}$**
+  ("Losses") -- the three loss channels (whichever CX-loss model is active
+  feeds $P_\mathrm{cx}$) plus their sum
+  $P_\mathrm{lost}=P_{NB}-P_\mathrm{useful}$.
+- **$R_\mathrm{beam},R_\mathrm{thermal},R_\mathrm{bb},R_\mathrm{full}$**
+  ("Neutrons") -- the neutron rate split by reaction channel: beam-target
+  (D-T + D-D), thermal-thermal (D-T + D-D), beam-beam (not modelled, shown
+  as an explicit flat zero), and the full total
+  ($R_\mathrm{beam}+R_\mathrm{thermal}+R_\mathrm{bb}=R_\mathrm{full}$
+  exactly, since beam-beam contributes nothing).
+
 ## Important notation
 
 - $T_e$: electron temperature

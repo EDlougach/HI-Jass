@@ -267,6 +267,10 @@ class OperatingPoint:
     pf_dd_w: float = 0.0          # pf_dd_thermal_w + pf_dd_beam_w
     pf_total_w: float = 0.0       # pf_dt_w + pf_dd_w -- all fusion power
     neutron_rate_s: float = 0.0  # 14 MeV (D-T) + 2.45 MeV (D-D n-branch) neutrons per second
+    neutron_rate_thermal_s: float = 0.0  # thermal-thermal contribution (D-T + D-D) to neutron_rate_s
+    neutron_rate_beam_s: float = 0.0     # beam-target contribution (D-T + D-D) to neutron_rate_s
+    # neutron_rate_thermal_s + neutron_rate_beam_s == neutron_rate_s exactly -- beam-beam
+    # (fast ion on fast ion) reactions are not modelled (no third term); see docs.
     v_phi_m_s: float = 0.0  # bulk toroidal rotation velocity (positive = co-current); 0 unless config.rotation_model != "off"
     torque_total_Nm: float = 0.0  # net NBI torque actually used to close v_phi ("momentum_balance" only; 0 otherwise)
     Te0_keV: float | None = None  # on-axis T_e (== Te_keV unless config.profile_averaging)
@@ -885,10 +889,12 @@ def solve_operating_point(
     pf_dt = pf_thermal + pf_beam
     pf_dd = pf_dd_thermal + pf_dd_beam
     pf_total = pf_dt + pf_dd
-    neutron_rate = (
-        pf_dt / physics.E_FUSION_J          # one 14 MeV n per D-T reaction
-        + dd_thermal_neutrons + dd_beam_neutrons  # 2.45 MeV D-D n-branch
-    )
+    # One 14 MeV neutron per D-T reaction, plus the D-D n-branch's 2.45 MeV
+    # neutron -- split by thermal-thermal vs beam-target so the two can be
+    # reported (and plotted) separately; their sum is neutron_rate exactly.
+    neutron_rate_thermal = pf_thermal / physics.E_FUSION_J + dd_thermal_neutrons
+    neutron_rate_beam = pf_beam / physics.E_FUSION_J + dd_beam_neutrons
+    neutron_rate = neutron_rate_thermal + neutron_rate_beam
 
     # Diagnostics -- reported, never enforced (see TokamakConfig docstring).
     # P_useful_w==0 (e.g. cx_loss_fraction=1.0, or ne0 low enough that
@@ -939,6 +945,7 @@ def solve_operating_point(
         pf_thermal_w=pf_thermal, pf_beam_w=pf_beam, pf_dt_w=pf_dt,
         pf_dd_thermal_w=pf_dd_thermal, pf_dd_beam_w=pf_dd_beam, pf_dd_w=pf_dd,
         pf_total_w=pf_total, neutron_rate_s=neutron_rate,
+        neutron_rate_thermal_s=neutron_rate_thermal, neutron_rate_beam_s=neutron_rate_beam,
         v_phi_m_s=v_phi_m_s, torque_total_Nm=torque_total_Nm,
         Te0_keV=Te0_keV, Ti0_keV=Ti0_keV,
         pressure_pa=pressure_pa, beta_t=beta_t,
