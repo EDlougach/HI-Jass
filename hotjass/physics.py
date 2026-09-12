@@ -158,10 +158,13 @@ def beam_velocity(energy_keV: float | np.ndarray, species: str = "D") -> float |
     return np.sqrt(2.0 * energy_j / beam_mass_kg(species))
 
 
-def beam_target_reactivity_spectrum(energies_keV: np.ndarray, species: str = "D") -> np.ndarray:
-    """sigma(E)*v(E) for a beam ion of the given species hitting a stationary
-    target. v(E) uses the ACTUAL beam mass (the real relative velocity, since
-    the target is at rest). sigma(E), however, is Bosch-Hale's D-T fit
+def beam_target_reactivity_spectrum(
+    energies_keV: np.ndarray, species: str = "D",
+    v_phi_m_s: float = 0.0, co_current: bool = True,
+) -> np.ndarray:
+    """sigma(E)*v(E) for a beam ion of the given species hitting a target.
+    v(E) uses the ACTUAL beam mass (the real relative velocity, when the
+    target is at rest). sigma(E), however, is Bosch-Hale's D-T fit
     (bosch_hale_dt_cross_section, Table VII "T(d,n)4He"), which by that
     table's own convention takes E = the DEUTERON's lab kinetic energy with
     the TRITON at rest -- i.e. its argument is not just "beam energy" but
@@ -175,10 +178,22 @@ def beam_target_reactivity_spectrum(energies_keV: np.ndarray, species: str = "D"
     fit. Getting this wrong (e.g. plugging E_T_lab directly into the D-frame
     fit) would silently use the wrong v_rel <-> cross-section mapping for a
     T beam.
+
+    OPTIONAL bulk toroidal rotation (v_phi_m_s, co_current): if the thermal
+    target has its own bulk toroidal velocity v_phi (positive = same
+    direction as a co-current beam, this project's convention), the
+    physically relevant quantity for both the flux factor and the
+    cross-section argument is the beam-target RELATIVE velocity
+    v_rel = |v_beam - s*v_phi| (s=+1 co, -1 counter) -- not the beam's lab
+    velocity alone (which implicitly assumes a stationary target).
+    v_phi_m_s=0.0 (default) makes v_rel=v_beam exactly, reproducing the
+    original stationary-target result byte-for-byte.
     """
-    mass_kg = beam_mass_kg(species)
-    deuteron_equivalent_energy_keV = np.asarray(energies_keV, dtype=float) * (M_D / mass_kg)
-    return bosch_hale_dt_cross_section(deuteron_equivalent_energy_keV) * beam_velocity(energies_keV, species)
+    v_beam = beam_velocity(energies_keV, species)
+    s_dir = 1.0 if co_current else -1.0
+    v_rel = np.abs(v_beam - s_dir * v_phi_m_s)
+    deuteron_equivalent_energy_keV = 0.5 * M_D * v_rel ** 2 / (1.0e3 * E_CHARGE)
+    return bosch_hale_dt_cross_section(deuteron_equivalent_energy_keV) * v_rel
 
 
 def compute_charge_neutrality(n_sum: float, Zeff: float) -> tuple[float, float]:
@@ -1423,6 +1438,7 @@ def first_orbit_loss_fraction_st(
 def beam_target_fusion_power(
     nb0: float, n_target0: float, Te_keV: float, Eb_keV: float, volume_m3: float, species: str = "D",
     ne0: float | None = None, density_peaking: float = 0.0, temperature_peaking: float = 0.0,
+    v_phi_m_s: float = 0.0, co_current: bool = True,
 ) -> float:
     """Beam-target fusion power [W]: a fast beam ion (given species, D or T)
     slowing down through a stationary (T_i=0) target-ion population of the
@@ -1442,9 +1458,13 @@ def beam_target_fusion_power(
 
     D-D beam-target reactions (relevant once mix_D>0) are NOT included --
     an inherited gap from the predecessor project, live from day one here.
+
+    v_phi_m_s/co_current: optional bulk toroidal rotation correction, passed
+    straight through to beam_target_reactivity_spectrum() -- see its
+    docstring. Default v_phi_m_s=0.0 is byte-identical to no rotation.
     """
     energies = np.linspace(1.0e-3, Eb_keV, 601)
-    sigma_v = beam_target_reactivity_spectrum(energies, species)
+    sigma_v = beam_target_reactivity_spectrum(energies, species, v_phi_m_s, co_current)
     if ne0 is None or (density_peaking == 0.0 and temperature_peaking == 0.0):
         distribution = slowing_down_distribution(Te_keV, nb0, Eb_keV, energies, species)
         reaction_rate = volume_m3 * _trapezoidal_integral(energies, n_target0 * distribution * sigma_v)
@@ -1494,19 +1514,29 @@ def thermal_dd_fusion_power(
 def beam_target_dd_fusion_power(
     nb0: float, nD_target0: float, Te_keV: float, Eb_keV: float, volume_m3: float,
     ne0: float | None = None, density_peaking: float = 0.0, temperature_peaking: float = 0.0,
+    v_phi_m_s: float = 0.0, co_current: bool = True,
 ) -> tuple[float, float]:
     """Beam-target D-D fusion power [W] and D(d,n)3He rate [1/s]: a fast D ion
     slowing down through a thermal D population. Structure mirrors
     beam_target_fusion_power(); the cross-section is bosch_hale_dd_cross_section
     at the (lab) slowing-down energy. NO 1/2 factor -- the fast and thermal D
     populations are distinct. Returns ``(P_w, R_ddn_per_s)``.
+
+    v_phi_m_s/co_current: same optional bulk-rotation relative-velocity
+    correction as beam_target_reactivity_spectrum() (both particles are D
+    here, so the cross-section argument is simply the relative energy
+    0.5*M_D*v_rel^2, no deuteron-equivalent conversion needed). Default
+    v_phi_m_s=0.0 is byte-identical to no rotation.
     """
     if nb0 <= 0.0 or nD_target0 <= 0.0:
         return 0.0, 0.0
     energies = np.linspace(1.0e-3, Eb_keV, 601)
-    v = beam_velocity(energies, "D")
-    svp = bosch_hale_dd_cross_section(energies, "p") * v
-    svn = bosch_hale_dd_cross_section(energies, "n") * v
+    v_beam = beam_velocity(energies, "D")
+    s_dir = 1.0 if co_current else -1.0
+    v = np.abs(v_beam - s_dir * v_phi_m_s)
+    e_rel_keV = 0.5 * M_D * v ** 2 / (1.0e3 * E_CHARGE)
+    svp = bosch_hale_dd_cross_section(e_rel_keV, "p") * v
+    svn = bosch_hale_dd_cross_section(e_rel_keV, "n") * v
     if ne0 is None or (density_peaking == 0.0 and temperature_peaking == 0.0):
         f = slowing_down_distribution(Te_keV, nb0, Eb_keV, energies, "D")
         Rp = volume_m3 * _trapezoidal_integral(energies, nD_target0 * f * svp)
@@ -1530,6 +1560,49 @@ def beam_target_dd_fusion_power(
         Rn = volume_m3 * profile_volume_average(radn, rho)
     P = Rp * (E_DDP_MEV * 1e6 * E_CHARGE) + Rn * (E_DDN_MEV * 1e6 * E_CHARGE)
     return P, Rn
+
+
+def nbi_torque_Nm(
+    P_useful_w: float, Eb_keV: float, species: str, tangent_R_m: float, co_current: bool = True,
+) -> float:
+    """Toroidal angular-momentum injection rate (torque) [N*m] from one NBI
+    source: each captured beam ion carries canonical toroidal angular
+    momentum p_phi ~ m*v*R_tan as it slows down (the usual large-aspect
+    approximation, ignoring the poloidal-field correction to p_phi -- same
+    level of rigor as this project's other geometric simplifications, e.g.
+    tangential_path_length()). The particle injection rate is
+    P_useful/E_b, so
+
+        T = (P_useful/E_b) * m*v*R_tan = 2*P_useful*R_tan/v_beam
+
+    (using E_b = 0.5*m*v_beam^2 to eliminate m). Signed: positive for a
+    co-current beam, negative for counter -- consistent with v_phi's own
+    sign convention (positive = co-current rotation), so summing this over
+    a mixed co/counter set of beams gives the correct net torque.
+    """
+    v_beam = beam_velocity(Eb_keV, species)
+    s_dir = 1.0 if co_current else -1.0
+    return s_dir * 2.0 * P_useful_w * tangent_R_m / max(v_beam, 1.0e-6)
+
+
+def toroidal_rotation_velocity_ms(
+    torque_total_Nm: float, rho_i_kg_m3: float, R0_m: float, volume_m3: float, tau_phi_s: float,
+) -> float:
+    """Steady-state bulk toroidal rotation velocity [m/s] from a simple 0-D
+    angular-momentum balance, the rotation analogue of this project's energy
+    balance:
+
+        dL/dt = T_NBI - L/tau_phi,   L ~ rho_i * v_phi * R0 * V
+
+    treating v_phi as a single representative bulk value at the magnetic
+    axis and rho_i (kg/m^3, thermal-ion mass density) as spatially uniform --
+    the same level of 0-D reduction as every other balance in this model.
+    Steady state: v_phi = T_NBI*tau_phi/(rho_i*R0*V). tau_phi (the momentum
+    confinement time) has no widely validated scaling of its own; the usual
+    crude assumption tau_phi ~ tau_E,i is left to the caller to supply.
+    """
+    denom = max(rho_i_kg_m3, 1.0e-30) * max(R0_m, 1.0e-6) * max(volume_m3, 1.0e-9)
+    return torque_total_Nm * tau_phi_s / denom
 
 
 # ---------------------------------------------------------------- GUI-only

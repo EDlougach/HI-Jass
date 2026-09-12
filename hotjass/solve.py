@@ -122,6 +122,25 @@ class TokamakConfig:
     cx_model: str = "manual_fraction"
     cx_n0_over_ne: float = 1.0e-5
     cx_n0_lcfs_over_ne: float = 0.02
+    # Bulk toroidal rotation (physics.nbi_torque_Nm / toroidal_rotation_velocity_ms):
+    #   "off" (default): v_phi=0 -- byte-identical to every existing result
+    #     (beam_target_fusion_power/beam_target_dd_fusion_power's v_phi_m_s=0
+    #     default reproduces the stationary-target result exactly).
+    #   "manual": v_phi = manual_v_phi_m_s directly (positive = co-current).
+    #   "momentum_balance": v_phi from a 0-D angular-momentum balance -- net
+    #     NBI torque (summed over beams, signed by each beam's own
+    #     co_current) against a momentum-confinement loss L/tau_phi, with
+    #     tau_phi = tau_phi_over_tauEi * tau_Ei_s (no validated tau_phi
+    #     scaling exists, so this ties it to whatever ion energy confinement
+    #     time -- fixed or physics-scaling-based -- is already in use).
+    # v_phi then corrects the beam-target reactivity's relative velocity for
+    # each beam (its own co/counter direction against the bulk rotation);
+    # first-orbit loss, shine-through and CX loss are NOT touched -- v_phi is
+    # negligible next to the beam velocity for those channels (see the
+    # session that added this feature for the estimate).
+    rotation_model: str = "off"  # "off" | "manual" | "momentum_balance"
+    manual_v_phi_m_s: float = 0.0
+    tau_phi_over_tauEi: float = 1.0
     enable_equipartition: bool = False
     # Fusion alpha self-heating. When enable_alpha_heating is True the caller
     # (hotjass_core) closes a fixed-point P_alpha = f_alpha*(3.5/17.6)*P_fusion,
@@ -248,6 +267,8 @@ class OperatingPoint:
     pf_dd_w: float = 0.0          # pf_dd_thermal_w + pf_dd_beam_w
     pf_total_w: float = 0.0       # pf_dt_w + pf_dd_w -- all fusion power
     neutron_rate_s: float = 0.0  # 14 MeV (D-T) + 2.45 MeV (D-D n-branch) neutrons per second
+    v_phi_m_s: float = 0.0  # bulk toroidal rotation velocity (positive = co-current); 0 unless config.rotation_model != "off"
+    torque_total_Nm: float = 0.0  # net NBI torque actually used to close v_phi ("momentum_balance" only; 0 otherwise)
     Te0_keV: float | None = None  # on-axis T_e (== Te_keV unless config.profile_averaging)
     Ti0_keV: float | None = None  # on-axis T_i (== Ti_keV unless config.profile_averaging)
     pressure_pa: float = 0.0  # isotropic fast-ion pressure assumption (config.fast_ion_mean_pitch2, default 1/3 -> p_fast=(2/3)u_fast)
@@ -688,6 +709,7 @@ def solve_operating_point(
                 tangent_R_m=beam.tangent_R_m, tangent_Z_m=beam.tangent_Z_m,
                 shine_through_model=beam.shine_through_model,
                 manual_shine_through_fraction=beam.manual_shine_through_fraction,
+                co_current=beam.co_current,
             )
         )
     P_shine_w = P_NB_total_w - P_capt_w
@@ -808,6 +830,29 @@ def solve_operating_point(
     pf_thermal = physics.thermal_fusion_power(
         nD0_axis, nT0_axis, Ti0_keV, V, config.density_peaking, p_ti
     )
+
+    # Bulk toroidal rotation (config.rotation_model): computed here, after
+    # Te/Ti/n_thermal are known, since neither mode feeds back into the
+    # energy balance -- only the beam-target reactivity below (via each
+    # beam's own co/counter direction) sees v_phi, so no fixed-point/Picard
+    # loop is needed (unlike the CX-loss physics modes, whose n0 depends on
+    # Te *before* Te is solved).
+    torque_total_Nm = 0.0
+    if config.rotation_model == "manual":
+        v_phi_m_s = config.manual_v_phi_m_s
+    elif config.rotation_model == "momentum_balance":
+        R0 = config.geometry.major_radius
+        for beam in useful_beams:
+            tR = beam.tangent_R_m if beam.tangent_R_m is not None else R0
+            torque_total_Nm += physics.nbi_torque_Nm(
+                beam.P_NB_W, beam.Eb_keV, beam.species, tR, beam.co_current)
+        rho_i_kg_m3 = nD0_axis * physics.M_D + nT0_axis * physics.M_T
+        tau_phi_s = tau_Ei_s * config.tau_phi_over_tauEi
+        v_phi_m_s = physics.toroidal_rotation_velocity_ms(
+            torque_total_Nm, rho_i_kg_m3, R0, V, tau_phi_s)
+    else:
+        v_phi_m_s = 0.0
+
     pf_beam = 0.0
     pf_dd_beam = 0.0
     dd_beam_neutrons = 0.0
@@ -823,12 +868,14 @@ def solve_operating_point(
         pf_beam += physics.beam_target_fusion_power(
             nb0_i, target_n, Te0_keV, beam.Eb_keV, V, beam.species,
             ne_axis, config.density_peaking, p_te,
+            v_phi_m_s, beam.co_current,
         )
         # D-D beam-target: a fast D ion on the thermal-D population.
         if beam.species == "D" and nD0_axis > 0.0:
             p_dd, r_dd = physics.beam_target_dd_fusion_power(
                 nb0_i, nD0_axis, Te0_keV, beam.Eb_keV, V,
                 ne_axis, config.density_peaking, p_te,
+                v_phi_m_s, beam.co_current,
             )
             pf_dd_beam += p_dd
             dd_beam_neutrons += r_dd
@@ -892,6 +939,7 @@ def solve_operating_point(
         pf_thermal_w=pf_thermal, pf_beam_w=pf_beam, pf_dt_w=pf_dt,
         pf_dd_thermal_w=pf_dd_thermal, pf_dd_beam_w=pf_dd_beam, pf_dd_w=pf_dd,
         pf_total_w=pf_total, neutron_rate_s=neutron_rate,
+        v_phi_m_s=v_phi_m_s, torque_total_Nm=torque_total_Nm,
         Te0_keV=Te0_keV, Ti0_keV=Ti0_keV,
         pressure_pa=pressure_pa, beta_t=beta_t,
         pressure_anisotropic_pa=pressure_anisotropic_pa, beta_t_anisotropic=beta_t_anisotropic,

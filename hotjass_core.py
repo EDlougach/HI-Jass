@@ -47,6 +47,9 @@ class PlasmaParams:
     cx_model: str = "manual_fraction"  # "manual_fraction" | "manual_n0" | "penetration"
     cx_n0_over_ne: float = 1.0e-5      # "manual_n0": uniform background-neutral n0 = ratio * ne0
     cx_n0_lcfs_over_ne: float = 0.02   # "penetration": edge n0_LCFS/ne_LCFS boundary ratio
+    rotation_model: str = "off"        # "off" | "manual" | "momentum_balance"
+    manual_v_phi_m_s: float = 0.0      # "manual": bulk toroidal rotation velocity (positive = co-current)
+    tau_phi_over_tauEi: float = 1.0    # "momentum_balance": tau_phi = this * tau_Ei (no validated tau_phi scaling exists)
     enable_equipartition: bool = True
 
 
@@ -106,6 +109,9 @@ class HotJassModel:
             cx_model=self.plasma.cx_model,
             cx_n0_over_ne=self.plasma.cx_n0_over_ne,
             cx_n0_lcfs_over_ne=self.plasma.cx_n0_lcfs_over_ne,
+            rotation_model=self.plasma.rotation_model,
+            manual_v_phi_m_s=self.plasma.manual_v_phi_m_s,
+            tau_phi_over_tauEi=self.plasma.tau_phi_over_tauEi,
             enable_equipartition=self.plasma.enable_equipartition,
             enable_alpha_heating=self.plasma.alpha_heating,
             f_alpha=self.plasma.f_alpha,

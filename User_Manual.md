@@ -479,6 +479,80 @@ itself uses — but is **not** applied to $f_{\mathrm{cx},P}$; it is
 informational, per the design note's explicit "acceptable as the
 conservative default, but shown as such."
 
+## Bulk toroidal rotation
+
+A **Rotation model** selector (Losses section, below the CX-loss fields)
+picks between three modes, off by default -- like every other loss/model
+knob, this leaves every existing result byte-identical unless explicitly
+enabled.
+
+**Where rotation matters and where it doesn't.** $v_\phi$ (typically
+$\sim\!10^2$–$10^3$ km/s) is small next to the beam's own velocity
+($\sim\!3$–$5\times10^3$ km/s for a 100–180 keV D/T beam), so shine-through,
+first-orbit loss and CX loss — all governed by the beam's own velocity —
+are essentially insensitive to it and are **not** touched. The one channel
+where it matters cleanly is **beam-target fusion**: that reaction's
+cross-section and flux factor depend on the beam-target *relative*
+velocity, which the un-rotated model implicitly assumes equals the beam's
+lab velocity (a stationary target). With rotation:
+
+$$
+v_\mathrm{rel}(E) = \left|\, v_\mathrm{beam}(E) - s\, v_\phi \,\right|,
+\qquad s = +1\ (\text{co-current beam}),\ -1\ (\text{counter}),
+$$
+
+used for *both* the flux factor and the cross-section's energy argument
+(re-expressed as the equivalent deuteron energy
+$E_D=\tfrac12 M_D v_\mathrm{rel}^2$, the same conversion
+`beam_target_reactivity_spectrum()` already used for a T beam). $v_\phi=0$
+reproduces the original stationary-target result exactly.
+
+**Non-monotonic, not just a small correction in one direction.** The D-T
+cross-section peaks around $\sim\!64$ keV (deuteron-equivalent energy) and
+falls off on both sides. For a beam energy *above* that peak (this
+project's 120–180 keV presets all are), pulling $v_\mathrm{rel}$ down
+(co-current beam, co-rotating plasma) moves the *high-energy tail* of the
+slowing-down spectrum back toward the peak and can *increase* beam-target
+yield, while a counter-current beam sees the opposite -- the sign is not
+"co always suppresses fusion", it depends on where $E_b$ sits relative to
+the cross-section peak, and the net effect is an integral over the whole
+slowing-down spectrum (not just $E_b$ itself), evaluated numerically.
+
+### Manual $v_\phi$
+
+Direct input of a single, spatially-uniform $v_\phi$ (m/s, positive =
+co-current) -- the honest option when the collisionality of the source is
+unknown but a plausible rotation speed is.
+
+### Momentum balance
+
+$v_\phi$ instead comes from a 0-D toroidal angular-momentum balance, the
+rotation analogue of this project's energy balance:
+
+$$
+T_\mathrm{NBI} = \sum_j s_j\, \frac{2 P_{\mathrm{useful},j}\,R_{t,j}}{v_{b,j}},
+\qquad
+v_\phi = \frac{T_\mathrm{NBI}\,\tau_\phi}{\rho_i\,R_0\,V},
+$$
+
+summing each beam's injected canonical angular momentum ($s_j=+1$ co,
+$-1$ counter; $R_{t,j}$ its own tangency radius), balanced against a
+momentum-confinement loss $L/\tau_\phi$ with
+$L\sim\rho_i v_\phi R_0 V$ ($\rho_i$ = thermal-ion mass density,
+$n_{D0}M_D+n_{T0}M_T$) — the bulk plasma treated as a single representative
+rotating mass at the magnetic axis, the same level of 0-D reduction as
+everywhere else in this model. **Caveat:** unlike $\tau_E$, there is no
+widely validated scaling for the momentum confinement time $\tau_\phi$; the
+user-set ratio `tau_phi / tauE,i` (default 1.0, the common crude
+$\tau_\phi\approx\tau_{E,i}$ assumption) sets
+$\tau_\phi=(\text{ratio})\times\tau_{E,i}$, so treat $v_\phi$'s absolute
+scale here as order-of-magnitude, more so than the manual-input mode.
+
+The Dashboard reports $v_\phi$ (km/s) and a Mach number
+$M=v_\phi/c_s$ ($c_s=\sqrt{(T_{e0}+T_{i0})/m_i}$, a simple ion-acoustic
+estimate, not a rigorous sound speed), plus the net torque $T_\mathrm{NBI}$
+for the momentum-balance mode.
+
 ## Power balance (electron and ion)
 
 At each central density the model solves a 0-D steady-state power balance for
@@ -858,7 +932,10 @@ The underlying HotJass calculation still evaluates each beam separately before f
   CX-loss rows show $f_{\mathrm{cx},P}/f_{\mathrm{cx},N}/\gamma_\mathrm{cx}$
   (plus $n_0$ and the informational escape probability) when a physics-based
   CX model is selected, or just the flat fraction for "Manual fraction" --
-  see "Charge-exchange loss" above.
+  see "Charge-exchange loss" above. The rotation row shows "off" unless a
+  Rotation model is selected, in which case it shows $v_\phi$, a Mach
+  number, and (momentum-balance mode) the net NBI torque -- see "Bulk
+  toroidal rotation" above.
 - **Deposition** — (1) beam targeting geometry in the torus top view (titled
   with the active device), tangent to each beam's $R_t$ with its
   co-/counter-current sense; (2) neutral-beam survival $I(s)/I_0$ and the

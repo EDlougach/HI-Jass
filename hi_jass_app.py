@@ -59,6 +59,11 @@ CX_MODELS = {
     "Penetration (n0_LCFS/ne)": "penetration",
 }
 CX_MODELS_INV = {v: k for k, v in CX_MODELS.items()}
+ROTATION_MODELS = {
+    "Off": "off",
+    "Manual v_phi": "manual",
+    "Momentum balance": "momentum_balance",
+}
 SHINE_LABEL_TO_MODEL = {"Riviere": "riviere", "Janev": "janev_suzuki", "Manual": "manual"}
 SHINE_MODEL_TO_LABEL = {v: k for k, v in SHINE_LABEL_TO_MODEL.items()}
 
@@ -323,6 +328,7 @@ class HIJassApp(ctk.CTk):
         ("neutron rate [n/s]", "R_n"), ("Q = P_fus / P_NB", "Q"),
         ("<E_fast> [keV]", "E_fast"), ("beta_t [%]", "beta_t"),
         ("q* (edge safety factor)", "q_star"),
+        ("Toroidal rotation v_phi [km/s] (Mach)", "v_phi"),
         ("<n_e>/n_GW  (Greenwald, at ne_c)", "f_gw"),
         ("Dominant loss", "dominant"),
     ]
@@ -498,6 +504,19 @@ class HIJassApp(ctk.CTk):
             ("CX: n0_LCFS/ne (penetration)", "cx_n0_lcfs_over_ne",
              self._saved.get("models.cx_n0_lcfs_over_ne", 0.02)),
         ], start_row=6)
+        ctk.CTkLabel(losses.body, text="Rotation model", anchor="w").grid(
+            row=9, column=0, padx=8, pady=4, sticky="w")
+        self.rotation_model_var = ctk.StringVar(
+            value=self._saved.get("_rotation_model", "Off"))
+        ctk.CTkOptionMenu(
+            losses.body, values=list(ROTATION_MODELS), variable=self.rotation_model_var,
+        ).grid(row=9, column=1, padx=8, pady=4, sticky="ew")
+        self._add_entries(losses.body, "models", [
+            ("v_phi manual [m/s] (+=co)", "manual_v_phi_m_s",
+             self._saved.get("models.manual_v_phi_m_s", 0.0)),
+            ("tau_phi / tauE,i (mom. balance)", "tau_phi_over_tauEi",
+             self._saved.get("models.tau_phi_over_tauEi", 1.0)),
+        ], start_row=10)
         row += 1
 
         aux = CollapsibleSection(rail, "Aux heating (ECRH / ICRH)", expanded=False)
@@ -712,6 +731,15 @@ class HIJassApp(ctk.CTk):
             plasma.cx_n0_lcfs_over_ne = max(float(self.entries["models.cx_n0_lcfs_over_ne"].get()), 0.0)
         except ValueError:
             errors.append("CX n0_LCFS/ne (penetration)")
+        plasma.rotation_model = ROTATION_MODELS[self.rotation_model_var.get()]
+        try:
+            plasma.manual_v_phi_m_s = float(self.entries["models.manual_v_phi_m_s"].get())
+        except ValueError:
+            errors.append("v_phi manual")
+        try:
+            plasma.tau_phi_over_tauEi = max(float(self.entries["models.tau_phi_over_tauEi"].get()), 0.0)
+        except ValueError:
+            errors.append("tau_phi / tauE,i")
 
         for label, field, clamp01 in (
             ("P_ECRH", "p_ecrh_MW", False), ("ECRH f_e", "ecrh_f_e", True),
@@ -939,6 +967,17 @@ class HIJassApp(ctk.CTk):
         prof_on = getattr(self.model.plasma, "profile_averaging", False)
         te0 = op.Te0_keV if op.Te0_keV is not None else op.Te_keV
         ti0 = op.Ti0_keV if op.Ti0_keV is not None else op.Ti_keV
+
+        rotation_mode = getattr(plasma, "rotation_model", "off")
+        if rotation_mode == "off":
+            v_phi_label = "off"
+        else:
+            m_i_eff = plasma.deuterium_fraction * physics.M_D + plasma.tritium_fraction * physics.M_T
+            cs = np.sqrt(max((te0 or 0.0) + (ti0 or 0.0), 1e-6) * 1e3 * physics.E_CHARGE / max(m_i_eff, 1e-30))
+            mach = op.v_phi_m_s / cs if cs > 0 else 0.0
+            extra = f",  T_NBI={op.torque_total_Nm:.3f} N*m" if rotation_mode == "momentum_balance" else ""
+            v_phi_label = f"{op.v_phi_m_s / 1e3:+.2f} km/s  (M={mach:+.2f}, c_s~{cs / 1e3:.1f} km/s){extra}"
+
         values = {
             "Te": self._fmt(op.Te_keV) + ("  (<T>)" if prof_on else ""),
             "Ti": self._fmt(op.Ti_keV) + ("  (<T>)" if prof_on else ""),
@@ -968,6 +1007,7 @@ class HIJassApp(ctk.CTk):
             "E_fast": self._fmt(op.avg_fast_energy_keV),
             "beta_t": self._fmt(op.beta_t * 100.0),
             "q_star": q_star_label,
+            "v_phi": v_phi_label,
             "orb1": orb["orb1"], "orb2": orb["orb2"],
             "f_gw": f"{f_gw:.3f}   (<n_e>={n_line:.2e}, n_GW={n_gw:.2e} m^-3)",
             "dominant": f"{dominant_name}: {dominant_mw:.2f} MW ({pct:.0f}% of P_NB)",
@@ -1402,6 +1442,9 @@ class HIJassApp(ctk.CTk):
         else:
             groups["Charge-exchange loss"] = [
                 "janev_smith_1993", "swaczyna_2024", "freeman_jones_1974", "pppl1280_cx"]
+
+        if ROTATION_MODELS[self.rotation_model_var.get()] != "off":
+            groups["Bulk toroidal rotation"] = ["wesson", "stix"]
         return groups
 
     def _render_references(self):
@@ -1822,6 +1865,19 @@ class HIJassApp(ctk.CTk):
                 lines.append("  independently verified ADAS/Voronov fit -- order-of-magnitude only.")
             lines.append("  Escape probability (re-ionization before the wall) is shown but NOT applied: every")
             lines.append("  CX event is conservatively treated as a full loss, per the doc's default.")
+        rot_mode = getattr(plasma, "rotation_model", "off")
+        if rot_mode == "off":
+            lines.append("Bulk toroidal rotation: off (v_phi=0, beam-target reactivity uses a stationary target)")
+        else:
+            if rot_mode == "manual":
+                lines.append(f"Bulk toroidal rotation: manual, v_phi={plasma.manual_v_phi_m_s:.3g} m/s (+=co-current)")
+            else:
+                lines.append(f"Bulk toroidal rotation: momentum balance, tau_phi={plasma.tau_phi_over_tauEi:.2g}*tau_E,i "
+                             f"(v_phi and net NBI torque shown on the Dashboard)")
+            lines.append("  Only the beam-target reactivity's relative velocity sees v_phi (per-beam co/counter")
+            lines.append("  direction) -- shine-through, first-orbit and CX loss are unaffected (v_phi << v_beam).")
+            lines.append("  No validated tau_phi (momentum confinement time) scaling exists; tau_phi~tau_E,i is a")
+            lines.append("  crude, commonly-used stand-in, so treat v_phi's absolute scale as order-of-magnitude.")
         lines.append(f"e-i equipartition: {'ON (coupled Te/Ti solve)' if plasma.enable_equipartition else 'off (decoupled Te, Ti)'}")
         if getattr(plasma, "profile_averaging", False):
             p_ti = plasma.temp_peaking if plasma.temp_peaking_i < 0 else plasma.temp_peaking_i
@@ -2035,6 +2091,7 @@ class HIJassApp(ctk.CTk):
         data["_alpha_heating"] = bool(self.alpha_var.get())
         data["_profile_averaging"] = bool(self.profile_var.get())
         data["_cx_model"] = self.cx_model_var.get()
+        data["_rotation_model"] = self.rotation_model_var.get()
         for beam_index in (0, 1):
             data[f"beam{beam_index}._shine"] = getattr(self, f"shine_var_{beam_index}").get()
             data[f"beam{beam_index}._dir"] = getattr(self, f"beam_dir_var_{beam_index}").get()
