@@ -193,12 +193,17 @@ class CollapsibleSection(ctk.CTkFrame):
         return ("▾  " if self._expanded else "▸  ") + self._title
 
     def toggle(self):
+        # grid_forget() (not grid_remove()) -- see the matching comment in
+        # HIJassApp._set_mode: CTkBaseClass replays a widget's last grid()
+        # call on every UI-scale change, and grid_remove() (unlike
+        # grid_forget()) doesn't clear that memory, so a collapsed section
+        # would silently re-expand the next time the zoom button is pressed.
         self._expanded = not self._expanded
         self.header.configure(text=self._label())
         if self._expanded:
             self.body.grid(row=1, column=0, sticky="ew", padx=6, pady=6)
         else:
-            self.body.grid_remove()
+            self.body.grid_forget()
 
 
 class HIJassApp(ctk.CTk):
@@ -785,14 +790,22 @@ class HIJassApp(ctk.CTk):
 
     # ----------------------------------------------------------------- modes
     def _set_mode(self, mode: str):
+        # CTkBaseClass remembers each widget's last grid(**kwargs) call and
+        # replays it whenever ctk.set_widget_scaling() runs (to rescale
+        # padding/size in those kwargs) -- but grid_remove() doesn't clear
+        # that memory the way grid_forget() does. So a tabview hidden with
+        # grid_remove() silently reappears the next time the zoom button is
+        # pressed. grid_forget() (paired with an explicit re-grid() here,
+        # since forget -- unlike remove -- doesn't remember placement) keeps
+        # a hidden tabview hidden across a scale change.
         self.mode = mode
         if mode == "Scan":
-            self.tv_op.grid_remove()
-            self.tv_scan.grid()
+            self.tv_op.grid_forget()
+            self.tv_scan.grid(row=0, column=0, sticky="nsew")
             self._on_result_tab_shown(self.tv_scan.get())
         else:
-            self.tv_scan.grid_remove()
-            self.tv_op.grid()
+            self.tv_scan.grid_forget()
+            self.tv_op.grid(row=0, column=0, sticky="nsew")
             self._on_result_tab_shown(self.tv_op.get())
 
     # ------------------------------------------------------------ ui scale
