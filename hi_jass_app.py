@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import dataclasses
 import json
+import os
 import queue
 import subprocess
 import threading
@@ -618,6 +619,7 @@ class HIJassApp(ctk.CTk):
         # (and the very first solve's render pass) no longer pays for tabs
         # the user hasn't opened yet.
         self._built_tabs: set[str] = set()
+        self._zoom_dirty_tabs: set[str] = set()
         self._tab_builders = {
             "Deposition": self._build_deposition_tab,
             "Power flow": self._build_powerflow_tab,
@@ -634,8 +636,8 @@ class HIJassApp(ctk.CTk):
             "Scan": lambda r: self._render_scan_tab(r),
             "Summary": lambda r: self._render_summary(r),
         }
-        self.tv_op.configure(command=lambda: self._ensure_tab_built(self.tv_op.get()))
-        self.tv_scan.configure(command=lambda: self._ensure_tab_built(self.tv_scan.get()))
+        self.tv_op.configure(command=lambda: self._on_result_tab_shown(self.tv_op.get()))
+        self.tv_scan.configure(command=lambda: self._on_result_tab_shown(self.tv_scan.get()))
 
         self._build_dashboard(self.tv_op.tab("Dashboard"))
         self._build_assumptions(self.tv_op.tab("Assumptions"))
@@ -676,6 +678,22 @@ class HIJassApp(ctk.CTk):
         builder()
         if self.last_result is not None:
             self._tab_renderers[name](self.last_result)
+
+    def _on_result_tab_shown(self, name: str):
+        """CTkTabview command= callback: build a tab on first visit, or --
+        if a UI-scale change happened while it was hidden -- redraw it now
+        instead of at zoom-click time, so a zoom click only ever pays for
+        the one tab currently on screen."""
+        if name not in self._tab_builders:
+            return
+        if name not in self._built_tabs:
+            self._ensure_tab_built(name)
+        elif name in self._zoom_dirty_tabs and self.last_result is not None:
+            self._zoom_dirty_tabs.discard(name)
+            self._tab_renderers[name](self.last_result)
+
+    def _current_visible_tab(self) -> str:
+        return self.tv_scan.get() if self.mode == "Scan" else self.tv_op.get()
 
     def _build_deposition_tab(self):
         self.dep_fig, self.dep_canvas, holder = self._plot_area(
@@ -771,10 +789,11 @@ class HIJassApp(ctk.CTk):
         if mode == "Scan":
             self.tv_op.grid_remove()
             self.tv_scan.grid()
-            self._ensure_tab_built(self.tv_scan.get())
+            self._on_result_tab_shown(self.tv_scan.get())
         else:
             self.tv_scan.grid_remove()
             self.tv_op.grid()
+            self._on_result_tab_shown(self.tv_op.get())
 
     # ------------------------------------------------------------ ui scale
     def _zoom_btn_text(self) -> str:
@@ -786,8 +805,20 @@ class HIJassApp(ctk.CTk):
         matplotlib.rcParams["font.size"] = _BASE_MPL_FONT_SIZE * scale
         if hasattr(self, "zoom_btn"):
             self.zoom_btn.configure(text=self._zoom_btn_text())
-        if rerender and self.last_result is not None:
-            self._render(self.last_result)
+        if not rerender or self.last_result is None:
+            return
+        # Redrawing every built plot tab on each zoom click was the cause of
+        # the window appearing to "freeze" after zooming (each matplotlib
+        # figure's text has to be re-laid-out at the new font size). Redraw
+        # only the tab actually on screen right now; the rest are marked
+        # dirty and get redrawn lazily, one at a time, the next time each is
+        # actually shown (see _on_result_tab_shown).
+        self._render_dashboard(self.last_result)
+        visible = self._current_visible_tab()
+        self._zoom_dirty_tabs |= self._built_tabs
+        if visible in self._built_tabs:
+            self._zoom_dirty_tabs.discard(visible)
+            self._tab_renderers[visible](self.last_result)
 
     def _cycle_ui_scale(self):
         self._ui_scale_idx = (self._ui_scale_idx + 1) % len(UI_SCALES)
@@ -2358,8 +2389,17 @@ class HIJassApp(ctk.CTk):
             pass
 
     def _on_close(self):
+        # CustomTkinter's teardown destroys every widget individually
+        # (Python-level, one Tcl call per widget), which for this window's
+        # widget count can take tens of seconds and reads as "frozen" or
+        # "won't close". Settings are already saved by this point, so there
+        # is nothing left to lose by skipping the graceful per-widget
+        # destroy: hide the window immediately (instant feedback) and end
+        # the process directly -- the OS reclaims every window and the
+        # (daemon) solver thread right away.
         self._save_settings()
-        self.destroy()
+        self.withdraw()
+        os._exit(0)
 
 
 if __name__ == "__main__":
