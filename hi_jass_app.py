@@ -619,6 +619,13 @@ class HIJassApp(ctk.CTk):
         self.sum_fig, self.sum_canvas, holder = self._plot_area(self.tv_scan.tab("Summary"), figsize=(11, 8))
         holder.pack(fill="both", expand=True)
 
+        # Two visually distinct rows -- "Export" (send results out) and
+        # "Import" (bring inputs back in) are opposite directions of data
+        # flow, so a beginner shouldn't have to spot "Load" hiding among a
+        # row of otherwise-all-export buttons. The Import button also gets
+        # its own accent colour (the same blue this app already uses for
+        # "incoming"/injected quantities, e.g. the power-flow waterfall's
+        # P_inj bar) so it reads as a different kind of action at a glance.
         export = ctk.CTkFrame(container, fg_color="transparent")
         export.grid(row=1, column=0, sticky="ew", pady=(6, 0))
         ctk.CTkLabel(export, text="Export:").pack(side="left", padx=(4, 8))
@@ -628,8 +635,13 @@ class HIJassApp(ctk.CTk):
                       command=lambda: self._export_summary("pdf")).pack(side="left", padx=4)
         ctk.CTkButton(export, text="Run record (JSON)", width=150,
                       command=self._export_json).pack(side="left", padx=4)
-        ctk.CTkButton(export, text="Load run record...", width=150,
-                      command=self._import_json).pack(side="left", padx=(16, 4))
+
+        run_import = ctk.CTkFrame(container, fg_color="transparent")
+        run_import.grid(row=2, column=0, sticky="ew", pady=(4, 0))
+        ctk.CTkLabel(run_import, text="Import:").pack(side="left", padx=(4, 8))
+        ctk.CTkButton(run_import, text="Load run record (JSON)...", width=190,
+                      fg_color="#3b6fb0", hover_color="#2f5a8f",
+                      command=self._import_json).pack(side="left", padx=4)
 
         self._render_references()
 
