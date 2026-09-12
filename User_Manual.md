@@ -1034,6 +1034,16 @@ reverse direction:
   loading a record from a much older HI-Jass version may reproduce a
   slightly different result if the underlying physics changed meanwhile).
 
+## Interface font size (accessibility)
+
+The 👓 button next to the Operating point/Scan mode toggle, above the Run
+button, cycles the whole interface through four zoom levels: 100% -> 115%
+-> 130% -> 150% -> back to 100%. Each click rescales every rail
+label/entry/button, the Dashboard, and all plot text (titles, axis labels,
+legends, tick labels) together, redrawing the currently solved point
+immediately so nothing looks mismatched. The chosen level is written to
+`~/.hi_jass/settings.json` and restored automatically on the next launch.
+
 ## Electron-ion exchange time
 
 The electron-ion exchange time is based on the NRL Plasma Formulary thermal-equilibration rate. For each thermal ion species $s$ (D or T):

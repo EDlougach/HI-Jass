@@ -67,6 +67,14 @@ ROTATION_MODELS = {
 SHINE_LABEL_TO_MODEL = {"Riviere": "riviere", "Janev": "janev_suzuki", "Manual": "manual"}
 SHINE_MODEL_TO_LABEL = {v: k for k, v in SHINE_LABEL_TO_MODEL.items()}
 
+# Accessibility: a "glasses" button cycles through these UI-scale presets,
+# rescaling both CustomTkinter widgets (labels/entries/buttons -- the
+# built-in ctk.set_widget_scaling mechanism) and matplotlib plot text
+# (which doesn't follow ctk scaling on its own, so font.size is scaled by
+# the same factor and the visible tabs are re-rendered on each change).
+UI_SCALES = [1.0, 1.15, 1.3, 1.5]
+_BASE_MPL_FONT_SIZE = matplotlib.rcParams["font.size"]
+
 
 def _scholar(query: str) -> str:
     """A Google Scholar search URL for a citation string -- used instead of
@@ -361,6 +369,11 @@ class HIJassApp(ctk.CTk):
         self._applied_snapshot: dict[str, str] = {}
         self._saved = self._load_settings()
 
+        saved_scale = self._saved.get("_ui_scale", 1.0)
+        self._ui_scale_idx = min(
+            range(len(UI_SCALES)), key=lambda i: abs(UI_SCALES[i] - saved_scale))
+        self._apply_ui_scale(rerender=False)
+
         self.grid_columnconfigure(1, weight=1)
         self.grid_rowconfigure(0, weight=1)
 
@@ -393,12 +406,16 @@ class HIJassApp(ctk.CTk):
         )
         self.mode_toggle.set(self.mode)
         self.mode_toggle.grid(row=0, column=0, sticky="ew")
+        self.zoom_btn = ctk.CTkButton(
+            run_bar, text=self._zoom_btn_text(), width=34,
+            command=self._cycle_ui_scale)
+        self.zoom_btn.grid(row=0, column=1, sticky="ns", padx=(6, 0))
         self.run_btn = ctk.CTkButton(run_bar, text="▶  Run", command=self._run)
-        self.run_btn.grid(row=1, column=0, sticky="ew", pady=(6, 0))
+        self.run_btn.grid(row=1, column=0, columnspan=2, sticky="ew", pady=(6, 0))
         self._run_btn_fg = self.run_btn.cget("fg_color")
         self._run_btn_hover = self.run_btn.cget("hover_color")
         self.status = ctk.CTkLabel(run_bar, text="Ready", anchor="w", text_color="gray")
-        self.status.grid(row=2, column=0, sticky="ew", pady=(4, 0))
+        self.status.grid(row=2, column=0, columnspan=2, sticky="ew", pady=(4, 0))
 
         row = 1
         presets = CollapsibleSection(rail, "Presets", expanded=True)
@@ -758,6 +775,23 @@ class HIJassApp(ctk.CTk):
         else:
             self.tv_scan.grid_remove()
             self.tv_op.grid()
+
+    # ------------------------------------------------------------ ui scale
+    def _zoom_btn_text(self) -> str:
+        return f"👓{int(round(UI_SCALES[self._ui_scale_idx] * 100))}"
+
+    def _apply_ui_scale(self, rerender: bool = True):
+        scale = UI_SCALES[self._ui_scale_idx]
+        ctk.set_widget_scaling(scale)
+        matplotlib.rcParams["font.size"] = _BASE_MPL_FONT_SIZE * scale
+        if hasattr(self, "zoom_btn"):
+            self.zoom_btn.configure(text=self._zoom_btn_text())
+        if rerender and self.last_result is not None:
+            self._render(self.last_result)
+
+    def _cycle_ui_scale(self):
+        self._ui_scale_idx = (self._ui_scale_idx + 1) % len(UI_SCALES)
+        self._apply_ui_scale()
 
     # ------------------------------------------------------------- run/solve
     def _apply_inputs(self) -> list[str]:
@@ -2304,6 +2338,7 @@ class HIJassApp(ctk.CTk):
     def _save_settings(self):
         data = {key: entry.get() for key, entry in self.entries.items()}
         data["_mode"] = self.mode_toggle.get()
+        data["_ui_scale"] = UI_SCALES[self._ui_scale_idx]
         data["_confinement"] = self.confinement_var.get()
         data["_orbit_loss"] = bool(self.orbit_var.get())
         data["_orbit_model"] = self.orbit_model_var.get()
