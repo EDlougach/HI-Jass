@@ -27,6 +27,7 @@ import numpy as np
 from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg, NavigationToolbar2Tk
 from matplotlib.figure import Figure
 from matplotlib.sankey import Sankey
+from PIL import Image
 
 from hotjass import physics
 from hotjass_core import HotJassModel
@@ -68,7 +69,7 @@ ROTATION_MODELS = {
 SHINE_LABEL_TO_MODEL = {"Riviere": "riviere", "Janev": "janev_suzuki", "Manual": "manual"}
 SHINE_MODEL_TO_LABEL = {v: k for k, v in SHINE_LABEL_TO_MODEL.items()}
 
-# Accessibility: a "glasses" button cycles through these UI-scale presets,
+# Accessibility: an "Aa" button cycles through these UI-scale presets,
 # rescaling both CustomTkinter widgets (labels/entries/buttons -- the
 # built-in ctk.set_widget_scaling mechanism) and matplotlib plot text
 # (which doesn't follow ctk scaling on its own, so font.size is scaled by
@@ -158,6 +159,7 @@ MACHINE_REFERENCES = {
 REPO_URL = "https://github.com/EDlougach/HI-Jass"
 _FEEDBACK_USER = "eugenia.dlougach"
 _FEEDBACK_HOST = "real-nbi.com"
+_LOGO_PATH = Path(__file__).resolve().parent / "assets" / "NBR_logo_color.png"
 
 
 @dataclasses.dataclass
@@ -413,7 +415,7 @@ class HIJassApp(ctk.CTk):
         self.mode_toggle.set(self.mode)
         self.mode_toggle.grid(row=0, column=0, sticky="ew")
         self.zoom_btn = ctk.CTkButton(
-            run_bar, text=self._zoom_btn_text(), width=34,
+            run_bar, text=self._zoom_btn_text(), width=64,
             command=self._cycle_ui_scale)
         self.zoom_btn.grid(row=0, column=1, sticky="ns", padx=(6, 0))
         self.run_btn = ctk.CTkButton(run_bar, text="▶  Run", command=self._run)
@@ -810,7 +812,7 @@ class HIJassApp(ctk.CTk):
 
     # ------------------------------------------------------------ ui scale
     def _zoom_btn_text(self) -> str:
-        return f"👓{int(round(UI_SCALES[self._ui_scale_idx] * 100))}"
+        return f"Aa {int(round(UI_SCALES[self._ui_scale_idx] * 100))}%"
 
     def _apply_ui_scale(self, rerender: bool = True):
         scale = UI_SCALES[self._ui_scale_idx]
@@ -1571,6 +1573,16 @@ class HIJassApp(ctk.CTk):
         webbrowser.open("mailto:" + addr + "?subject=" + "HI-Jass%20feedback")
 
     def _make_logo(self, parent, px: int = 44):
+        try:
+            img = Image.open(_LOGO_PATH)
+        except OSError:
+            return self._draw_default_logo(parent, px)
+        logo_img = ctk.CTkImage(light_image=img, dark_image=img, size=(px, px))
+        label = ctk.CTkLabel(parent, image=logo_img, text="")
+        label._logo_image = logo_img
+        return label
+
+    def _draw_default_logo(self, parent, px: int = 44):
         fig = Figure(figsize=(px / 100.0, px / 100.0), dpi=100)
         fig.patch.set_alpha(0.0)
         ax = fig.add_axes([0.0, 0.0, 1.0, 1.0])
