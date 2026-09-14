@@ -141,19 +141,34 @@ REFERENCES = {
                     _scholar("PPPL-1280 neutral beam injection heating tokamak")),
 }
 
-# Active-machine geometry references (keyed by preset name).
+# Active-machine geometry references (keyed by preset name). Each device
+# maps to a *list* of (citation, url) rows, so a device can carry more than
+# one reference (e.g. TCV: the device paper plus its NBI upgrade paper).
 MACHINE_REFERENCES = {
-    "DANTE": ("DANTE - internal low-aspect design point; no external publication.", ""),
-    "ITER": ("ITER Physics Basis, Ch. 1, Nucl. Fusion 39 (1999) 2137 - device description & parameters",
-             _scholar("ITER Physics Basis 1999 Nuclear Fusion 39 2137 overview")),
-    "JET": ("Rebut, Bickerton & Keen, Nucl. Fusion 25 (1985) 1011 - the JET project & its prospects",
-            _scholar("Rebut Bickerton Keen 1985 Nuclear Fusion 25 1011 JET project")),
-    "ST40": ("Gryaznevich et al., Nucl. Fusion 62 (2022) 042008 - ST40 compact high-field spherical tokamak",
-             _scholar("Gryaznevich 2022 Nuclear Fusion ST40 spherical tokamak")),
-    "T-15MD": ("Khvostenko et al., Fusion Eng. Des. 146 (2019) 1108 - T-15MD tokamak construction",
-               _scholar("Khvostenko 2019 Fusion Engineering Design T-15MD tokamak")),
-    "TCV": ("Hofmann et al., Plasma Phys. Control. Fusion 36 (1994) B277 - the TCV tokamak",
-            _scholar("Hofmann 1994 Plasma Physics Controlled Fusion TCV tokamak")),
+    "DANTE": [("DANTE - internal low-aspect design point; no external publication.", "")],
+    "ITER": [("ITER Physics Basis, Ch. 1, Nucl. Fusion 39 (1999) 2137 - device description & parameters",
+              _scholar("ITER Physics Basis 1999 Nuclear Fusion 39 2137 overview"))],
+    "JET": [("Rebut, Bickerton & Keen, Nucl. Fusion 25 (1985) 1011 - the JET project & its prospects",
+             _scholar("Rebut Bickerton Keen 1985 Nuclear Fusion 25 1011 JET project")),
+            ("Ciric et al., Fusion Eng. Des. 82 (2007) 610 - JET neutral beam enhancement "
+             "(2 injector boxes, up to 8 PINIs each, >34 MW design)",
+             _scholar("Ciric 2007 Fusion Engineering Design 82 610 JET neutral beam enhancement")),
+            ("Maggi et al., Nucl. Fusion 64 (2024) 112012 - JET DTE2 T/D-T overview; "
+             "independently confirms pulse #99971's 26.5 MW NBI / 4 MW ICRH (N=1 D minority, "
+             "29 MHz) / 15:85 D:T / 59 MJ record used by this preset",
+             _scholar("Maggi 2024 Nuclear Fusion 64 112012 JET tritium deuterium-tritium overview")),
+            ("Villari et al., Fusion Eng. Des. 217 (2025) 115133 - JET D-T nuclear operations "
+             "overview (DTE2/DTE3 neutron yields, 14 MeV calibration to +/-6%)",
+             _scholar("Villari 2025 Fusion Engineering Design 217 115133 JET deuterium tritium nuclear operations"))],
+    "ST40": [("Gryaznevich et al., Nucl. Fusion 62 (2022) 042008 - ST40 compact high-field spherical tokamak",
+              _scholar("Gryaznevich 2022 Nuclear Fusion ST40 spherical tokamak"))],
+    "T-15MD": [("Khvostenko et al., Fusion Eng. Des. 146 (2019) 1108 - T-15MD tokamak construction",
+                _scholar("Khvostenko 2019 Fusion Engineering Design T-15MD tokamak"))],
+    "TCV": [("Hofmann et al., Plasma Phys. Control. Fusion 36 (1994) B277 - the TCV tokamak",
+             _scholar("Hofmann 1994 Plasma Physics Controlled Fusion TCV tokamak")),
+            ("Karpushov et al., Fusion Eng. Des. 187 (2023) 113384 - TCV second high-energy "
+             "NBI (NBI-2, 1.0 MW/55 keV, counter-injected vs. NBI-1's 1.3 MW/28 keV, co) upgrade",
+             _scholar("Karpushov 2023 Fusion Engineering Design 187 113384 TCV second neutral beam"))],
 }
 
 REPO_URL = "https://github.com/EDlougach/HI-Jass"
@@ -252,6 +267,43 @@ class HIJassApp(ctk.CTk):
             "n_e_min": 5.0e18, "n_e_max": 1.0e20, "density_peaking": 0.3, "temp_peaking": 1.0,
             "deuterium_fraction": 1.0, "tritium_fraction": 0.0, "tauE_e": 0.005, "tauE_i": 0.005,
         },
+    }
+
+    # Typical/representative heating mix for each device (approximate,
+    # rounded design or common-operating-point figures, not exact specs).
+    # "beams" gives (species, power_MW, energy_keV, co_current) explicitly
+    # for NBI-1 and NBI-2 -- explicit rather than inferred, because how a
+    # device's real injected power is split across two beamlines (species,
+    # energy, and direction alike) is itself a device fact (e.g. JET and
+    # ITER each split one species across two real co-current injector
+    # boxes; DANTE deliberately uses two different species; TCV's two real
+    # beams are deliberately counter-injected relative to each other, sec.
+    # E2). Species is always D or T -- this model has no mass entry for
+    # hydrogen (_BEAM_MASS_NUMBER in hotjass/physics.py) -- and both beams'
+    # tangent points are reset to (major_radius, 0) so they don't carry over
+    # a differently-scaled device's geometry.
+    # JET/TCV/DANTE are cross-checked against the sourced shots in
+    # docs/Validation/HI-Jass_validation.md (sec. E); ITER/ST40/T-15MD are
+    # not validated anywhere in this repo -- see that section's caveats.
+    MACHINE_HEATING_PRESETS = {
+        "DANTE": {"beams": [("D", 10.0, 120.0, True), ("T", 0.1, 180.0, False)],
+                  "ecrh_MW": 2.0, "icrh_MW": 0.0},
+        "ITER": {"beams": [("D", 16.5, 1000.0, True), ("D", 16.5, 1000.0, True)],
+                 "ecrh_MW": 20.0, "icrh_MW": 20.0},
+        "JET": {"beams": [("D", 13.25, 108.0, True), ("D", 13.25, 108.0, True)],
+                "ecrh_MW": 0.0, "icrh_MW": 4.0},
+        "ST40": {"beams": [("D", 2.7, 25.0, True), ("D", 0.0, 25.0, True)],
+                 "ecrh_MW": 0.0, "icrh_MW": 0.0},
+        "T-15MD": {"beams": [("D", 0.0, 100.0, True), ("D", 0.0, 100.0, True)],
+                   "ecrh_MW": 10.0, "icrh_MW": 0.0},
+        # NBI-1: original 2015 beam (Karpushov et al. 2017), co-current.
+        # NBI-2: second, high-energy beam, counter-current -- TCV's two real
+        # beams are deliberately tangentially opposed for low/no net torque.
+        # Power/energy/tangent radius per Karpushov et al., Fusion Eng. Des.
+        # 187 (2023) 113384 (both beams share the same 0.736 m tangent
+        # radius, off-axis relative to R0=0.88 m).
+        "TCV": {"beams": [("D", 1.3, 28.0, True), ("D", 1.0, 55.0, False)],
+                "ecrh_MW": 4.5, "icrh_MW": 0.0, "tangent_R_m": 0.736},
     }
 
     PLASMA_FIELDS = [
@@ -368,7 +420,6 @@ class HIJassApp(ctk.CTk):
         self.minsize(1100, 720)
 
         self.model = HotJassModel()
-        self.active_device = "DANTE"
         self.mode = "Operating point"
         self.last_result: Result | None = None
         self._result_queue: queue.Queue[Result] = queue.Queue()
@@ -376,6 +427,7 @@ class HIJassApp(ctk.CTk):
         self._last_infeasible_key: str | None = None
         self._applied_snapshot: dict[str, str] = {}
         self._saved = self._load_settings()
+        self.active_device = self._saved.get("_active_device", "DANTE")
 
         saved_scale = self._saved.get("_ui_scale", 1.0)
         self._ui_scale_idx = min(
@@ -1671,23 +1723,24 @@ class HIJassApp(ctk.CTk):
             seen = set()
             for key in keys:
                 if key == "__machine__":
-                    cite, url = MACHINE_REFERENCES.get(
-                        self.active_device, (f"{self.active_device}: no reference on file.", ""))
+                    rows = MACHINE_REFERENCES.get(
+                        self.active_device, [(f"{self.active_device}: no reference on file.", "")])
                 else:
                     if key in seen:
                         continue
                     seen.add(key)
-                    cite, url = REFERENCES.get(key, (key, ""))
-                line = ctk.CTkFrame(self.ref_frame, fg_color="transparent")
-                line.grid(row=row, column=0, sticky="ew", padx=6, pady=1)
-                line.grid_columnconfigure(0, weight=1)
-                ctk.CTkLabel(line, text="- " + cite, anchor="w", justify="left",
-                             wraplength=760).grid(row=0, column=0, sticky="w")
-                if url:
-                    ctk.CTkButton(line, text="open", width=54,
-                                  command=lambda u=url: webbrowser.open(u)).grid(
-                        row=0, column=1, padx=(8, 0))
-                row += 1
+                    rows = [REFERENCES.get(key, (key, ""))]
+                for cite, url in rows:
+                    line = ctk.CTkFrame(self.ref_frame, fg_color="transparent")
+                    line.grid(row=row, column=0, sticky="ew", padx=6, pady=1)
+                    line.grid_columnconfigure(0, weight=1)
+                    ctk.CTkLabel(line, text="- " + cite, anchor="w", justify="left",
+                                 wraplength=760).grid(row=0, column=0, sticky="w")
+                    if url:
+                        ctk.CTkButton(line, text="open", width=54,
+                                      command=lambda u=url: webbrowser.open(u)).grid(
+                            row=0, column=1, padx=(8, 0))
+                    row += 1
         ctk.CTkLabel(self.ref_frame, anchor="w", text_color="gray", wraplength=760,
                      text=("Links are Google Scholar searches (they resolve to the paper) except "
                            "where a DOI is certain. Please flag anything that looks wrong via "
@@ -2247,12 +2300,34 @@ class HIJassApp(ctk.CTk):
         return "\n".join(lines)
 
     # ---------------------------------------------------------------- presets
+    def _set_entry(self, key: str, value):
+        if key in self.entries:
+            self.entries[key].delete(0, "end")
+            self.entries[key].insert(0, str(value))
+
     def _apply_preset(self, name: str):
         for field, value in self.PLASMA_PRESETS[name].items():
-            key = f"plasma.{field}"
-            if key in self.entries:
-                self.entries[key].delete(0, "end")
-                self.entries[key].insert(0, str(value))
+            self._set_entry(f"plasma.{field}", value)
+        major_radius = self.PLASMA_PRESETS[name]["major_radius"]
+
+        heating = self.MACHINE_HEATING_PRESETS.get(name, {})
+        # Tangent radius defaults to on-axis (major_radius) unless a device
+        # has a known real, generally off-axis tangency (e.g. TCV's 0.736 m).
+        tangent_R_m = heating.get("tangent_R_m", major_radius)
+        default_beams = [("D", 0.0, 100.0, True), ("D", 0.0, 100.0, True)]
+        for beam_index, (species, power, energy_keV, co_current) in enumerate(
+                heating.get("beams", default_beams)):
+            self._set_entry(f"beam{beam_index}.species", species)
+            self._set_entry(f"beam{beam_index}.power_MW", power)
+            self._set_entry(f"beam{beam_index}.beam_energy_keV", energy_keV)
+            getattr(self, f"beam_dir_var_{beam_index}").set("co" if co_current else "counter")
+            # Reset tangent geometry too, so it doesn't carry over a
+            # previously-selected, differently-scaled device's beam aiming.
+            self._set_entry(f"beam{beam_index}.tangent_R_m", tangent_R_m)
+            self._set_entry(f"beam{beam_index}.tangent_Z_m", 0.0)
+        self._set_entry("aux.p_ecrh_MW", heating.get("ecrh_MW", 0.0))
+        self._set_entry("aux.p_icrh_MW", heating.get("icrh_MW", 0.0))
+
         self.active_device = name
         self._highlight_active_preset()
         self._run()
@@ -2404,6 +2479,7 @@ class HIJassApp(ctk.CTk):
         data["_cx_model"] = self.cx_model_var.get()
         data["_rotation_model"] = self.rotation_model_var.get()
         data["_beam_beam"] = bool(self.beam_beam_var.get())
+        data["_active_device"] = self.active_device
         for beam_index in (0, 1):
             data[f"beam{beam_index}._shine"] = getattr(self, f"shine_var_{beam_index}").get()
             data[f"beam{beam_index}._dir"] = getattr(self, f"beam_dir_var_{beam_index}").get()
