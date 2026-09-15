@@ -787,9 +787,8 @@ with $I_p$ in MA, $B_t$ in T, $P_{\mathrm{loss}}$ in MW, $R_0$ and $a$ in m,
 $n_{19}=n_{e0}/10^{19}\,\mathrm{m^{-3}}$, $\varepsilon=a/R_0$,
 $\kappa_a=\kappa$, and $M_{\mathrm{eff}}=2x_D+3x_T$ the mass-weighted ion mass
 number. Selecting *IPB98(y,2) ELMy H-mode* uses it for both channels
-($\tau_{E,e}=\tau_{E,i}$); *IPB98(y,2) e / neoclassical i* uses it for the
-electron channel only, with the ion channel from the neoclassical estimate
-below.
+($\tau_{E,e}=\tau_{E,i}$) -- like every scaling offered here, it does not
+split electron/ion channels.
 
 The fit was obtained from conventional-aspect-ratio devices ($A\sim2.5$-$4$)
 and is documented in the spherical-tokamak literature to mis-predict at low
@@ -808,8 +807,7 @@ $$
 
 with $I_p$ in A, $B_t$ in T, $n_e$ in $\mathrm{m^{-3}}$, $P_{\mathrm{loss}}$ in W
 and $\tau_E$ in s. Selecting *Kaye NSTX L-mode* uses it for both channels
-($\tau_{E,e}=\tau_{E,i}$); *Kaye L e / neoclassical i* uses it for the electron
-channel only.
+($\tau_{E,e}=\tau_{E,i}$).
 
 ### Kaye NSTX H-mode
 
@@ -831,10 +829,16 @@ trend; the density and heating-power exponents ($n_e^{0.44}$,
 $P_{\mathrm{loss}}^{-0.73}$) are of the same order as the conventional-aspect
 scalings. This is an ST-appropriate fit ($A\sim1.3$–$1.5$ dataset).
 Selecting *Kaye NSTX H-mode* uses it for both channels
-($\tau_{E,e}=\tau_{E,i}$); *Kaye H e / neoclassical i* uses it for the electron
-channel only.
+($\tau_{E,e}=\tau_{E,i}$).
 
 ### Neoclassical ion
+
+**Not currently selectable from the Confinement dropdown** -- v1 offers only
+the four modes above (Fixed, Kaye L, Kaye H, IPB98(y,2)), each applied to
+both channels. The neoclassical estimate below is implemented in
+`hotjass/solve.py` and was previously reachable via an "X e / neoclassical i"
+hybrid selector entry; that combination is out of scope for v1 and may
+return in a later version. Documented here for completeness:
 
 A banana-regime order-of-magnitude estimate (Wesson, *Tokamaks*; Chang-Hinton
 low-collisionality limit) for the ion channel only:
@@ -882,10 +886,13 @@ bound. It cannot be combined with electron-ion equipartition.
 
 ### Neoclassical ion (arbitrary aspect ratio)
 
+**Also not currently selectable** -- same v1 scope note as above.
+
 The bare $\varepsilon^{-3/2}$ geometric factor above both diverges as
 $\varepsilon\to0$ and stays bounded as $\varepsilon\to1$, neither of which is
-right on a spherical tokamak. The *arbitrary $A$* variant (selector entries
-ending "*neoclassical i (arbitrary A)*") replaces the trapped-fraction part with
+right on a spherical tokamak. The *arbitrary $A$* variant (previously,
+selector entries ending "*neoclassical i (arbitrary A)*") replaces the
+trapped-fraction part with
 the Lin-Liu & Miller $f_t/f_c$ — the banana-regime structure of Helander &
 Sigmar's *Collisional Transport in Magnetized Plasmas*, Ch. 11 — and uses the
 arbitrary-$A$ edge safety factor $q_a$:
@@ -914,6 +921,20 @@ amplifies it), which is exactly why both are offered — run them side by side.
 References: Helander, *Phys. Plasmas* **7** (2000) 3999; Hinton, Wiley *et al.*,
 *Phys. Rev. Lett.* **29** (1972) 698; Satake *et al.*, *Phys. Plasmas* **9**
 (2002); Goldston & Rutherford (1995).
+
+### Known limitation: the $P$ fed into IPB98(y,2) / Kaye NSTX
+
+These three scalings use $P_{\mathrm{loss}} = \sum_j P_{\mathrm{useful},j} +
+P_{\mathrm{aux},e} + P_{\mathrm{aux},i}$ (sec. above) — NBI power *after*
+shine-through, first-orbit loss **and** charge-exchange loss are all
+subtracted. The experimental databases these scalings were fit to use a
+coarser convention instead (absorbed power, i.e. shine-through-corrected
+only — they do not subtract orbit-loss/CX-loss of the already-absorbed
+fast-ion population), so HI-Jass currently under-feeds $P$ into these
+negative-exponent scalings and is biased toward *overestimating* $\tau_E$
+whenever orbit-loss/CX-loss are significant (STs especially). Not yet fixed.
+See **Appendix A** for a quantitative comparison, including how this
+compares to the (much larger) effect of the scaling choice itself.
 
 ## Mean fast-ion energy
 
@@ -1291,3 +1312,72 @@ Four further scan groups:
 - $\tau_{IE}$: effective electron-ion exchange time
 - $p_{th}$, $p_{fast}$: thermal and fast-ion pressure
 - $\beta_t$: toroidal beta
+
+## Appendix A: confinement-scaling $P$ definition -- expected impact
+
+This appendix expands on the caveat noted under "Confinement time" above. It
+is exploratory analysis, not a validated result: standalone scripts,
+outside the app and the solver, generated the three figures below (see
+`docs/Validation/tauE_scaling_Ploss_definition_scan.py` and
+`tauE_scaling_combined_comparison.py`). **Not yet acted on** -- see the
+"confinement-scaling-p-loss-definition" note if revisiting this.
+
+### The question
+
+IPB98(y,2) and the two Kaye NSTX scalings take a power argument, $P$. HI-Jass
+currently feeds them $P_{\mathrm{useful}}+P_{\mathrm{aux}}$ -- NBI power
+*after* shine-through, first-orbit loss, and charge-exchange loss are all
+subtracted. The experimental databases these scalings were fit to use the
+coarser convention instead (absorbed power only, i.e. shine-through-corrected
+but *not* further reduced for orbit-loss/CX-loss of the already-absorbed
+fast-ion population). HI-Jass's convention therefore under-feeds $P$ into
+these negative-exponent scalings, which should **overestimate $\tau_E$**
+whenever orbit-loss/CX-loss are significant -- worst for compact/ST-like
+geometries such as this project's own DANTE default.
+
+### DANTE: how much would the fix change $\tau_E$?
+
+For the DANTE preset, at fixed NBI/ECRH settings, switching from
+$P_{\mathrm{useful}}$ to the raw total injected NBI power (an upper bound on
+the proposed fix -- shine-through would still be subtracted in the real fix)
+lowers $\tau_E$ by **~10-20%**, depending on the scaling and the density:
+
+![DANTE: tau_E vs n_e, P_useful vs P_NBI_total, one panel per scaling](docs/Validation/tauE_scaling_Ploss_comparison.png)
+
+Orbit-loss + CX-loss account for ~25-32% of DANTE's injected NBI power over
+this scan -- that gap is the direct cause of the shift above.
+
+### But the scaling choice itself matters far more
+
+The same DANTE comparison, with all three scalings drawn on one axis, shows
+the **scaling-choice spread is ~4-6x** across the density range -- 20-30x
+larger than the $P$-definition effect above. Red shading marks densities
+where HI-Jass has no feasible solution at all for this preset (the model's
+thermal-ion density would go negative):
+
+![DANTE: all 3 scalings combined, full n_e range with infeasibility marked](docs/Validation/tauE_scaling_combined_comparison_DANTE.png)
+
+The same view for the **ITER** preset shows an even larger spread (~10-12x),
+but with the *ranking reversed* -- IPB98(y,2) now sits far above both Kaye
+curves, at multi-second $\tau_E$ values:
+
+![ITER: all 3 scalings combined, full n_e range](docs/Validation/tauE_scaling_combined_comparison_ITER.png)
+
+**Read this ITER case with caution, not as competing physics estimates.**
+Kaye's scalings were fit purely to NSTX data ($I_p\lesssim1.5$ MA,
+$B_t\lesssim0.5$ T); ITER's $I_p=15$ MA / $B_t=5.3$ T is a huge
+extrapolation *outside* that database, in the opposite direction from
+DANTE/NSTX-like devices. IPB98(y,2), by contrast, was fit including
+larger, more ITER-like devices, so it is the more trustworthy of the two
+here -- the "spread" for ITER is mostly a statement about extrapolation
+validity, not a genuine disagreement in overlapping-validity physics.
+
+### Takeaway
+
+Fixing the $P_{\mathrm{loss}}$ definition (sec. "Known limitation" above) is
+a real, worthwhile correction (~10-20% on $\tau_E$), but the choice of
+*which* scaling to use dominates the total uncertainty by an order of
+magnitude. Neither should be read as validated for a device far outside
+that scaling's own fitted dataset -- check the Assumptions tab's low-aspect
+extrapolation flag, and prefer Kaye NSTX only for genuinely NSTX-like
+($A\lesssim1.6$, low $B_t$) geometries.

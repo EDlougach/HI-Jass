@@ -37,17 +37,17 @@ matplotlib.use("TkAgg")
 SETTINGS_PATH = Path.home() / ".hi_jass" / "settings.json"
 
 CONFINEMENT_MODES = {
+    # v1 scope: 4 choices only. Fixed allows tau_Ee != tau_Ei (manual per-
+    # channel input); every scaling below is "natural" and always sets
+    # tau_Ee = tau_Ei to that scaling's single computed value -- the
+    # "X e / neoclassical i" hybrids and the arbitrary-A neoclassical
+    # variants are deliberately not offered here for now (memory note
+    # "confinement-scaling-p-loss-definition" territory: the neoclassical
+    # ion channel is a separate, still-open piece of the picture).
     "Fixed tauE (input)": ("fixed", "fixed"),
-    "IPB98(y,2) ELMy H-mode": ("iter98y2", "iter98y2"),
     "Kaye NSTX L-mode": ("kaye_nstx_lmode", "kaye_nstx_lmode"),
     "Kaye NSTX H-mode": ("kaye_nstx_hmode", "kaye_nstx_hmode"),
-    "IPB98(y,2) e / neoclassical i": ("iter98y2", "neoclassical"),
-    "Kaye L e / neoclassical i": ("kaye_nstx_lmode", "neoclassical"),
-    "Kaye H e / neoclassical i": ("kaye_nstx_hmode", "neoclassical"),
-    "Fixed e / neoclassical i": ("fixed", "neoclassical"),
-    "Kaye H e / neoclassical i (arbitrary A)": ("kaye_nstx_hmode", "neoclassical_arbA"),
-    "IPB98(y,2) e / neoclassical i (arbitrary A)": ("iter98y2", "neoclassical_arbA"),
-    "Fixed e / neoclassical i (arbitrary A)": ("fixed", "neoclassical_arbA"),
+    "IPB98(y,2) ELMy H-mode": ("iter98y2", "iter98y2"),
 }
 
 ORBIT_MODELS = {
@@ -224,48 +224,72 @@ class CollapsibleSection(ctk.CTkFrame):
 
 
 class HIJassApp(ctk.CTk):
+    # Per-device Plasma-field overrides applied by _apply_preset(). Two
+    # optional keys aren't Plasma text-entry fields and are special-cased in
+    # _apply_preset(): "profile_averaging" (bool) sets the profile-corrected
+    # 0-D checkbox, and "confinement_mode" (a CONFINEMENT_MODES label) sets
+    # the Confinement dropdown to whichever scaling actually fits the
+    # device's aspect ratio -- so switching devices doesn't leave e.g. an
+    # ST-fit Kaye scaling active on a conventional-aspect machine.
+    #
+    # All 6 devices share the same peaking defaults (density_peaking=0.1,
+    # temp_peaking(_i)=1.0) -- chosen after direct comparison across presets.
+    # profile_averaging itself is per-device (user-tested, not aspect-ratio
+    # derived): ON for ITER/JET/T-15MD, OFF for DANTE/ST40/TCV.
     PLASMA_PRESETS = {
         "DANTE": {
             "major_radius": 0.65, "minor_radius": 0.35, "elongation": 2.2,
             "triangularity": -0.35, "effective_charge": 2.0, "toroidal_field": 1.5,
             "plasma_current_MA": 1.5, "central_density": 1.0e20,
             "n_e_min": 1.0e19, "n_e_max": 1.5e20, "density_peaking": 0.1, "temp_peaking": 1.0,
+            "temp_peaking_i": 1.0, "profile_averaging": False,
             "deuterium_fraction": 0.2, "tritium_fraction": 0.8, "tauE_e": 0.15, "tauE_i": 0.15,
+            "confinement_mode": "Kaye NSTX H-mode",
         },
         "ITER": {
             "major_radius": 6.2, "minor_radius": 2.0, "elongation": 1.85,
             "triangularity": 0.33, "effective_charge": 1.7, "toroidal_field": 5.3,
             "plasma_current_MA": 15.0, "central_density": 1.0e20,
-            "n_e_min": 5.0e19, "n_e_max": 1.5e20, "density_peaking": 0.0, "temp_peaking": 0.0,
+            "n_e_min": 5.0e19, "n_e_max": 1.5e20, "density_peaking": 0.1, "temp_peaking": 1.0,
+            "temp_peaking_i": 1.0, "profile_averaging": True,
             "deuterium_fraction": 0.5, "tritium_fraction": 0.5, "tauE_e": 3.7, "tauE_i": 3.7,
+            "confinement_mode": "IPB98(y,2) ELMy H-mode",
         },
         "JET": {
             "major_radius": 2.96, "minor_radius": 1.25, "elongation": 1.7,
             "triangularity": 0.32, "effective_charge": 1.5, "toroidal_field": 3.45,
             "plasma_current_MA": 4.0, "central_density": 6.0e19,
-            "n_e_min": 2.0e19, "n_e_max": 1.0e20, "density_peaking": 0.0, "temp_peaking": 0.0,
+            "n_e_min": 2.0e19, "n_e_max": 1.0e20, "density_peaking": 0.1, "temp_peaking": 1.0,
+            "temp_peaking_i": 1.0, "profile_averaging": True,
             "deuterium_fraction": 0.5, "tritium_fraction": 0.5, "tauE_e": 1.5, "tauE_i": 1.5,
+            "confinement_mode": "IPB98(y,2) ELMy H-mode",
         },
         "ST40": {
             "major_radius": 0.45, "minor_radius": 0.30, "elongation": 1.8,
             "triangularity": 0.4, "effective_charge": 1.5, "toroidal_field": 3.0,
             "plasma_current_MA": 2.0, "central_density": 5.0e19,
-            "n_e_min": 1.0e19, "n_e_max": 1.0e20, "density_peaking": 0.0, "temp_peaking": 0.0,
+            "n_e_min": 1.0e19, "n_e_max": 1.0e20, "density_peaking": 0.1, "temp_peaking": 1.0,
+            "temp_peaking_i": 1.0, "profile_averaging": False,
             "deuterium_fraction": 0.5, "tritium_fraction": 0.5, "tauE_e": 0.01, "tauE_i": 0.01,
+            "confinement_mode": "Kaye NSTX H-mode",
         },
         "T-15MD": {
             "major_radius": 1.5, "minor_radius": 0.67, "elongation": 1.8,
             "triangularity": 0.3, "effective_charge": 1.5, "toroidal_field": 2.0,
             "plasma_current_MA": 2.0, "central_density": 5.0e19,
-            "n_e_min": 1.0e19, "n_e_max": 1.0e20, "density_peaking": 0.0, "temp_peaking": 0.0,
+            "n_e_min": 1.0e19, "n_e_max": 1.0e20, "density_peaking": 0.1, "temp_peaking": 1.0,
+            "temp_peaking_i": 1.0, "profile_averaging": True,
             "deuterium_fraction": 0.5, "tritium_fraction": 0.5, "tauE_e": 0.1, "tauE_i": 0.1,
+            "confinement_mode": "IPB98(y,2) ELMy H-mode",
         },
         "TCV": {
             "major_radius": 0.88, "minor_radius": 0.25, "elongation": 1.8,
             "triangularity": 0.5, "effective_charge": 2.0, "toroidal_field": 1.43,
             "plasma_current_MA": 0.4, "central_density": 5.0e19,
-            "n_e_min": 5.0e18, "n_e_max": 1.0e20, "density_peaking": 0.3, "temp_peaking": 1.0,
+            "n_e_min": 5.0e18, "n_e_max": 1.0e20, "density_peaking": 0.1, "temp_peaking": 1.0,
+            "temp_peaking_i": 1.0, "profile_averaging": False,
             "deuterium_fraction": 1.0, "tritium_fraction": 0.0, "tauE_e": 0.005, "tauE_i": 0.005,
+            "confinement_mode": "IPB98(y,2) ELMy H-mode",
         },
     }
 
@@ -385,6 +409,7 @@ class HIJassApp(ctk.CTk):
 
     DASH_ROWS = [
         ("Feasibility", "feasibility"),
+        ("tau_E,e / tau_E,i [s]", "tauE"),
         ("T_e [keV]", "Te"), ("T_i [keV]", "Ti"),
         ("  on-axis T_e0 / T_i0 [keV]", "T0"),
         ("n_e0 [m^-3]", "ne0"), ("n_b0 [m^-3]", "nb0"),
@@ -558,8 +583,12 @@ class HIJassApp(ctk.CTk):
         losses.grid(row=row, column=0, sticky="ew", pady=4)
         ctk.CTkLabel(losses.body, text="Confinement", anchor="w").grid(
             row=0, column=0, padx=8, pady=4, sticky="w")
-        self.confinement_var = ctk.StringVar(
-            value=self._saved.get("_confinement", "Fixed tauE (input)"))
+        saved_confinement = self._saved.get("_confinement", "Fixed tauE (input)")
+        if saved_confinement not in CONFINEMENT_MODES:
+            # A settings.json (or an imported run record) from before a mode
+            # was retired -- fall back rather than KeyError on first _run().
+            saved_confinement = "Fixed tauE (input)"
+        self.confinement_var = ctk.StringVar(value=saved_confinement)
         ctk.CTkOptionMenu(
             losses.body, values=list(CONFINEMENT_MODES), variable=self.confinement_var,
         ).grid(row=0, column=1, padx=8, pady=4, sticky="ew")
@@ -1197,6 +1226,9 @@ class HIJassApp(ctk.CTk):
             v_phi_label = f"{op.v_phi_m_s / 1e3:+.2f} km/s  (M={mach:+.2f}, c_s~{cs / 1e3:.1f} km/s){extra}"
 
         values = {
+            "tauE": f"{self._fmt(op.tau_E_s)} / {self._fmt(op.tau_Ei_s)}"
+                    + ("  (input)" if self.confinement_var.get() == "Fixed tauE (input)"
+                       else f"  ({self.confinement_var.get()})"),
             "Te": self._fmt(op.Te_keV) + ("  (<T>)" if prof_on else ""),
             "Ti": self._fmt(op.Ti_keV) + ("  (<T>)" if prof_on else ""),
             "T0": (f"{self._fmt(te0)} / {self._fmt(ti0)}" if prof_on
@@ -2008,7 +2040,7 @@ class HIJassApp(ctk.CTk):
                                               ax.plot(density_axis, scan["Ti"], label=r"$T_i$"))),
             ("Heating [MW]", lambda ax: (ax.plot(density_axis, scan["P_e"], label=r"$P_e$"),
                                          ax.plot(density_axis, scan["P_i"], label=r"$P_i$"))),
-            (r"$P_{ie}$ [MW]", lambda ax: ax.plot(density_axis, scan["Pi_e"])),
+            ("Q = P_fus / P_NB", lambda ax: ax.plot(density_axis, scan["Q"])),
             ("Losses [MW]", lambda ax: (ax.plot(density_axis, scan["P_shine-through"], label=r"$P_{shine}$"),
                                         ax.plot(density_axis, scan["P_orbit"], label=r"$P_{orbit}$"),
                                         ax.plot(density_axis, scan["P_cx"], label=r"$P_{cx}$"),
@@ -2306,9 +2338,28 @@ class HIJassApp(ctk.CTk):
             self.entries[key].insert(0, str(value))
 
     def _apply_preset(self, name: str):
-        for field, value in self.PLASMA_PRESETS[name].items():
+        preset = self.PLASMA_PRESETS[name]
+        non_entry_keys = ("profile_averaging", "confinement_mode")
+        for field, value in preset.items():
+            if field in non_entry_keys:
+                continue  # not Plasma text entries -- handled below
             self._set_entry(f"plasma.{field}", value)
-        major_radius = self.PLASMA_PRESETS[name]["major_radius"]
+        # Full preset overwrite, same as every other field here: devices
+        # without their own "profile_averaging" key turn the checkbox off.
+        self.profile_var.set(bool(preset.get("profile_averaging", False)))
+        # Confinement scaling appropriate to this device's aspect ratio, so
+        # e.g. switching DANTE -> ITER doesn't leave an ST-fit Kaye scaling
+        # active on a conventional-aspect machine.
+        confinement_mode = preset.get("confinement_mode", "Fixed tauE (input)")
+        if confinement_mode not in CONFINEMENT_MODES:
+            confinement_mode = "Fixed tauE (input)"
+        self.confinement_var.set(confinement_mode)
+        # Orbit-loss and CX-loss default OFF for every preset (a deliberate
+        # simplification for v1, matching Fixed/Kaye/IPB98 launching without
+        # tuning a device-specific loss-fraction knob first).
+        self.orbit_var.set(False)
+        self._set_entry("models.cx_loss_fraction", 0.0)
+        major_radius = preset["major_radius"]
 
         heating = self.MACHINE_HEATING_PRESETS.get(name, {})
         # Tangent radius defaults to on-axis (major_radius) unless a device
