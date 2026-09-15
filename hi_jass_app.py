@@ -271,7 +271,7 @@ class HIJassApp(ctk.CTk):
             "n_e_min": 1.0e19, "n_e_max": 1.0e20, "density_peaking": 0.1, "temp_peaking": 1.0,
             "temp_peaking_i": 1.0, "profile_averaging": False,
             "deuterium_fraction": 0.5, "tritium_fraction": 0.5, "tauE_e": 0.01, "tauE_i": 0.01,
-            "confinement_mode": "Kaye NSTX H-mode",
+            "confinement_mode": "Kaye NSTX L-mode",
         },
         "T-15MD": {
             "major_radius": 1.5, "minor_radius": 0.67, "elongation": 1.8,
@@ -465,9 +465,9 @@ class HIJassApp(ctk.CTk):
         self._build_rail()
         self._build_results()
 
-        saved_mode = self._saved.get("_mode")
-        if saved_mode in ("Operating point", "Scan"):
-            self.mode_toggle.set(saved_mode)
+        # Always start in Operating point mode (showing tv_op's first tab,
+        # Dashboard) regardless of what was last saved -- a deliberate,
+        # predictable launch state rather than resuming Scan mode.
         self._set_mode(self.mode_toggle.get())
         self._snapshot_inputs()
         self._highlight_active_preset()
