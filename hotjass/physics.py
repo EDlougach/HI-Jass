@@ -25,6 +25,7 @@ E_CHARGE = 1.602176634e-19
 E_FUSION_J = 17.6e6 * E_CHARGE
 M_D = 3.344494e-27  # neutral deuterium ATOM mass (kg) -- matches the beam as a neutral before ionization
 M_T = 5.008268e-27  # neutral tritium ATOM mass (kg), same atomic-mass convention as M_D
+M_H = 1.673532e-27  # neutral hydrogen (protium) ATOM mass (kg), same atomic-mass convention as M_D/M_T
 M_E = 9.10938356e-31
 M_PROTON = 1.67262192369e-27
 LOG_LAMBDA = 17.0
@@ -625,8 +626,19 @@ def thermal_fusion_power(
     return nD0 * nT0 * volume_average_rate * volume_m3 * E_FUSION_J
 
 
-_BEAM_MASS_NUMBER = {"D": 2.0, "T": 3.0}
-_BEAM_MASS_KG = {"D": M_D, "T": M_T}
+# "H" added per an explicit request (HOT-Jass_web) -- until now, typing
+# "H" into any NBI species field (both apps' own rail/entry accepted the
+# free-text character, but nothing downstream had a mass for it) raised a
+# bare KeyError the first time beam_mass_number("H") was called, deep
+# inside the solver -- not intentionally disallowed, just never wired up.
+# Hydrogen beams don't undergo D-T/D-D fusion though -- see solve.py's own
+# per-beam beam-target-fusion loop, which now explicitly skips that
+# contribution for any non-D/T species (a genuine, separate fix needed
+# alongside this one -- beam_target_fusion_power() itself has no species
+# guard of its own, and would otherwise silently compute a bogus D-T-like
+# reaction for a fast hydrogen ion).
+_BEAM_MASS_NUMBER = {"H": 1.0, "D": 2.0, "T": 3.0}
+_BEAM_MASS_KG = {"H": M_H, "D": M_D, "T": M_T}
 
 
 def beam_mass_number(species: str) -> float:
@@ -675,11 +687,26 @@ def janev_suzuki_stopping_cross_section_m2(
 ) -> float:
     """Janev-Boley-Post (1989) analytic beam-stopping fit, Eq. (23).
 
-    The fit is valid for 100 <= E <= 1e4 keV/u, 1e12 <= ne <= 1e15 cm^-3,
-    and 1 <= Te <= 50 keV. The current model uses the paper's carbon-
-    impurity coefficients (Z=6) to represent its carbon-like Zeff model.
+    The fit's STATED validity range is 100 <= E <= 1e4 keV/u, 1e12 <= ne <=
+    1e15 cm^-3, and 1 <= Te <= 50 keV -- density and temperature are still
+    clamped to that range below. Energy is deliberately left UNCLAMPED
+    (extrapolated) by explicit request, since several real devices this
+    project models (e.g. DANTE: D at 120 keV / T at 180 keV, both 60
+    keV/amu) inject well below the 100 keV/amu floor -- clamping silently
+    pinned sigma to the E=100 value for every such beam regardless of its
+    actual energy (the bug this comment documents the fix for). A direct
+    comparison against the Riviere fit (beam_stopping_cross_section_m2)
+    over 10-150 keV/amu at ne=5e19 m^-3, Te=4 keV, Zeff=1 shows this
+    extrapolation is NOT a small correction: extrapolated Janev sits
+    roughly 3-14x BELOW Riviere across that whole range, both below and
+    above the 100 keV/amu floor (the gap doesn't close at the boundary),
+    consistent with this being a log-log-log polynomial fit to data in a
+    different regime rather than a physically-derived formula that
+    degrades gracefully outside its domain. Callers that care (this
+    project's own Beam tab) should flag results computed this far below
+    the validated floor rather than presenting them as equally trustworthy.
     """
-    energy = min(max(float(energy_per_amu_keV), 100.0), 1.0e4)
+    energy = max(float(energy_per_amu_keV), 1.0e-6)
     density = min(max(float(ne_cm3), 1.0e12), 1.0e15)
     temperature = min(max(float(Te_keV), 1.0), 50.0)
     log_energy = math.log(energy)
@@ -703,16 +730,125 @@ def janev_suzuki_stopping_cross_section_m2(
     return max(sigma_cm2, 0.0) * 1.0e-4
 
 
+# Suzuki, Shirai, Nemoto, Tobita, Kubo, Sugie, Sakasai & Kusama (1998),
+# "Attenuation of high-energy neutral hydrogen beams in high-density
+# plasmas", Plasma Phys. Control. Fusion 40 2097 -- a full multistep
+# atomic-collision recalculation of the same beam-stopping physics the
+# Janev-Boley-Post (1989) fit above covers, using improved cross-section
+# data (Toshima & Tawara 1995, corrected against Igarashi & Shirai 1994 at
+# high energy) and validated directly against real JT-60U shine-through
+# measurements (350 keV/amu D beam -- the paper's own figure 6, good
+# agreement). Added per an explicit request, after a direct evaluation of
+# this paper (comparison plot: Riviere vs extrapolated-Janev vs Suzuki at
+# ne=5e19 m^-3, Te=4 keV, Zeff=1, E/A=10-150 keV/amu) showed Suzuki tracks
+# Janev much more closely (within ~5-40%, closing as E rises) than Riviere
+# does (5-18x off across the same range) -- i.e. Janev's own extrapolation
+# below its 100 keV/amu floor wasn't as reckless as the Riviere comparison
+# alone suggested, and Suzuki (built from better atomic data specifically
+# to correct Janev, and experimentally validated) is the more defensible
+# choice for low-energy beams like DANTE's own 60 keV/amu default.
+#
+# Two separate eq-(28)-form fits below, covering non-overlapping energy
+# ranges with their own isotope-specific (H/D/T) coefficients -- unlike
+# Riviere and this file's own Janev fit above, NEITHER of which
+# distinguishes beam species at all:
+#  - SUZUKI_A_HIGH/SUZUKI_B_HIGH_C (paper's Table 2): 100 <= E <= 1e4
+#    keV/amu, 1e18 <= ne <= 1e21 m^-3, 1 <= Te <= 50 keV.
+#  - SUZUKI_A_LOW/SUZUKI_B_LOW_C (paper's Table 3): 10 <= E <= 100
+#    keV/amu, same density range, but Te's OWN valid range is TIED TO E --
+#    E/100 <= Te <= E/2 keV -- unlike every other fit in this file, whose
+#    Te bound doesn't depend on E. NOT enforced/clamped below (the same
+#    "extrapolate rather than silently clamp outside a validated window"
+#    choice already made for janev_suzuki_stopping_cross_section_m2, for
+#    the same reason: every device this project models has its own actual
+#    operating Te comfortably inside this band at the energies it actually
+#    injects at) -- flagging so a future reader checking an unusual
+#    device/Te combination knows to verify it, not assume it's covered.
+# B=5T in both tables; the paper's own figure 4 shows <1% variation across
+# B=1-10T, so this file's own B0 (which varies per device, 1.4-5.3 T here)
+# is not threaded through -- negligible relative to everything else this
+# model already approximates.
+#
+# Impurity (Zeff) correction: only the Carbon (Z=6) column is implemented,
+# matching this file's own existing "carbon-like Zeff model" simplification
+# for janev_suzuki_stopping_cross_section_m2 (one representative mid-Z
+# impurity species stands in for whatever the real impurity mix is, since
+# this project never tracks impurity species individually). Confirmed from
+# the paper's own tables: unlike the pure-hydrogen term (H/D/T columns),
+# the impurity correction S_Z does NOT have separate isotope columns -- one
+# B_ijk set per energy range covers all 3 species.
+SUZUKI_A_HIGH = {  # Table 2(a), eq (28), 100 <= E <= 1e4 keV/amu
+    "H": (1.27e1, 1.25e0, 4.52e-1, 1.05e-2, 5.47e-1, -1.02e-1, 3.60e-1, -2.98e-2, -9.59e-2, 4.21e-3),
+    "D": (1.41e1, 1.11e0, 4.08e-1, 1.05e-2, 5.47e-1, -4.03e-2, 3.45e-1, -2.88e-2, -9.71e-2, 4.74e-3),
+    "T": (1.27e1, 1.26e0, 4.49e-1, 1.05e-2, 5.47e-1, -5.77e-3, 3.36e-1, -2.82e-2, -9.74e-2, 4.87e-3),
+}
+SUZUKI_A_LOW = {  # Table 3(a), eq (28), 10 <= E <= 100 keV/amu
+    "H": (-5.29e1, -1.36e0, 7.19e-2, 1.37e-2, 4.54e-1, 4.03e-1, -2.20e-1, 6.66e-2, -6.77e-2, -1.48e-3),
+    "D": (-6.79e1, -1.22e0, 8.14e-2, 1.39e-2, 4.54e-1, 4.65e-1, -2.73e-1, 7.51e-2, -6.30e-2, -5.08e-4),
+    "T": (-7.42e1, -1.18e0, 8.43e-2, 1.39e-2, 4.53e-1, 4.91e-1, -2.94e-1, 7.88e-2, -6.12e-2, -1.85e-4),
+}
+SUZUKI_B_HIGH_C = (  # Table 2(c), Carbon column, eq (26), 100 <= E <= 1e4 keV/amu
+    (1, 1, 1, -1.01e0), (1, 1, 2, -2.55e-2), (1, 2, 1, -1.25e-1), (1, 2, 2, -1.42e-2),
+    (2, 1, 1, 3.88e-1), (2, 1, 2, 2.06e-2), (2, 2, 1, 2.97e-2), (2, 2, 2, 3.26e-3),
+    (3, 1, 1, -2.46e-2), (3, 1, 2, -1.31e-3), (3, 2, 1, -1.48e-3), (3, 2, 2, -1.80e-4),
+)
+SUZUKI_B_LOW_C = (  # Table 3(c), Carbon column, eq (26), 10 <= E <= 100 keV/amu
+    (1, 1, 1, 1.61e-1), (1, 1, 2, 5.98e-2), (1, 2, 1, -3.36e-3), (1, 2, 2, -4.26e-3),
+    (2, 1, 1, -1.57e-1), (2, 1, 2, -3.96e-2), (2, 2, 1, 4.60e-3), (2, 2, 2, 2.19e-3),
+    (3, 1, 1, 3.91e-2), (3, 1, 2, 7.11e-3), (3, 2, 1, -1.44e-3), (3, 2, 2, -3.85e-4),
+)
+
+
+def suzuki_stopping_cross_section_m2(
+    energy_per_amu_keV: float, ne_cm3: float = 1.0e14,
+    Te_keV: float = 10.0, Zeff: float = 2.0, species: str = "D",
+) -> float:
+    """Suzuki et al (1998) beam-stopping cross section, eq (28) -- see the
+    module comment above SUZUKI_A_HIGH for the paper, validity ranges, and
+    the impurity-correction simplification. `species` selects the H/D/T
+    coefficient set for the pure-hydrogen-plasma term (falls back to "D"
+    for an unrecognized species, e.g. a hand-edited rail value that isn't
+    H/D/T -- same fallback FIELD_VALIDATORS on the caller side is meant to
+    catch before this is ever reached, but this function doesn't assume
+    that validation ran).
+    """
+    E = max(float(energy_per_amu_keV), 1.0e-6)
+    ne_m3 = min(max(float(ne_cm3) * 1.0e6, 1.0e18), 1.0e21)
+    temperature = max(float(Te_keV), 1.0e-6)
+    species_key = species.strip().upper() if species.strip().upper() in SUZUKI_A_HIGH else "D"
+    high_range = E >= 100.0
+    A1, A2, A3, A4, A5, A6, A7, A8, A9, A10 = (SUZUKI_A_HIGH if high_range else SUZUKI_A_LOW)[species_key]
+    b_carbon = SUZUKI_B_HIGH_C if high_range else SUZUKI_B_LOW_C
+    eps = math.log(E)
+    N = ne_m3 / 1.0e19
+    U = math.log(temperature)
+    sigma_H_cm2 = max(
+        A1 * (1.0e-16 / E) * (1.0 + A2 * eps + A3 * eps**2)
+        * (1.0 + (1.0 - math.exp(-A4 * N)) ** A5 * (A6 + A7 * eps + A8 * eps**2))
+        * (1.0 + A9 * U + A10 * U**2),
+        0.0,
+    )
+    log_N = math.log(N)
+    sz = sum(value * eps ** (i - 1) * log_N ** (j - 1) * U ** (k - 1) for i, j, k, value in b_carbon)
+    sigma_cm2 = sigma_H_cm2 * (1.0 + max(Zeff - 1.0, 0.0) * sz)
+    return max(sigma_cm2, 0.0) * 1.0e-4
+
+
 def stopping_cross_section_m2(
     energy_per_amu_keV: float, model: str = "riviere", ne_cm3: float = 1.0e14,
-    Te_keV: float = 10.0, Zeff: float = 2.0,
+    Te_keV: float = 10.0, Zeff: float = 2.0, species: str = "D",
 ) -> float:
-    """Select the neutral-beam stopping cross-section model."""
+    """Select the neutral-beam stopping cross-section model. `species`
+    (added alongside Suzuki) is ignored by riviere/janev_suzuki -- neither
+    distinguishes beam isotope -- so existing callers that don't pass it
+    are unaffected."""
     normalized_model = model.strip().lower().replace("/", "_").replace("-", "_")
     if normalized_model == "riviere":
         return beam_stopping_cross_section_m2(energy_per_amu_keV)
     if normalized_model in ("janev_suzuki", "janev_suzuki_approximation"):
         return janev_suzuki_stopping_cross_section_m2(energy_per_amu_keV, ne_cm3, Te_keV, Zeff)
+    if normalized_model == "suzuki":
+        return suzuki_stopping_cross_section_m2(energy_per_amu_keV, ne_cm3, Te_keV, Zeff, species)
     raise ValueError(f"Unknown shine-through model {model!r}")
 
 
@@ -818,7 +954,7 @@ def captured_power_fraction(
         return 1.0 - min(max(float(manual_shine_through_fraction), 0.0), 1.0)
     A = beam_mass_number(species)
     sigma_m2 = stopping_cross_section_m2(
-        Eb_keV / A, normalized_model, ne0 * 1e-6, Te_keV, Zeff
+        Eb_keV / A, normalized_model, ne0 * 1e-6, Te_keV, Zeff, species=species
     )
     if geometry is not None:
         R_t = geometry.major_radius if tangent_R_m is None else tangent_R_m
@@ -1280,7 +1416,7 @@ def first_orbit_loss_fraction(
     as L_i(x) or the beam-target fusion integral already in this module.
     """
     A = beam_mass_number(species)
-    sigma_m2 = stopping_cross_section_m2(Eb_keV / A, stopping_model, ne0 * 1e-6, Te_keV, Zeff)
+    sigma_m2 = stopping_cross_section_m2(Eb_keV / A, stopping_model, ne0 * 1e-6, Te_keV, Zeff, species=species)
     if chord is None:
         # on-axis tangential: crude linear rho(x)=|x-a|/a over x in [0, 2a]
         x = np.linspace(0.0, path_length_m, 501)
@@ -1379,7 +1515,7 @@ def first_orbit_loss_fraction_st(
     else:
         x, rho, R_chord_real = (np.asarray(chord[0]), np.asarray(chord[1]), np.asarray(chord[2]))
         n = len(x)
-    sigma_m2 = stopping_cross_section_m2(Eb_keV / A, stopping_model, ne0 * 1e-6, Te_keV, Zeff)
+    sigma_m2 = stopping_cross_section_m2(Eb_keV / A, stopping_model, ne0 * 1e-6, Te_keV, Zeff, species=species)
     density = np.exp(-ne0 * sigma_m2 * x)
     # Gyro-orbit prompt loss: born within ONE gyroradius of the LCFS. This
     # channel is direction-independent (gyration does not care about I_p), so

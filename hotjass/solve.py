@@ -882,6 +882,18 @@ def solve_operating_point(
         tau_s = physics.thermalization_time(ne_axis, Te0_keV, beam.Eb_keV, beam.species)
         nb0_i = beam.P_NB_W * tau_s / (beam.Eb_keV * 1e3 * physics.E_CHARGE * V)
         nb0_per_beam.append(nb0_i)
+        # A non-D/T beam (e.g. hydrogen, added as a valid NBI species per an
+        # explicit request) doesn't undergo D-T/D-D fusion at all -- skip
+        # its beam-target contribution entirely rather than falling into
+        # the "else" branch below, which would otherwise treat it as if it
+        # were a tritium beam reacting with the deuterium target.
+        # beam_target_fusion_power() itself has no species guard (it just
+        # threads `species` through to a velocity/cross-section calculation
+        # that happily returns a nonzero number for ANY species), so this
+        # guard has to live here, at the one place that knows which species
+        # are actually fusion fuel.
+        if beam.species not in ("D", "T"):
+            continue
         target_n = nT0_axis if beam.species == "D" else nD0_axis
         pf_beam += physics.beam_target_fusion_power(
             nb0_i, target_n, Te0_keV, beam.Eb_keV, V, beam.species,
