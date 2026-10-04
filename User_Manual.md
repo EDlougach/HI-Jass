@@ -406,7 +406,7 @@ $$
 
 $f_{\mathrm{cx},P}$ (the quantity actually applied to $P_\mathrm{useful}$) is
 smaller than $f_{\mathrm{cx},N}$ because $\sigma_\mathrm{cx}$ falls steeply
-above $\sim\!30$–$50$ keV/amu, so most CX events happen late in the cascade,
+above $\sim\!30$ to $50$ keV/amu, so most CX events happen late in the cascade,
 when little energy is left to remove. $1/|dE/dt| = (\tau_{se}/2)\sqrt{E}/(E^{3/2}+E_c^{3/2})$
 is exactly the same slowing-down kernel already used by
 `thermalization_time`/`slowing_down_distribution` (differentiating
@@ -421,7 +421,7 @@ keV/amu, the range this project's beams live in.
 Also reported, per beam, on the Dashboard: the dimensionless figure of merit
 $\gamma_\mathrm{cx}\equiv\nu_\mathrm{cx}(E_b)\,\tau_s \approx
 n_0\sigma_\mathrm{cx}(E_b)v_b\tau_s$ — negligible for $\gamma_\mathrm{cx}\ll1$,
-worth taking seriously for $\gamma_\mathrm{cx}\sim0.1$–$1$, and a sign the
+worth taking seriously for $\gamma_\mathrm{cx}\sim0.1$ to $1$, and a sign the
 single-pass loss treatment is breaking down for $\gamma_\mathrm{cx}\gtrsim1$
 (flagged with a warning, as is $f_{\mathrm{cx},P}>10\%$, PPPL-1280's rough
 $Z_\mathrm{eff}=1$ ceiling). Because CX loss depends on $T_e$ (via
@@ -440,7 +440,7 @@ $\rho=1$: the core density shape $n_e(\rho)=n_{e0}(1-\rho^2)^{2p_n}$ is
 an exact zero at $\rho=1$ whenever $p_n>0$, which would make
 $n_{0,\mathrm{LCFS}}=0$ regardless of the input ratio -- a knob that does
 nothing. $\rho=0.95$ is a compromise: with a strongly peaked profile
-($p_n\gtrsim1$–$2$) it can still sit orders of magnitude below $n_{e0}$, so
+($p_n\gtrsim1$ to $2$) it can still sit orders of magnitude below $n_{e0}$, so
 treat this mode as unreliable for very peaked density profiles.
 
 $$
@@ -487,8 +487,8 @@ knob, this leaves every existing result byte-identical unless explicitly
 enabled.
 
 **Where rotation matters and where it doesn't.** $v_\phi$ (typically
-$\sim\!10^2$–$10^3$ km/s) is small next to the beam's own velocity
-($\sim\!3$–$5\times10^3$ km/s for a 100–180 keV D/T beam), so shine-through,
+$\sim\!10^2$ to $10^3$ km/s) is small next to the beam's own velocity
+($\sim\!3$ to $5\times10^3$ km/s for a 100–180 keV D/T beam), so shine-through,
 first-orbit loss and CX loss — all governed by the beam's own velocity —
 are essentially insensitive to it and are **not** touched. The one channel
 where it matters cleanly is **beam-target fusion**: that reaction's
@@ -712,10 +712,16 @@ and $P_{\mathrm{aux}}$ are reported separately.
 
 The balance above is genuinely 0-D: one density, one $T_e$, one $T_i$, treated
 as uniform over the volume. With the **profile-corrected 0-D** checkbox
-(Plasma section) *off* — the default — the entered central density is used
-directly as that uniform value and the solved $T$ is a flat-plasma effective
-temperature; comparing it to a measured on-axis $T_0$ then needs a peaking
-factor supplied by the reader (validation runs use $\simeq 2$).
+(Plasma section) *off*, the entered central density is used directly as that
+uniform value and the solved $T$ is a flat-plasma effective temperature;
+comparing it to a measured on-axis $T_0$ then needs a peaking factor supplied
+by the reader (validation runs use $\simeq 2$). In this mode every radial
+integral (shine-through column density, thermal and beam-target fusion,
+pressure, thermal energy) also uses **flat** profiles, consistent with the
+balance: the peaking parameters are ignored. (Before October 2026 these
+integrals still applied the $(1-\rho^2)^{2p}$ shapes and treated the flat
+values as on-axis peaks, which with $p_{Te}=1$ cut the profile-average $T$ to
+a third and under-reported fusion power by up to $\sim3\times$.)
 
 With the checkbox *on*, the entered `central n_e` is taken to be the **on-axis**
 $n_{e0}$, and for a $(1-\rho^2)^{2p}$ profile the volume average is
@@ -741,10 +747,106 @@ fusion, pressure and $\beta_t$ integrals use as their central values — the
 reactivity integrals with the $(1-\rho^2)^{2p_{Ti}}$ ion shape, the beam
 slowing-down kernel with the $(1-\rho^2)^{2p_{Te}}$ electron shape. Set $p_n$
 (`Density peaking`), $p_{Te}$ and $p_{Ti}$ to match the real profiles;
-$p\simeq0.5$–$0.75$ gives $X_0/\langle X\rangle\simeq2$–$2.5$ (L-/H-mode), while
+$p\simeq0.5$ to $0.75$ gives $X_0/\langle X\rangle\simeq2$ to $2.5$ (L-/H-mode), while
 a **hot-ion mode** on a compact ST needs $p_{Ti}\gg p_{Te}$ ($T_{i0}/\langle
-T_i\rangle\simeq3$–$4$ with $T_e$ nearly flat). With all peaking parameters at
+T_i\rangle\simeq3$ to $4$ with $T_e$ nearly flat). With all peaking parameters at
 $0$ the correction is a no-op.
+
+## Particle balance and fuelling
+
+The power balance fixes $T_e$ and $T_i$ at a given density, but says nothing
+about how that density is sustained. The HOT-Jass web app (**Balance** tab)
+adds a steady-state **particle balance** for the thermal fuel ions as a
+post-processing step: it uses the solved operating point and does not feed
+back into the solve.
+
+### Fast-ion dilution
+
+At fixed $n_e$, quasi-neutrality makes every fast beam ion displace a thermal
+ion ($n_{\mathrm{thermal}}=n_{\mathrm{sum}}-n_{b0}$, see *Power balance*). The
+share of fast ions,
+
+$$
+f_{\mathrm{dil}} = \frac{n_{b0}}{n_{\mathrm{thermal}}+n_{b0}},
+$$
+
+reduces both thermal and beam-target fusion, which scale with the thermal
+fuel densities. It is largest for low-energy beams into a moderate-density,
+hot plasma (long slowing-down time), e.g. $\sim14\%$ for the DANTE design
+point.
+
+### Steady-state balance per species
+
+For each thermal fuel species $s=\mathrm{D},\mathrm{T}$, holding the input
+D:T mix at the solved density,
+
+$$
+S_{\mathrm{ext},s} + S_{\mathrm{beam}\to s} - R_{\mathrm{burn},s}
+= \frac{N_s}{\tau_p^\ast},
+\qquad
+N_s = \langle n_s\rangle V,
+\qquad
+\tau_p^\ast = \left(\frac{\tau_p^\ast}{\tau_E}\right)\tau_{E,e},
+$$
+
+where
+
+- $N_s$ is the thermal inventory of species $s$ (volume-average density from
+  the balance times the plasma volume), and $N_s/\tau_p^\ast$ its particle
+  loss rate;
+- $\tau_p^\ast$ is the **effective** particle confinement time including
+  recycling, entered as the ratio $\tau_p^\ast/\tau_E$ (Plasma input, default
+  2). In a low-recycling regime $\tau_p^\ast\approx\tau_p$; with strong
+  recycling $\tau_p^\ast\gg\tau_p$;
+- $S_{\mathrm{beam}\to s}$ is the rate at which beam ions thermalise into
+  their own species (a D beam feeds D):
+  $S_{\mathrm{beam}} = \sum_j P_{\mathrm{useful},j}/(E_{b,j}\,e)$, minus the
+  fast ions burnt in beam-target reactions before they thermalise;
+- $R_{\mathrm{burn},s}$ is the thermal ions consumed by fusion: one D and one T
+  per D-T reaction (thermal-thermal reactions consume one of each thermal
+  species; beam-target reactions consume the fast ion and one thermal ion of
+  the other species). D-D burn-up ($\sim10^{-3}$ of D-T) is neglected;
+- $S_{\mathrm{ext},s}$ is the external fuelling (gas puff or pellets) needed
+  to hold the mix. It is also given as a gas throughput, using
+  $1\ \mathrm{Pa\,m^3}$ of $\mathrm{D_2}/\mathrm{T_2}$ at 273 K
+  $=5.3\times10^{20}$ atoms.
+
+### Over-supplied species
+
+$S_{\mathrm{ext},s}<0$ means the beam alone delivers more of species $s$ than
+the plasma loses: the mix can then only be held by pumping. With no external
+fuelling of that species its thermal fraction settles at
+
+$$
+f_s = \frac{(S_{\mathrm{beam}\to s}-R_{\mathrm{burn},s})\,\tau_p^\ast}{N_D+N_T}.
+$$
+
+This is the typical situation for D beams into a tritium-rich target (DANTE:
+$S_{\mathrm{beam}}(\mathrm{D})=4.85\times10^{20}\ \mathrm{s^{-1}}$ against a D
+loss of $2.85\times10^{20}\ \mathrm{s^{-1}}$ at D:T = 10:90, so the D fraction
+would rise to $\simeq0.17$ with tritium-only fuelling). Hydrogen beams are
+reported separately: H is not part of the D:T mix and has to be pumped.
+
+### Power balance view
+
+The same tab shows the power balance of *Power balance (electron and ion)*
+as two pies: heating sources ($P_{\mathrm{NB},e}$, $P_{\mathrm{NB},i}$,
+$P_{\mathrm{aux},e}$, $P_{\mathrm{aux},i}$, $P_\alpha$) and transport losses
+$W_e/\tau_{E,e}$, $W_i/\tau_{E,i}$, with
+$W_e=\tfrac32\langle n_e\rangle\langle T_e\rangle V$ and
+$W_i=\tfrac32 n_{\mathrm{thermal}}\langle T_i\rangle V$. In steady state the two
+losses sum to the total heating; $P_{ei}$ is an internal exchange, not a loss.
+
+### Limitations
+
+- The result scales directly with $\tau_p^\ast$, which is an input, not
+  computed; the absolute fuelling rates are only as good as that choice. The
+  sign of $S_{\mathrm{ext},s}$ (whether the beam over-supplies a species) is
+  far less sensitive.
+- D and T are assumed to share one $\tau_p^\ast$; isotope effects on particle
+  transport and wall recycling are not modelled.
+- Volume-averaged (0-D) balance: no fuelling-depth or density-profile effects
+  (pellet versus gas puff).
 
 ## Confinement time
 
@@ -827,7 +929,7 @@ weaker ($I_p^{0.57}$ vs $I_p^{0.93}$) and the toroidal-field dependence much
 stronger ($B_t^{1.08}$ vs $B_t^{0.15}$), the qualitative spherical-tokamak
 trend; the density and heating-power exponents ($n_e^{0.44}$,
 $P_{\mathrm{loss}}^{-0.73}$) are of the same order as the conventional-aspect
-scalings. This is an ST-appropriate fit ($A\sim1.3$–$1.5$ dataset).
+scalings. This is an ST-appropriate fit ($A\sim1.3$ to $1.5$ dataset).
 Selecting *Kaye NSTX H-mode* uses it for both channels
 ($\tau_{E,e}=\tau_{E,i}$).
 
@@ -1312,6 +1414,10 @@ Four further scan groups:
 - $\tau_{IE}$: effective electron-ion exchange time
 - $p_{th}$, $p_{fast}$: thermal and fast-ion pressure
 - $\beta_t$: toroidal beta
+- $f_{\mathrm{dil}}$: fast-ion dilution, $n_{b0}/(n_{\mathrm{thermal}}+n_{b0})$
+- $\tau_p^\ast$: effective particle confinement time (incl. recycling)
+- $N_s$: thermal inventory of species $s$, $\langle n_s\rangle V$
+- $S_{\mathrm{beam}\to s}$, $S_{\mathrm{ext},s}$, $R_{\mathrm{burn},s}$: beam, external fuelling and burn-up particle rates
 
 ## Appendix A: confinement-scaling $P$ definition -- expected impact
 
