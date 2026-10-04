@@ -253,7 +253,9 @@ class HotJassModel:
         )
 
     def density_profile(self, rho: np.ndarray) -> np.ndarray:
-        exponent = 2.0 * self.plasma.density_peaking
+        # Flat when profile_averaging is off, matching the solver's flat
+        # balance and flat fusion/pressure integrals (see solve.py sh_n).
+        exponent = 2.0 * self.plasma.density_peaking if self.plasma.profile_averaging else 0.0
         return self.plasma.central_density * (1.0 - rho ** 2) ** exponent
 
     def density_scan(self, n_e: np.ndarray | None = None) -> Dict[str, np.ndarray]:
@@ -360,6 +362,8 @@ class HotJassModel:
         p = self.plasma.temp_peaking
         if ion and self.plasma.temp_peaking_i >= 0.0:
             p = self.plasma.temp_peaking_i
+        if not self.plasma.profile_averaging:
+            p = 0.0  # flat, matching the solver (see solve.py sh_te/sh_ti)
         return central_temperature * (1.0 - rho ** 2) ** (2.0 * p)
 
     def fast_ion_profile(self, rho: np.ndarray) -> np.ndarray:

@@ -613,8 +613,10 @@ def thermal_fusion_power(
     a parameter literally named Te0 here, which was only ever safe because
     every call site there enforced Ti=Te; this model solves Te and Ti
     independently (no e-i equipartition, see docs/model.md), so the
-    distinction is load-bearing here. Flat radial profile assumed (no
-    profile shaping in this model, unlike the predecessor project).
+    distinction is load-bearing here. nD0/nT0/Ti_keV are ON-AXIS values of
+    (1-rho^2)^(2*peaking) profiles; peaking = 0 gives a flat profile. The
+    solver passes zero peaking when profile_averaging is off, so the
+    integral stays consistent with its flat balance (solve.py sh_n/sh_ti).
     """
     if nD0 <= 0.0 or nT0 <= 0.0:
         return 0.0

@@ -1890,10 +1890,15 @@ class HIJassApp(ctk.CTk):
         nD0_axis = op.nD0_m3 * pk_n
         nT0_axis = op.nT0_m3 * pk_n
         ne_axis = op.ne0_m3
-        p_te = plasma.temp_peaking
+        # Shape exponents are 0 (flat) when profile averaging is off, exactly
+        # as in solve.py (sh_n/sh_te/sh_ti), so this panel integrates to the
+        # solver's own totals in both modes.
+        sh_n = plasma.density_peaking if prof_on else 0.0
+        p_te = plasma.temp_peaking if prof_on else 0.0
+        sh_ti = p_ti_show if prof_on else 0.0
         th_total = (
-            physics.thermal_fusion_power_density_profile(rho, nD0_axis, nT0_axis, ti_c, plasma.density_peaking, p_ti_show)
-            + physics.thermal_dd_power_density_profile(rho, nD0_axis, ti_c, plasma.density_peaking, p_ti_show)
+            physics.thermal_fusion_power_density_profile(rho, nD0_axis, nT0_axis, ti_c, sh_n, sh_ti)
+            + physics.thermal_dd_power_density_profile(rho, nD0_axis, ti_c, sh_n, sh_ti)
         )
         bt_total = np.zeros_like(rho)
         vol = result.volume_m3
@@ -1908,10 +1913,10 @@ class HIJassApp(ctk.CTk):
             nb0_axis = p_use * tau_s0 / (eb * 1e3 * physics.E_CHARGE * max(vol, 1e-9))
             target_n = nT0_axis if sp == "D" else nD0_axis
             bt_total += physics.beam_target_power_density_profile(
-                rho, nb0_axis, target_n, te_c, eb, sp, ne_axis, plasma.density_peaking, p_te)
+                rho, nb0_axis, target_n, te_c, eb, sp, ne_axis, sh_n, p_te)
             if sp == "D" and nD0_axis > 0.0:
                 bt_total += physics.beam_target_dd_power_density_profile(
-                    rho, nb0_axis, nD0_axis, te_c, eb, ne_axis, plasma.density_peaking, p_te)
+                    rho, nb0_axis, nD0_axis, te_c, eb, ne_axis, sh_n, p_te)
         ax_pf.plot(rho, th_total / 1e3, label="thermal")
         ax_pf.plot(rho, bt_total / 1e3, label="beam-plasma")
         ax_pf.set(title=r"$P_{fus}(\rho)$  (D-T + D-D)",
@@ -2091,7 +2096,9 @@ class HIJassApp(ctk.CTk):
         n_e0 = p.central_density if n_e0 is None else float(n_e0)
         n_gw = (p.plasma_current / 1e6) / (np.pi * max(p.minor_radius, 1e-6) ** 2) * 1e20
         rho = np.linspace(0.0, 1.0, 201)
-        shape = float(np.mean(np.maximum(1.0 - rho ** 2, 0.0) ** (2.0 * max(p.density_peaking, 0.0))))
+        # Flat (shape 1) when profile averaging is off, matching the solver.
+        p_n = max(p.density_peaking, 0.0) if p.profile_averaging else 0.0
+        shape = float(np.mean(np.maximum(1.0 - rho ** 2, 0.0) ** (2.0 * p_n)))
         n_line = n_e0 * shape
         return n_line, n_gw, (n_line / n_gw if n_gw > 0 else float("inf"))
 

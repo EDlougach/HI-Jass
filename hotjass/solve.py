@@ -594,16 +594,27 @@ def solve_operating_point(
     # profile: <X>/X0 = 1/(1 + 2p). The electron and ion temperature profiles
     # can have different peaking (temperature_peaking vs temperature_peaking_i)
     # -- important in a hot-ion regime where T_i is far more peaked than T_e.
-    # All three are 1.0 (a no-op) when profile_averaging is off, so every
-    # existing result is byte-identical.
+    # All three are 1.0 (a no-op) when profile_averaging is off.
+    #
+    # sh_n / sh_te / sh_ti are the profile-SHAPE exponents passed to every
+    # radial integral below (shine-through column density, thermal and
+    # beam-target fusion, pressure, thermal energy density). They equal the
+    # peaking parameters only when profile_averaging is on. With it off the
+    # balance treats n, Te, Ti as flat, so the integrals must be flat too:
+    # previously they still applied the (1-rho^2)^(2p) shapes and read the
+    # flat balance values as ON-AXIS peaks, so e.g. temperature_peaking = 1
+    # cut the profile-average T to a third and DANTE's DT fusion power to
+    # ~1/3 (fixed 2026-10-05).
     p_te = max(config.temperature_peaking, 0.0)
     p_ti = p_te if config.temperature_peaking_i < 0.0 else max(config.temperature_peaking_i, 0.0)
     if config.profile_averaging:
         pk_n = 1.0 + 2.0 * max(config.density_peaking, 0.0)
         pk_te = 1.0 + 2.0 * p_te
         pk_ti = 1.0 + 2.0 * p_ti
+        sh_n, sh_te, sh_ti = config.density_peaking, p_te, p_ti
     else:
         pk_n = pk_te = pk_ti = 1.0
+        sh_n = sh_te = sh_ti = 0.0
     ne_bal = ne0_m3 / pk_n          # density seen by the energy balance & tau_E scalings
     ne_axis = ne0_m3               # on-axis density (== ne0_m3; the input, in profile mode)
 
@@ -631,7 +642,7 @@ def solve_operating_point(
     P_useful_w = 0.0
     for beam_index, beam in enumerate(beams):
         f_capt = physics.captured_power_fraction(
-            ne0_m3, beam.Eb_keV, beam.species, path_length_m, config.density_peaking,
+            ne0_m3, beam.Eb_keV, beam.species, path_length_m, sh_n,
             geometry=config.geometry, tangent_R_m=beam.tangent_R_m, tangent_Z_m=beam.tangent_Z_m,
             model=beam.shine_through_model,
             manual_shine_through_fraction=beam.manual_shine_through_fraction,
@@ -844,7 +855,7 @@ def solve_operating_point(
     nT0_axis = nT0 * pk_n
 
     pf_thermal = physics.thermal_fusion_power(
-        nD0_axis, nT0_axis, Ti0_keV, V, config.density_peaking, p_ti
+        nD0_axis, nT0_axis, Ti0_keV, V, sh_n, sh_ti
     )
 
     # Bulk toroidal rotation (config.rotation_model): computed here, after
@@ -897,20 +908,20 @@ def solve_operating_point(
         target_n = nT0_axis if beam.species == "D" else nD0_axis
         pf_beam += physics.beam_target_fusion_power(
             nb0_i, target_n, Te0_keV, beam.Eb_keV, V, beam.species,
-            ne_axis, config.density_peaking, p_te,
+            ne_axis, sh_n, sh_te,
             v_phi_m_s, beam.co_current,
         )
         # D-D beam-target: a fast D ion on the thermal-D population.
         if beam.species == "D" and nD0_axis > 0.0:
             p_dd, r_dd = physics.beam_target_dd_fusion_power(
                 nb0_i, nD0_axis, Te0_keV, beam.Eb_keV, V,
-                ne_axis, config.density_peaking, p_te,
+                ne_axis, sh_n, sh_te,
                 v_phi_m_s, beam.co_current,
             )
             pf_dd_beam += p_dd
             dd_beam_neutrons += r_dd
     pf_dd_thermal, dd_thermal_neutrons = physics.thermal_dd_fusion_power(
-        nD0_axis, Ti0_keV, V, config.density_peaking, p_ti
+        nD0_axis, Ti0_keV, V, sh_n, sh_ti
     )
 
     # Beam-beam fusion (config.enable_beam_beam): the ONE pairwise reaction
@@ -958,7 +969,7 @@ def solve_operating_point(
     n_thermal_axis = n_thermal * pk_n
     pressure_pa = physics.compute_pressure(
         ne_axis, n_thermal_axis, nb0_total, Te0_keV, Ti0_keV, config.fast_ion_mean_pitch2, avg_fast_energy,
-        config.density_peaking, p_te, temperature_peaking_i=p_ti,
+        sh_n, sh_te, temperature_peaking_i=sh_ti,
     )
     beta_t = physics.compute_beta_t(pressure_pa, config.Bt0)
     # Second bounding case, always computed (not config-gated): pitch2=1.0, a purely parallel/passing
@@ -967,12 +978,12 @@ def solve_operating_point(
     # pitch2 -- no new physics, and Te/Ti/n_thermal etc. don't depend on this choice at all.
     pressure_anisotropic_pa = physics.compute_pressure(
         ne_axis, n_thermal_axis, nb0_total, Te0_keV, Ti0_keV, 1.0, avg_fast_energy,
-        config.density_peaking, p_te, temperature_peaking_i=p_ti,
+        sh_n, sh_te, temperature_peaking_i=sh_ti,
     )
     beta_t_anisotropic = physics.compute_beta_t(pressure_anisotropic_pa, config.Bt0)
     u_thermal = physics.thermal_energy_density(
-        ne_axis, n_thermal_axis, Te0_keV, Ti0_keV, config.density_peaking, p_te,
-        temperature_peaking_i=p_ti,
+        ne_axis, n_thermal_axis, Te0_keV, Ti0_keV, sh_n, sh_te,
+        temperature_peaking_i=sh_ti,
     )
     u_fast = physics.fast_ion_energy_density(nb0_total, avg_fast_energy)
     R = u_fast / u_thermal if u_thermal > 0.0 else float("inf")
