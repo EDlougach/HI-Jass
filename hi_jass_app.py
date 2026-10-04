@@ -1917,8 +1917,15 @@ class HIJassApp(ctk.CTk):
             if sp == "D" and nD0_axis > 0.0:
                 bt_total += physics.beam_target_dd_power_density_profile(
                     rho, nb0_axis, nD0_axis, te_c, eb, ne_axis, sh_n, p_te)
-        ax_pf.plot(rho, th_total / 1e3, label="thermal")
-        ax_pf.plot(rho, bt_total / 1e3, label="beam-plasma")
+        rho_pf = rho
+        if getattr(op, "rho_profile", None):
+            # Solver's own deposition-weighted local profiles (profile-corrected
+            # 0-D on): they integrate exactly to the Dashboard totals.
+            rho_pf = np.asarray(op.rho_profile)
+            th_total = np.asarray(op.pf_thermal_profile_wm3)
+            bt_total = np.asarray(op.pf_beam_profile_wm3)
+        ax_pf.plot(rho_pf, th_total / 1e3, label="thermal")
+        ax_pf.plot(rho_pf, bt_total / 1e3, label="beam-plasma")
         ax_pf.set(title=r"$P_{fus}(\rho)$  (D-T + D-D)",
                   xlabel=r"$\rho$", ylabel=r"$P_{fus}$ [kW/m$^3$]")
         ax_pf.grid(alpha=0.3)

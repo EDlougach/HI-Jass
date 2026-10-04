@@ -1891,3 +1891,177 @@ def beam_target_dd_power_density_profile(
         Rn = nD_target0 * df * _trapezoidal_integral(energies, f * svn)
         out[i] = Rp * (E_DDP_MEV * 1e6 * E_CHARGE) + Rn * (E_DDN_MEV * 1e6 * E_CHARGE)
     return out
+
+
+# ---------------------------------------------------------------------------
+# Deposition-weighted fast-ion profile and profile-based fusion integrals
+# (2026-10-05). Used by solve.py when profile_averaging is on: the fast-ion
+# density is built locally as n_b(rho) = sum_j S_j h_j(rho) tau_s,j(rho)
+# (S_j = P_useful,j/(E_b,j e) the beam particle rate, h_j the birth rate per
+# unit volume from the beam deposition, tau_s the local thermalisation
+# time), instead of a single 0-D n_b0 spread like tau_s alone.
+# ---------------------------------------------------------------------------
+
+BEAM_HALFWIDTH_M = 0.10      # 1/e half-width of a beam's Gaussian cross-section
+_BEAM_BUNDLE_OFFSETS = (-1.5, -0.75, 0.0, 0.75, 1.5)   # sub-chord offsets in sigma = w/sqrt(2)
+
+
+def orbit_cutoff_rho(
+    Eb_keV: float, species: str, Bt_T: float, Ip_MA: float, R0_m: float, minor_radius_m: float,
+    elongation: float, triangularity: float, orbit_model: str, co_current: bool = True,
+    enable_orbit_loss: bool = True,
+) -> float:
+    """Lower rho of the prompt first-orbit-loss zone for one beam (1.0 = no
+    loss zone): births beyond it are lost on their first orbit. Same criteria
+    as first_orbit_loss_fraction[_st] (gyro radius, passing drift, trapped
+    tip); ported from hi_jass_app.py's `_orbit_cutoff_rho`."""
+    if not enable_orbit_loss:
+        return 1.0
+    a = minor_radius_m
+    rho_li = larmor_radius_m(Eb_keV, Bt_T, species)
+    if orbit_model in ("st_meanshift", "st_pitch"):
+        w = st_orbit_widths(Eb_keV, Bt_T, Ip_MA, R0_m, a, elongation, triangularity, species)
+        wp, wb = w["w_pass"] / a, w["w_ban"] / a
+        s = -1.0 if co_current else 1.0
+        gyro = 1.0 - rho_li / a
+        passing = 1.0 if co_current else 1.0 - wp
+        trapped = 1.0 - 0.5 * wb - s * 0.25 * wp
+        return float(max(0.0, min(gyro, passing, trapped)))
+    if co_current:
+        return 1.0
+    dr = passing_orbit_width(Eb_keV, Bt_T, Ip_MA, R0_m, a, elongation, species)
+    return float(max(0.0, 1.0 - dr / a))
+
+
+def beam_birth_density_profile(
+    rho: np.ndarray, ne0: float, density_peaking: float, Eb_keV: float, species: str,
+    geometry: "TokamakGeometry", tangent_R_m: float | None, tangent_Z_m: float,
+    R_centrepost_m: float | None, shine_model: str, Zeff: float,
+    Bt_T: float, Ip_MA: float, orbit_model: str, co_current: bool, enable_orbit_loss: bool,
+    halfwidth_m: float = BEAM_HALFWIDTH_M, n_bins: int = 40,
+) -> np.ndarray:
+    """Confined fast-ion BIRTH rate per unit volume h(rho) [m^-3] for one
+    beam, normalised so its volume integral is 1 (V * <h> = 1; zeros if the
+    beam misses the plasma).
+
+    - Beer-Lambert attenuation along tangential chords (tangential_chord), the
+      stopping cross-section evaluated exactly as captured_power_fraction does
+      (central n_e, its default T_e), on the n_e0 (1-rho^2)^(2 p_n) profile.
+    - Finite beam width: a pencil chord tangent at R_t deposits a finite number
+      of ions into the vanishing volume of the flux surface rho(R_t), so the
+      density per volume diverges there; the beam is sampled as 5 x 5 parallel
+      sub-chords over a Gaussian cross-section exp(-r^2/w^2), w = halfwidth_m,
+      shifted in tangency radius and height.
+    - Births beyond orbit_cutoff_rho are removed (prompt first-orbit loss,
+      already counted in the orbit-loss power).
+    - Orbit-width smoothing: the births are spread over half the passing orbit
+      width (floor 0.03 in rho) as a VOLUME-WEIGHTED average of the birth
+      density, which cannot pile births onto the axis.
+    """
+    rho = np.asarray(rho, dtype=float)
+    a, R0, kappa = geometry.minor_radius, geometry.major_radius, geometry.elongation
+    A = beam_mass_number(species)
+    model = "riviere" if shine_model.strip().lower() == "manual" else shine_model
+    sigma_m2 = stopping_cross_section_m2(Eb_keV / A, model, ne0 * 1e-6, 10.0, Zeff, species=species)
+    edges = np.linspace(0.0, 1.0, int(n_bins) + 1)
+    ctr = 0.5 * (edges[:-1] + edges[1:])
+    counts = np.zeros(len(ctr))
+    s_off = halfwidth_m / math.sqrt(2.0)
+    r_t0 = R0 if tangent_R_m is None else float(tangent_R_m)
+    pk = max(density_peaking, 0.0)
+    for u in _BEAM_BUNDLE_OFFSETS:
+        for v in _BEAM_BUNDLE_OFFSETS:
+            ch = tangential_chord(R0, a, kappa, tangent_R_m=r_t0 + u * s_off,
+                                  tangent_Z_m=tangent_Z_m + v * s_off,
+                                  R_centrepost_m=R_centrepost_m, n_samples=600)
+            if ch is None:
+                continue
+            s, rho_c, _R = ch
+            ne_c = ne0 * np.maximum(1.0 - rho_c ** 2, 0.0) ** (2.0 * pk)
+            ds = np.gradient(s)
+            tau = np.cumsum(ne_c * sigma_m2 * ds)
+            birth = ne_c * sigma_m2 * np.exp(-(tau - tau[0]))
+            h, _ = np.histogram(rho_c, bins=edges, weights=birth * ds)
+            counts += math.exp(-0.5 * (u * u + v * v)) * h
+    if counts.sum() <= 0.0:
+        return np.zeros_like(rho)
+    rc = orbit_cutoff_rho(Eb_keV, species, Bt_T, Ip_MA, R0, a, kappa, geometry.triangularity,
+                          orbit_model, co_current, enable_orbit_loss)
+    counts = np.where(ctr > rc, 0.0, counts)
+    if counts.sum() <= 0.0:
+        return np.zeros_like(rho)
+    if orbit_model in ("st_meanshift", "st_pitch"):
+        width = st_orbit_widths(Eb_keV, Bt_T, Ip_MA, R0, a, kappa, geometry.triangularity, species)["w_pass"]
+    else:
+        width = passing_orbit_width(Eb_keV, Bt_T, Ip_MA, R0, a, kappa, species)
+    sig = max(0.5 * width / a, 0.03)
+    kern = np.exp(-0.5 * ((ctr[:, None] - ctr[None, :]) / sig) ** 2)
+    kern += np.exp(-0.5 * ((ctr[:, None] + ctr[None, :]) / sig) ** 2)   # reflect at rho = 0
+    vol = np.diff(edges ** 2)
+    dens = (kern @ counts) / (kern @ vol)
+    shape = np.maximum(np.interp(rho, ctr, dens, left=dens[0], right=0.0), 0.0)
+    avg = profile_volume_average(shape, rho)
+    return shape / (avg * geometry.volume()) if avg > 0.0 else np.zeros_like(rho)
+
+
+def thermal_fusion_power_from_profiles(rho, nD, nT, Ti_keV, volume_m3):
+    """Thermal D-T fusion power [W] and its power density [W/m^3] from radial
+    arrays nD(rho), nT(rho), Ti(rho) (any shape)."""
+    Ti = np.maximum(np.asarray(Ti_keV, dtype=float), 1.0e-3)
+    dens = np.asarray(nD) * np.asarray(nT) * bosch_hale_dt_reactivity(Ti) * E_FUSION_J
+    return volume_m3 * profile_volume_average(dens, rho), dens
+
+
+def thermal_dd_fusion_power_from_profiles(rho, nD, Ti_keV, volume_m3):
+    """Thermal D-D fusion power [W], D(d,n)3He rate [1/s] and power density
+    [W/m^3] from radial arrays (both branches, 1/2 identical-particle factor)."""
+    Ti = np.maximum(np.asarray(Ti_keV, dtype=float), 1.0e-3)
+    half_nd2 = 0.5 * np.asarray(nD) ** 2
+    rp = half_nd2 * bosch_hale_dd_reactivity(Ti, "p")
+    rn = half_nd2 * bosch_hale_dd_reactivity(Ti, "n")
+    dens = rp * (E_DDP_MEV * 1e6 * E_CHARGE) + rn * (E_DDN_MEV * 1e6 * E_CHARGE)
+    return (volume_m3 * profile_volume_average(dens, rho),
+            volume_m3 * profile_volume_average(rn, rho), dens)
+
+
+def beam_target_fusion_power_from_profiles(rho, nb, n_target, Te_keV, Eb_keV, species, volume_m3,
+                                           v_phi_m_s: float = 0.0, co_current: bool = True):
+    """Beam-target D-T fusion power [W] and power density [W/m^3] from radial
+    arrays of the fast-ion density nb(rho) (this beam), the target density
+    (the OTHER of D/T) and T_e(rho) (shapes the local slowing-down
+    distribution via E_c). Same stationary-target spectrum as
+    beam_target_fusion_power()."""
+    energies = np.linspace(1.0e-3, Eb_keV, 601)
+    sigma_v = beam_target_reactivity_spectrum(energies, species, v_phi_m_s, co_current)
+    dens = np.zeros(len(rho))
+    for i, (nbi, nti, tei) in enumerate(zip(nb, n_target, Te_keV)):
+        if nbi <= 0.0 or nti <= 0.0 or tei <= 1.0e-4:
+            continue
+        f = slowing_down_distribution(float(tei), float(nbi), Eb_keV, energies, species)
+        dens[i] = nti * _trapezoidal_integral(energies, f * sigma_v) * E_FUSION_J
+    return volume_m3 * profile_volume_average(dens, rho), dens
+
+
+def beam_target_dd_fusion_power_from_profiles(rho, nb, nD_target, Te_keV, Eb_keV, volume_m3,
+                                              v_phi_m_s: float = 0.0, co_current: bool = True):
+    """Beam-target D-D fusion power [W], D(d,n)3He rate [1/s] and power
+    density [W/m^3] from radial arrays (fast D on thermal D)."""
+    energies = np.linspace(1.0e-3, Eb_keV, 601)
+    v_beam = beam_velocity(energies, "D")
+    s_dir = 1.0 if co_current else -1.0
+    v = np.abs(v_beam - s_dir * v_phi_m_s)
+    e_rel_keV = 0.5 * M_D * v ** 2 / (1.0e3 * E_CHARGE)
+    svp = bosch_hale_dd_cross_section(e_rel_keV, "p") * v
+    svn = bosch_hale_dd_cross_section(e_rel_keV, "n") * v
+    dens = np.zeros(len(rho))
+    rate_n = np.zeros(len(rho))
+    for i, (nbi, ndi, tei) in enumerate(zip(nb, nD_target, Te_keV)):
+        if nbi <= 0.0 or ndi <= 0.0 or tei <= 1.0e-4:
+            continue
+        f = slowing_down_distribution(float(tei), float(nbi), Eb_keV, energies, "D")
+        rp = ndi * _trapezoidal_integral(energies, f * svp)
+        rn = ndi * _trapezoidal_integral(energies, f * svn)
+        rate_n[i] = rn
+        dens[i] = rp * (E_DDP_MEV * 1e6 * E_CHARGE) + rn * (E_DDN_MEV * 1e6 * E_CHARGE)
+    return (volume_m3 * profile_volume_average(dens, rho),
+            volume_m3 * profile_volume_average(rate_n, rho), dens)

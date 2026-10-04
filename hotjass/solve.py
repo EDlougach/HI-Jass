@@ -9,6 +9,8 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 
+import numpy as np
+
 from . import physics
 
 
@@ -306,6 +308,16 @@ class OperatingPoint:
     # TokamakConfig, since (like tau_E_s itself) it's a per-call scanned quantity, not a static
     # device/config parameter.
     infeasible_reason: str | None = None
+    # Radial profiles of the deposition-weighted fast-ion model (filled only
+    # with profile_averaging on; empty otherwise): rho grid, fast-ion density
+    # n_b(rho) (all beams), thermal fuel n_D+n_T(rho), and the D-T + D-D
+    # fusion power density [W/m^3] split thermal / beam-target. Their volume
+    # integrals are exactly the reported totals.
+    rho_profile: list[float] = field(default_factory=list)
+    nb_profile_m3: list[float] = field(default_factory=list)
+    n_fuel_profile_m3: list[float] = field(default_factory=list)
+    pf_thermal_profile_wm3: list[float] = field(default_factory=list)
+    pf_beam_profile_wm3: list[float] = field(default_factory=list)
 
 
 def _n_sum_for_ne(ne0_m3: float, Zeff: float) -> float:
@@ -365,6 +377,7 @@ def _solve_te_keV(ne0_m3: float, beams: list[BeamSpec], tau_E_s: float, volume_m
 def _solve_te_ti_coupled_keV(
     ne0_m3: float, useful_beams: list[BeamSpec], tau_Ee_s: float, tau_Ei_s: float, volume_m3: float,
     config: TokamakConfig, extra_e_source_w: float = 0.0, extra_i_source_w: float = 0.0,
+    nb_of_te=None,
 ) -> tuple[float, float, float, float, list[float], list[float], float, float, float]:
     """Coupled electron/ion power balance with equipartition
     (config.enable_equipartition):
@@ -396,6 +409,11 @@ def _solve_te_ti_coupled_keV(
     """
 
     def n_thermal_raw(Te_keV: float) -> tuple[float, float]:
+        if nb_of_te is not None:
+            # deposition-weighted local model (profile_averaging): volume-
+            # average fast-ion density at this trial Te
+            nb0 = nb_of_te(Te_keV)
+            return _n_sum_for_ne(ne0_m3, config.Zeff) - nb0, nb0
         nb0 = 0.0
         for beam in useful_beams:
             tau_s = physics.thermalization_time(ne0_m3, Te_keV, beam.Eb_keV, beam.species)
@@ -786,6 +804,41 @@ def solve_operating_point(
     ee_source_w = extra_e_source_w + aux_e_source_w
     ei_source_w = extra_i_source_w + aux_i_source_w
 
+    # Deposition-weighted fast-ion model (profile_averaging only, 2026-10-05):
+    # n_b(rho) = sum_j S_j h_j(rho) tau_s,j(n_e(rho), T_e(rho)), with S_j =
+    # P_useful,j/(E_b e), h_j the confined birth rate per unit volume
+    # (physics.beam_birth_density_profile, V<h_j> = 1) and the local
+    # thermalisation time. Its volume average replaces the 0-D n_b0 =
+    # sum P tau_s(<n_e>, <T_e>)/(E e V) inside the balance, so dilution,
+    # n_thermal and the fusion integrals below all use the same fast ions.
+    # With profile_averaging off the old flat model is kept unchanged.
+    nb_model = None
+    if config.profile_averaging and useful_beams:
+        rho_g = np.linspace(0.0, 1.0, 121)
+        base = np.maximum(1.0 - rho_g ** 2, 0.0)
+        n_shape, te_shape, ti_shape = base ** (2.0 * sh_n), base ** (2.0 * sh_te), base ** (2.0 * sh_ti)
+        ne_r = ne_axis * n_shape
+        rcp = config.centrepost_radius_m if config.centrepost_radius_m > 0.0 else None
+        births = [physics.beam_birth_density_profile(
+            rho_g, ne_axis, sh_n, b.Eb_keV, b.species, config.geometry, b.tangent_R_m, b.tangent_Z_m,
+            rcp, b.shine_through_model, config.Zeff, config.Bt0, config.Ip_MA, config.orbit_model,
+            bool(b.co_current), config.enable_orbit_loss) for b in useful_beams]
+        rates = [b.P_NB_W / (b.Eb_keV * 1e3 * physics.E_CHARGE) for b in useful_beams]
+
+        def nb_profiles(Te_bal_keV: float) -> list:
+            te_r = Te_bal_keV * pk_te * te_shape
+            out = []
+            for b, h, S in zip(useful_beams, births, rates):
+                tau = np.array([physics.thermalization_time(float(n), float(t), b.Eb_keV, b.species)
+                                if (n > 0.0 and t > 1.0e-4) else 0.0 for n, t in zip(ne_r, te_r)])
+                out.append(S * h * tau)
+            return out
+
+        def nb_of_te(Te_bal_keV: float) -> float:
+            return float(sum(physics.profile_volume_average(p, rho_g) for p in nb_profiles(Te_bal_keV)))
+
+        nb_model = nb_of_te
+
     P_ei_w = 0.0
     if config.enable_equipartition:
         # Coupled solve: Te and Ti (and hence P_e_w/P_i_w, which stay the
@@ -793,7 +846,7 @@ def solve_operating_point(
         # exchange) all come out of one nested-bisection call.
         Te_keV, Ti_keV, n_thermal, nb0_total, Le_list, Li_list, P_e_w, P_i_w, P_ei_w = \
             _solve_te_ti_coupled_keV(ne_bal, useful_beams, tau_E_s, tau_Ei_s, V, config,
-                                     ee_source_w, ei_source_w)
+                                     ee_source_w, ei_source_w, nb_of_te=nb_model)
     else:
         Te_keV = _solve_te_keV(ne_bal, useful_beams, tau_E_s, V, ee_source_w)
 
@@ -813,6 +866,8 @@ def solve_operating_point(
             P_i_w += li * beam.P_NB_W
             tau_s = physics.thermalization_time(ne_bal, Te_keV, beam.Eb_keV, beam.species)
             nb0_total += beam.P_NB_W * tau_s / (beam.Eb_keV * 1e3 * physics.E_CHARGE * V)
+        if nb_model is not None:
+            nb0_total = nb_model(Te_keV)
 
         n_thermal = _n_sum_for_ne(ne_bal, config.Zeff) - nb0_total
 
@@ -924,6 +979,49 @@ def solve_operating_point(
         nD0_axis, Ti0_keV, V, sh_n, sh_ti
     )
 
+    # Deposition-weighted model: replace the shape-based integrals above with
+    # local ones built from the actual profiles -- per-beam n_b(rho), thermal
+    # fuel n_th(rho) = n_sum(rho) - n_b(rho) (locally depleted where the fast
+    # ions sit), T_e(rho), T_i(rho).
+    rho_out: list = []
+    nb_out: list = []
+    nfuel_out: list = []
+    pth_out: list = []
+    pbt_out: list = []
+    if nb_model is not None:
+        nbp = nb_profiles(Te_keV)
+        nb_tot = np.sum(nbp, axis=0)
+        n_sum_r = _n_sum_for_ne(1.0, config.Zeff) * ne_r
+        n_th_r = np.maximum(n_sum_r - nb_tot, 0.0)
+        nD_r, nT_r = config.mix_D * n_th_r, config.mix_T * n_th_r
+        te_r = Te_keV * pk_te * te_shape
+        ti_r = Ti_keV * pk_ti * ti_shape
+        pf_thermal, dens_th = physics.thermal_fusion_power_from_profiles(rho_g, nD_r, nT_r, ti_r, V)
+        pf_dd_thermal, dd_thermal_neutrons, dens_ddth = physics.thermal_dd_fusion_power_from_profiles(
+            rho_g, nD_r, ti_r, V)
+        pf_beam = 0.0
+        pf_dd_beam = 0.0
+        dd_beam_neutrons = 0.0
+        dens_bt = np.zeros_like(rho_g)
+        nb0_per_beam = []
+        for b, nb_j in zip(useful_beams, nbp):
+            nb0_per_beam.append(physics.profile_volume_average(nb_j, rho_g))
+            if b.species not in ("D", "T"):
+                continue
+            target = nT_r if b.species == "D" else nD_r
+            p, d = physics.beam_target_fusion_power_from_profiles(
+                rho_g, nb_j, target, te_r, b.Eb_keV, b.species, V, v_phi_m_s, b.co_current)
+            pf_beam += p
+            dens_bt += d
+            if b.species == "D":
+                p_dd, r_dd, d_dd = physics.beam_target_dd_fusion_power_from_profiles(
+                    rho_g, nb_j, nD_r, te_r, b.Eb_keV, V, v_phi_m_s, b.co_current)
+                pf_dd_beam += p_dd
+                dd_beam_neutrons += r_dd
+                dens_bt += d_dd
+        rho_out, nb_out, nfuel_out = rho_g.tolist(), nb_tot.tolist(), n_th_r.tolist()
+        pth_out, pbt_out = (dens_th + dens_ddth).tolist(), dens_bt.tolist()
+
     # Beam-beam fusion (config.enable_beam_beam): the ONE pairwise reaction
     # between the first two useful beams (this project's tested scope).
     # Off by default -- pf_bb_dt/pf_bb_dd/neutron_rate_bb all stay 0.0.
@@ -1010,4 +1108,6 @@ def solve_operating_point(
         pressure_pa=pressure_pa, beta_t=beta_t,
         pressure_anisotropic_pa=pressure_anisotropic_pa, beta_t_anisotropic=beta_t_anisotropic,
         avg_fast_energy_keV=avg_fast_energy, R_fast_thermal=R, tau_E_s=tau_E_s, tau_Ei_s=tau_Ei_s,
+        rho_profile=rho_out, nb_profile_m3=nb_out, n_fuel_profile_m3=nfuel_out,
+        pf_thermal_profile_wm3=pth_out, pf_beam_profile_wm3=pbt_out,
     )
