@@ -752,6 +752,51 @@ a **hot-ion mode** on a compact ST needs $p_{Ti}\gg p_{Te}$ ($T_{i0}/\langle
 T_i\rangle\simeq3$ to $4$ with $T_e$ nearly flat). With all peaking parameters at
 $0$ the correction is a no-op.
 
+### Deposition-weighted fast-ion profile
+
+With profile-corrected 0-D on, the fast-ion density is built **locally** from
+the beam deposition (October 2026) instead of a single 0-D value spread like
+the slowing-down time:
+
+$$
+n_b(\rho) = \sum_j S_j\,h_j(\rho)\,\tau_{s,j}\bigl(n_e(\rho),T_e(\rho)\bigr),
+\qquad S_j = \frac{P_{\mathrm{useful},j}}{E_{b,j}\,e},
+$$
+
+with $\tau_{s,j}$ the local thermalisation time and $h_j(\rho)$ the confined
+birth rate per unit volume of beam $j$, normalised so that
+$V\langle h_j\rangle = 1$
+(`physics.beam_birth_density_profile`):
+
+- **Attenuation** along tangential chords (Beer-Lambert) on the
+  $n_{e0}(1-\rho^2)^{2p_n}$ profile, with the same stopping cross-section as
+  the shine-through model.
+- **Finite beam width.** A pencil chord tangent at $R_t$ deposits a finite
+  number of ions into the vanishing volume of the flux surface $\rho(R_t)$, so
+  its birth density per volume diverges there. The beam is therefore sampled
+  as $5\times5$ parallel sub-chords over a Gaussian cross-section
+  $\exp(-r^2/w^2)$ with $w = 0.10$ m, shifted in tangency radius and height.
+- **Prompt loss.** Births beyond the first-orbit-loss radius are removed
+  (already counted in the orbit-loss power).
+- **Orbit-width smoothing.** Births are spread over half the passing orbit
+  width (at least $0.03$ in $\rho$), as a *volume-weighted* average of the
+  birth density, so that births do not pile up on the axis.
+
+The volume average of $n_b(\rho)$ replaces the 0-D $n_{b0}$ inside the
+balance, so dilution, the thermal density $n_{th}(\rho) = n_{\Sigma}(\rho) -
+n_b(\rho)$ (locally depleted where the fast ions sit) and the thermal and
+beam-target fusion integrals all use the same fast ions. The solver stores
+the radial profiles on `OperatingPoint` (`rho_profile`, `nb_profile_m3`,
+`n_fuel_profile_m3`, `ne_profile_m3`, `Te_profile_keV`, `Ti_profile_keV`,
+the fusion power densities, and per beam the birth rates $S_j h_j(\rho)$ and
+birth pitch $\xi_{0,j}(\rho)$). Their volume integrals are exactly the
+reported totals. With profile-corrected 0-D off the flat model is kept
+unchanged.
+
+On the ASCOT5/BBNBI DANTE reference case (4 MW D at 80 keV) the deposition
+model gives 1.24 MW of fusion power against ASCOT's 1.4 MW; the earlier
+single-$n_{b0}$ model gave 0.87 MW.
+
 ## Particle balance and fuelling
 
 The power balance fixes $T_e$ and $T_i$ at a given density, but says nothing
@@ -848,6 +893,151 @@ losses sum to the total heating; $P_{ei}$ is an internal exchange, not a loss.
 - Volume-averaged (0-D) balance: no fuelling-depth or density-profile effects
   (pellet versus gas puff).
 
+## Non-inductive current (NBCD and bootstrap)
+
+The HOT-Jass web app (**Current** tab) estimates the neutral-beam driven and
+the bootstrap current of a solved operating point (`hotjass.current`,
+`HotJassModel.current_drive(op)`). It is a **diagnostic only**: nothing feeds
+back into the solve, so an operating point whose non-inductive current exceeds
+$I_p$ is flagged rather than corrected. It needs profile-corrected 0-D, because
+it uses the solver's radial profiles, the beam deposition and the birth pitch;
+with flat profiles there are no gradients and no current is computed.
+
+### Neutral-beam current drive
+
+The fast-ion current of each beam is the local 1-D Cordey / Start-Cordey
+result for a mono-energetic source, with electron and ion drag and ion
+pitch-angle scattering (no energy diffusion):
+
+$$
+j_f = Z_b\,e\,S\,h(\rho)\,\tau_s\,v_b\,\xi_0\,J(u_c,\beta),
+\qquad
+J = \int_0^1 \frac{u^3}{u^3+u_c^3}
+\left[\frac{u^3(1+u_c^3)}{u^3+u_c^3}\right]^{\beta/3} du,
+$$
+
+where:
+
+- $S\,h(\rho)$ is the confined birth rate per volume (above), and $\tau_s$
+  the Spitzer slowing-down time ($dv/dt = -(v/\tau_s)(1+v_c^3/v^3)$).
+- $\xi_0 = R_t/R$ is the birth pitch. A horizontal chord tangent at $R_t$
+  crosses radius $R$ with toroidal direction cosine $R_t/R$; it is averaged
+  over the same sub-chords as $h$ and weighted by births, and is negative
+  for counter-current beams.
+- $u = v/v_b$, $u_c^3 = (E_c/E_b)^{3/2}$, with the critical energy from the
+  local composition (D, T and the carbon-like impurity),
+  $E_c = 14.8\,A_b T_e\,\bigl(\sum_j n_j Z_j^2/n_e A_j\bigr)^{2/3}$.
+- $\beta = Z_{\mathrm{eff}}/\bar Z$, with
+  $\bar Z = \sum_j n_j Z_j^2 (m_b/m_j)/n_e$, is the ratio of the ion
+  pitch-angle scattering rate to the ion drag on the speed. (Written as
+  $l(l+1)\beta'/3$ with $\beta' = Z_{\mathrm{eff}}/2\bar Z$ elsewhere in the
+  literature; for the $l=1$ moment both give the exponent $Z_{\mathrm{eff}}/3\bar Z$.)
+
+The electron shielding with the trapped-electron correction (Start & Cordey
+1980) gives the net driven current:
+
+$$
+j_{NB} = j_f\left[1 - \frac{Z_b}{Z_{\mathrm{eff}}}(1-G)\right],
+\qquad
+G = \left(1.55+\frac{0.85}{Z_{\mathrm{eff}}}\right)\sqrt{\epsilon}
+  - \left(0.2+\frac{1.55}{Z_{\mathrm{eff}}}\right)\epsilon,
+$$
+
+with $\epsilon = \rho a/R_0$ and $G$ clipped to $[0,1]$. Total currents and
+the current-drive efficiency:
+
+$$
+I = \frac{V}{2\pi R_0}\langle j\rangle,
+\qquad
+\eta_{CD} = \frac{I_{NB}\,R_0\,\bar n_{e,20}}{P_{NB}}
+\quad [10^{20}\,\mathrm{A\,W^{-1}m^{-2}}],
+$$
+
+with $P_{NB}$ the injected power and $\bar n_e$ the line-average density.
+
+### Bootstrap current
+
+Sauter, Angioni & Lin-Liu, *Phys. Plasmas* **6** (1999) 2834 (erratum **9**
+(2002) 5140), valid at arbitrary aspect ratio and collisionality, in the
+cylindrical form
+
+$$
+j_{BS} = -\frac{1}{B_p}\left[L_{31}\frac{dp}{dr}
+ + L_{32}\,n_e\frac{dT_e}{dr} + L_{34}\,\alpha\,n_i\frac{dT_i}{dr}\right],
+$$
+
+with $p$ the **thermal** pressure (fast ions excluded; their current is the
+NBCD), $L_{31}, L_{32}, L_{34}, \alpha$ the Sauter fits in the trapped
+fraction $f_t$ (Lin-Liu & Miller), $\nu^\ast_e$, $\nu^\ast_i$ and
+$Z_{\mathrm{eff}}$, and $dr = a\,d\rho$. The profile gradients are taken
+analytically from the $(1-\rho^2)^{2p}$ shapes and the current is integrated
+on a fine grid clustered at the edge: for low peaking exponents ($2p<1$) the
+gradients diverge at $\rho=1$, and a finite-difference gradient would make
+the edge contribution grid-dependent.
+
+The 0-D model has no current profile, so $B_p$ and $q$ come from an
+**assumed** one:
+
+$$
+j \propto (1-\rho^2)^{\nu},\qquad \nu = \frac{q_{cyl}}{q_0} - 1,
+\qquad
+B_p = \frac{\mu_0 I(\rho)}{L_p},\quad L_p = 2\pi\rho a\sqrt{\frac{1+\kappa^2}{2}},
+$$
+
+with $I(\rho) = I_p[1-(1-\rho^2)^{\nu+1}]$, $q_{cyl}$ the cylindrical edge
+$q$ (`safety_factor_cyl_edge`) and $q_0$ an input (Plasma row `q0`, default 1).
+The low-aspect-ratio toroidal enhancement of $q$ ($q_{95}/q_{cyl}$, large on
+an ST) is not a current-peaking effect, so it enters $q(\rho)$ only, used in
+the collisionalities:
+
+$$
+q(\rho) = q_{cyl}(\rho)\left[1 + \left(\frac{q_{95}}{q_{cyl}}-1\right)\rho^2\right].
+$$
+
+(Taking $\nu$ from $q_{95}$ instead gave $\nu\approx16$ on MAST-U and NSTX-U,
+an unrealistically peaked current.)
+
+The inductive remainder is $I_{ind} = I_p - I_{NB} - I_{BS}$ (negative:
+over-drive), and $f_{NI} = (I_{NB}+I_{BS})/I_p$.
+
+### Validation
+
+TRANSP and CRONOS references, at matched $\beta_N$ (by adjusting $\tau_E$)
+where the reference confinement could not be reproduced directly:
+
+| Case | $I_{NB}$ model / ref. | $I_{BS}$ model / ref. |
+|---|---|---|
+| NSTX-U 0.975 MA, 12.6 MW 90 kV, H98=1 | 476 / $\approx 370$ kA | 471 / $\approx 605$ kA |
+| NSTX-U 0.87 MA, 10.2 MW 80 kV, H98=1 | 396 / $\approx 287$ kA | 415 / $\approx 583$ kA |
+| NSTX-U 1.1 MA, 15.6 MW 100 kV, H98=1 | 561 / $\approx 396$ kA | 535 / $\approx 704$ kA |
+| ITER hybrid 12 MA, $\beta_N$ 2.65 | 3.33 / 3.5 MA | 5.82 / 4.7 MA |
+| ITER steady state (no ITB) 10 MA, $\beta_N$ 2.70 | 4.31 / 3.6 MA | 5.45 / 5.0 MA |
+| JET #58323 1.4 MA, $\beta_N$ 2.8 | 0.55 / 0.33 MA | 0.51 / 0.32 MA |
+
+References: NSTX-U, Gerhardt et al., *Nucl. Fusion* **52** (2012) 083020
+(fully non-inductive scenarios, Table 2; total $f_{NI}$ reproduced within
+0.93 to 1.00). ITER, Parail et al., *Nucl. Fusion* **53** (2013) 113002
+(Table 3). JET, Sips, EPS 2003 O-1.3A (TRANSP; density and beam set-up only
+approximately known, $a = 0.95$ m used for the diverted plasma).
+
+NBCD comes out high except at ITER's 1 MeV. Part of this is the
+**full-energy-only beam**: the $E/2$ and $E/3$ components of positive-ion
+beams are not modelled (on the NSTX-U case they lower $I_{NB}$ from 476 to
+404 kA). The bootstrap current agrees within about 25 % at ITER but is low on
+NSTX-U and high on JET, i.e. no single bias; it is sensitive to the assumed
+profile shapes and $q$.
+
+### Limitations
+
+- Mono-energetic beam (no $E/2$, $E/3$), no anomalous fast-ion diffusion, no
+  current diffusion (steady state assumed).
+- Assumed current profile and $q(\rho)$; no equilibrium.
+- Where fast ions make the thermal-ion density hollow (fixed $n_e$, large
+  $n_b$ in the core), the thermal bootstrap reverses near the axis (seen on
+  DANTE).
+- Low-peaking presets ($p\simeq0.1$ to $0.25$) put roughly 28 % of
+  $I_{BS}$ at $\rho > 0.95$: the power-law shapes act like a pedestal.
+
 ## Confinement time
 
 $\tau_{E,e}$ and $\tau_{E,i}$ in the balances above are set per channel by the
@@ -868,6 +1058,19 @@ prescribed auxiliary (ECRH, ICRH) heating. Fusion alpha heating is not included
 in $P_{\mathrm{loss}}$ (it is closed by an outer fixed-point and is not known
 when $\tau_E$ is evaluated). None of these depend on $T_e$ or $T_i$, so each is
 evaluated once.
+
+### Confinement enhancement
+
+Every scaling below can be multiplied by a confinement enhancement $h$
+(default 0; the MODELS slider under Confinement in the HOT-Jass web app, and
+the config field `tauE_enhancement` in HI-Jass):
+
+$$
+\tau_E = (1+h)\,\tau_{\mathrm{scaling}}, \qquad H = 1+h.
+$$
+
+$h=0$ is the plain scaling. Fixed $\tau_E$ input and the neoclassical ion
+channel are not affected.
 
 ### Fixed (input)
 
@@ -1085,6 +1288,45 @@ R = \frac{u_{fast}}{U_t}
 $$
 
 The underlying HotJass calculation still evaluates each beam separately before forming these combined diagnostics.
+
+## Plasma beta: isotropic and anisotropic fast ions
+
+Toroidal and normalised beta use the volume-averaged pressure of thermal
+electrons, thermal ions and fast beam ions:
+
+$$
+\beta_t = \frac{\langle p\rangle}{B_0^2/2\mu_0},
+\qquad
+\beta_N = \beta_t[\%]\,\frac{a\,B_0}{I_p[\mathrm{MA}]},
+\qquad
+\langle p\rangle = \langle n_eT_e\rangle + \langle n_iT_i\rangle + p_{fast}.
+$$
+
+The fast-ion pressure depends on the pitch distribution, which the 0-D model
+does not resolve. With $u_{fast} = n_b\langle E_{fast}\rangle$ the fast-ion
+energy density and $\xi = v_\parallel/v$:
+
+$$
+p_{fast} = \bigl(1-\langle\xi^2\rangle\bigr)\,u_{fast}.
+$$
+
+- **Isotropic** ($\langle\xi^2\rangle = 1/3$, the default): $p_{fast} =
+  \tfrac{2}{3}u_{fast}$.
+- **Anisotropic** bound ($\langle\xi^2\rangle = 1$, all fast ions parallel):
+  $p_{fast} = 0$.
+
+The solver reports the first as `beta_t` (pitch set by
+`fast_ion_mean_pitch2`) and always computes the second as
+`beta_t_anisotropic`.
+
+Both are shown (the anisotropic value in brackets). Tangential beams are born
+nearly parallel and isotropise only by pitch-angle scattering while slowing
+down, so the true value lies between the two bounds: closer to the
+anisotropic one for tangential injection at high $T_e$ (slowing down faster
+than scattering), closer to the isotropic one for perpendicular beams. The
+difference matters where fast ions carry a large share of the pressure (low
+density, high beam power). $\beta$ is a diagnostic: nothing in the solve
+depends on it.
 
 ## Results tabs (Operating point)
 

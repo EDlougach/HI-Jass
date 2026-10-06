@@ -1938,8 +1938,8 @@ def beam_birth_density_profile(
     geometry: "TokamakGeometry", tangent_R_m: float | None, tangent_Z_m: float,
     R_centrepost_m: float | None, shine_model: str, Zeff: float,
     Bt_T: float, Ip_MA: float, orbit_model: str, co_current: bool, enable_orbit_loss: bool,
-    halfwidth_m: float = BEAM_HALFWIDTH_M, n_bins: int = 40,
-) -> np.ndarray:
+    halfwidth_m: float = BEAM_HALFWIDTH_M, n_bins: int = 40, return_pitch: bool = False,
+):
     """Confined fast-ion BIRTH rate per unit volume h(rho) [m^-3] for one
     beam, normalised so its volume integral is 1 (V * <h> = 1; zeros if the
     beam misses the plasma).
@@ -1957,6 +1957,13 @@ def beam_birth_density_profile(
     - Orbit-width smoothing: the births are spread over half the passing orbit
       width (floor 0.03 in rho) as a VOLUME-WEIGHTED average of the birth
       density, which cannot pile births onto the axis.
+
+    return_pitch=True also returns the birth-weighted mean pitch
+    xi0(rho) = v_par/v at birth: a horizontal chord tangent at R_t crosses
+    radius R with toroidal direction cosine R_t/R (poloidal field and the
+    chord's vertical tilt neglected), negative for counter-current beams.
+    Averaged over the same sub-chords and smoothed with the same kernel,
+    weighted by births. Used for the NBCD estimate (hotjass.current).
     """
     rho = np.asarray(rho, dtype=float)
     a, R0, kappa = geometry.minor_radius, geometry.major_radius, geometry.elongation
@@ -1966,6 +1973,7 @@ def beam_birth_density_profile(
     edges = np.linspace(0.0, 1.0, int(n_bins) + 1)
     ctr = 0.5 * (edges[:-1] + edges[1:])
     counts = np.zeros(len(ctr))
+    xi_sum = np.zeros(len(ctr))
     s_off = halfwidth_m / math.sqrt(2.0)
     r_t0 = R0 if tangent_R_m is None else float(tangent_R_m)
     pk = max(density_peaking, 0.0)
@@ -1976,20 +1984,27 @@ def beam_birth_density_profile(
                                   R_centrepost_m=R_centrepost_m, n_samples=600)
             if ch is None:
                 continue
-            s, rho_c, _R = ch
+            s, rho_c, R_c = ch
             ne_c = ne0 * np.maximum(1.0 - rho_c ** 2, 0.0) ** (2.0 * pk)
             ds = np.gradient(s)
             tau = np.cumsum(ne_c * sigma_m2 * ds)
             birth = ne_c * sigma_m2 * np.exp(-(tau - tau[0]))
+            wgt = math.exp(-0.5 * (u * u + v * v))
             h, _ = np.histogram(rho_c, bins=edges, weights=birth * ds)
-            counts += math.exp(-0.5 * (u * u + v * v)) * h
+            counts += wgt * h
+            if return_pitch:
+                xi_c = np.clip(max(r_t0 + u * s_off, 1e-3) / R_c, 0.0, 1.0)
+                hx, _ = np.histogram(rho_c, bins=edges, weights=birth * ds * xi_c)
+                xi_sum += wgt * hx
+    zero = (np.zeros_like(rho), np.zeros_like(rho)) if return_pitch else np.zeros_like(rho)
     if counts.sum() <= 0.0:
-        return np.zeros_like(rho)
+        return zero
     rc = orbit_cutoff_rho(Eb_keV, species, Bt_T, Ip_MA, R0, a, kappa, geometry.triangularity,
                           orbit_model, co_current, enable_orbit_loss)
     counts = np.where(ctr > rc, 0.0, counts)
+    xi_sum = np.where(ctr > rc, 0.0, xi_sum)
     if counts.sum() <= 0.0:
-        return np.zeros_like(rho)
+        return zero
     if orbit_model in ("st_meanshift", "st_pitch"):
         width = st_orbit_widths(Eb_keV, Bt_T, Ip_MA, R0, a, kappa, geometry.triangularity, species)["w_pass"]
     else:
@@ -2001,7 +2016,14 @@ def beam_birth_density_profile(
     dens = (kern @ counts) / (kern @ vol)
     shape = np.maximum(np.interp(rho, ctr, dens, left=dens[0], right=0.0), 0.0)
     avg = profile_volume_average(shape, rho)
-    return shape / (avg * geometry.volume()) if avg > 0.0 else np.zeros_like(rho)
+    h_out = shape / (avg * geometry.volume()) if avg > 0.0 else np.zeros_like(rho)
+    if not return_pitch:
+        return h_out
+    num, den = kern @ xi_sum, kern @ counts
+    ok = den > 1e-12 * den.max()
+    xi_b = num[ok] / den[ok]
+    xi = np.interp(rho, ctr[ok], xi_b, left=xi_b[0], right=xi_b[-1])
+    return h_out, (1.0 if co_current else -1.0) * xi
 
 
 def thermal_fusion_power_from_profiles(rho, nD, nT, Ti_keV, volume_m3):

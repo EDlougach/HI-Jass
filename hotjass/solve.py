@@ -50,6 +50,7 @@ class TokamakConfig:
     temperature_peaking_i: float = -1.0     # ion T profile exponent; < 0 -> same as temperature_peaking
     centrepost_radius_m: float = -1.0       # central-column outer radius; < 0 -> R0 - a
     profile_averaging: bool = False
+    tauE_enhancement: float = 0.0           # h = H - 1: tau_E = (1 + h) * scaling (scaling modes only)
     # profile_averaging=False (default): the 0-D balance treats ne0_m3 and the
     # solved T as spatially UNIFORM -- the historical behaviour, byte-identical.
     #   The reported T is then a flat-plasma effective temperature, and comparing
@@ -318,6 +319,17 @@ class OperatingPoint:
     n_fuel_profile_m3: list[float] = field(default_factory=list)
     pf_thermal_profile_wm3: list[float] = field(default_factory=list)
     pf_beam_profile_wm3: list[float] = field(default_factory=list)
+    # Thermal-plasma and per-beam deposition profiles on the same rho grid
+    # (profile_averaging only), kept for diagnostics computed after the
+    # solve (hotjass.current: NBCD, bootstrap). beam_birth_profiles_m3s[j]
+    # is S_j h_j(rho), the confined birth rate per unit volume of beam j
+    # (same order as the input beams); beam_pitch_profiles[j] its
+    # birth-weighted mean pitch v_par/v (negative = counter-current).
+    ne_profile_m3: list[float] = field(default_factory=list)
+    Te_profile_keV: list[float] = field(default_factory=list)
+    Ti_profile_keV: list[float] = field(default_factory=list)
+    beam_birth_profiles_m3s: list[list[float]] = field(default_factory=list)
+    beam_pitch_profiles: list[list[float]] = field(default_factory=list)
 
 
 def _n_sum_for_ne(ne0_m3: float, Zeff: float) -> float:
@@ -769,10 +781,14 @@ def solve_operating_point(
     # alpha heating is not included (it is closed by an outer fixed-point and is
     # not yet known at this point).
     p_loss_scaling_w = P_useful_w + aux_e_source_w + aux_i_source_w
+    # Confinement enhancement over the chosen scaling (config.tauE_enhancement
+    # = H - 1, default 0): tau_E = (1 + h) tau_scaling. Fixed tau_E and the
+    # neoclassical ion channel are not affected.
+    h_fac = 1.0 + max(float(config.tauE_enhancement), -0.99)
     if config.tau_Ee_mode == "kaye_nstx_lmode" or config.tau_Ei_mode == "kaye_nstx_lmode":
         kaye_lmode_tau_s = physics.kaye_nstx_lmode_confinement_time(
             Ip_A=config.Ip_MA * 1e6, Bt_T=config.Bt0, ne0_m3=ne_bal, P_loss_W=p_loss_scaling_w,
-        )
+        ) * h_fac
         if config.tau_Ee_mode == "kaye_nstx_lmode":
             tau_E_s = kaye_lmode_tau_s
         if config.tau_Ei_mode == "kaye_nstx_lmode":
@@ -780,7 +796,7 @@ def solve_operating_point(
     if config.tau_Ee_mode == "kaye_nstx_hmode" or config.tau_Ei_mode == "kaye_nstx_hmode":
         kaye_hmode_tau_s = physics.kaye_nstx_confinement_time(
             Ip_A=config.Ip_MA * 1e6, Bt_T=config.Bt0, ne0_m3=ne_bal, P_heat_W=p_loss_scaling_w,
-        )
+        ) * h_fac
         if config.tau_Ee_mode == "kaye_nstx_hmode":
             tau_E_s = kaye_hmode_tau_s
         if config.tau_Ei_mode == "kaye_nstx_hmode":
@@ -791,7 +807,7 @@ def solve_operating_point(
             R0_m=config.geometry.major_radius, minor_radius_m=config.geometry.minor_radius,
             elongation=config.geometry.elongation,
             M_eff_amu=config.mix_D * 2.0 + config.mix_T * 3.0,
-        )
+        ) * h_fac
         if config.tau_Ee_mode == "iter98y2":
             tau_E_s = iter98y2_tau_s
         if config.tau_Ei_mode == "iter98y2":
@@ -819,10 +835,12 @@ def solve_operating_point(
         n_shape, te_shape, ti_shape = base ** (2.0 * sh_n), base ** (2.0 * sh_te), base ** (2.0 * sh_ti)
         ne_r = ne_axis * n_shape
         rcp = config.centrepost_radius_m if config.centrepost_radius_m > 0.0 else None
-        births = [physics.beam_birth_density_profile(
+        dep = [physics.beam_birth_density_profile(
             rho_g, ne_axis, sh_n, b.Eb_keV, b.species, config.geometry, b.tangent_R_m, b.tangent_Z_m,
             rcp, b.shine_through_model, config.Zeff, config.Bt0, config.Ip_MA, config.orbit_model,
-            bool(b.co_current), config.enable_orbit_loss) for b in useful_beams]
+            bool(b.co_current), config.enable_orbit_loss, return_pitch=True) for b in useful_beams]
+        births = [d[0] for d in dep]
+        pitches = [d[1] for d in dep]
         rates = [b.P_NB_W / (b.Eb_keV * 1e3 * physics.E_CHARGE) for b in useful_beams]
 
         def nb_profiles(Te_bal_keV: float) -> list:
@@ -988,6 +1006,11 @@ def solve_operating_point(
     nfuel_out: list = []
     pth_out: list = []
     pbt_out: list = []
+    ne_out: list = []
+    te_out: list = []
+    ti_out: list = []
+    birth_out: list = []
+    pitch_out: list = []
     if nb_model is not None:
         nbp = nb_profiles(Te_keV)
         nb_tot = np.sum(nbp, axis=0)
@@ -1021,6 +1044,9 @@ def solve_operating_point(
                 dens_bt += d_dd
         rho_out, nb_out, nfuel_out = rho_g.tolist(), nb_tot.tolist(), n_th_r.tolist()
         pth_out, pbt_out = (dens_th + dens_ddth).tolist(), dens_bt.tolist()
+        ne_out, te_out, ti_out = ne_r.tolist(), te_r.tolist(), ti_r.tolist()
+        birth_out = [(S * h).tolist() for h, S in zip(births, rates)]
+        pitch_out = [x.tolist() for x in pitches]
 
     # Beam-beam fusion (config.enable_beam_beam): the ONE pairwise reaction
     # between the first two useful beams (this project's tested scope).
@@ -1110,4 +1136,6 @@ def solve_operating_point(
         avg_fast_energy_keV=avg_fast_energy, R_fast_thermal=R, tau_E_s=tau_E_s, tau_Ei_s=tau_Ei_s,
         rho_profile=rho_out, nb_profile_m3=nb_out, n_fuel_profile_m3=nfuel_out,
         pf_thermal_profile_wm3=pth_out, pf_beam_profile_wm3=pbt_out,
+        ne_profile_m3=ne_out, Te_profile_keV=te_out, Ti_profile_keV=ti_out,
+        beam_birth_profiles_m3s=birth_out, beam_pitch_profiles=pitch_out,
     )

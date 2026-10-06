@@ -39,6 +39,7 @@ class PlasmaParams:
     icrh_f_i: float = 0.5  # ion fraction of ICRH power (f_e + f_i need not sum to 1)
     tau_Ee_mode: str = "fixed"
     tau_Ei_mode: str = "fixed"
+    tauE_enhancement: float = 0.0      # h = H - 1: tau_E = (1 + h) * scaling (not used with fixed tauE)
     enable_orbit_loss: bool = True
     orbit_loss_co_current: bool = True
     orbit_model: str = "st_pitch"  # "large_aspect" | "st_meanshift" | "st_pitch"
@@ -52,6 +53,7 @@ class PlasmaParams:
     tau_phi_over_tauEi: float = 1.0    # "momentum_balance": tau_phi = this * tau_Ei (no validated tau_phi scaling exists)
     enable_beam_beam: bool = False     # reduced monoenergetic beam-beam fusion between the first two NBI sources
     enable_equipartition: bool = True
+    q0: float = 1.0                    # on-axis safety factor of the ASSUMED current profile (bootstrap diagnostic only)
 
 
 @dataclass
@@ -102,6 +104,7 @@ class HotJassModel:
             centrepost_radius_m=self.plasma.centrepost_radius,
             tau_Ee_mode=self.plasma.tau_Ee_mode,
             tau_Ei_mode=self.plasma.tau_Ei_mode,
+            tauE_enhancement=self.plasma.tauE_enhancement,
             enable_orbit_loss=self.plasma.enable_orbit_loss,
             orbit_loss_co_current=self.plasma.orbit_loss_co_current,
             orbit_model=self.plasma.orbit_model,
@@ -251,6 +254,14 @@ class HotJassModel:
             max(self.plasma.tauE_e, 1.0e-6), max(self.plasma.tauE_i, 1.0e-6),
             self._tokamak_config(),
         )
+
+    def current_drive(self, op=None):
+        """NBCD + bootstrap diagnostics (hotjass.current) for `op` (default:
+        the operating point at central_density). None without profiles."""
+        from hotjass.current import current_drive
+        if op is None:
+            op = self.operating_point()
+        return current_drive(self._tokamak_config(), self._beam_specs(), op, q0=self.plasma.q0)
 
     def density_profile(self, rho: np.ndarray) -> np.ndarray:
         # Flat when profile_averaging is off, matching the solver's flat
