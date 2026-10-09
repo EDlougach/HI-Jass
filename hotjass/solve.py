@@ -154,6 +154,16 @@ class TokamakConfig:
     # are paired (this project's tested scope is exactly two NBI sources);
     # a third beam, if ever added, would need generalizing to all pairs.
     enable_beam_beam: bool = False
+    # Evaluate the Bosch-Hale beam cross-sections at the centre-of-mass energy
+    # (physics.CM_FACTOR_DT/DD) instead of the deuteron lab energy -- applies to
+    # beam-target and beam-beam fusion; thermal reactivities are unaffected.
+    # Default False keeps the historical (lab-energy) results byte-identical.
+    cm_energy_correction: bool = False
+    # Fast-ion birth profile under first-orbit loss (physics.beam_birth_density_profile):
+    # "cutoff" (default, historical) drops all births beyond orbit_cutoff_rho;
+    # "consistent" removes births with the same pitch-resolved rule that sets
+    # the lost power (ST orbit models only).
+    orbit_loss_deposition: str = "cutoff"
     enable_equipartition: bool = False
     # Fusion alpha self-heating. When enable_alpha_heating is True the caller
     # (hotjass_core) closes a fixed-point P_alpha = f_alpha*(3.5/17.6)*P_fusion,
@@ -838,7 +848,8 @@ def solve_operating_point(
         dep = [physics.beam_birth_density_profile(
             rho_g, ne_axis, sh_n, b.Eb_keV, b.species, config.geometry, b.tangent_R_m, b.tangent_Z_m,
             rcp, b.shine_through_model, config.Zeff, config.Bt0, config.Ip_MA, config.orbit_model,
-            bool(b.co_current), config.enable_orbit_loss, return_pitch=True) for b in useful_beams]
+            bool(b.co_current), config.enable_orbit_loss, return_pitch=True,
+            orbit_loss_deposition=config.orbit_loss_deposition) for b in useful_beams]
         births = [d[0] for d in dep]
         pitches = [d[1] for d in dep]
         rates = [b.P_NB_W / (b.Eb_keV * 1e3 * physics.E_CHARGE) for b in useful_beams]
@@ -982,14 +993,14 @@ def solve_operating_point(
         pf_beam += physics.beam_target_fusion_power(
             nb0_i, target_n, Te0_keV, beam.Eb_keV, V, beam.species,
             ne_axis, sh_n, sh_te,
-            v_phi_m_s, beam.co_current,
+            v_phi_m_s, beam.co_current, config.cm_energy_correction,
         )
         # D-D beam-target: a fast D ion on the thermal-D population.
         if beam.species == "D" and nD0_axis > 0.0:
             p_dd, r_dd = physics.beam_target_dd_fusion_power(
                 nb0_i, nD0_axis, Te0_keV, beam.Eb_keV, V,
                 ne_axis, sh_n, sh_te,
-                v_phi_m_s, beam.co_current,
+                v_phi_m_s, beam.co_current, config.cm_energy_correction,
             )
             pf_dd_beam += p_dd
             dd_beam_neutrons += r_dd
@@ -1033,12 +1044,14 @@ def solve_operating_point(
                 continue
             target = nT_r if b.species == "D" else nD_r
             p, d = physics.beam_target_fusion_power_from_profiles(
-                rho_g, nb_j, target, te_r, b.Eb_keV, b.species, V, v_phi_m_s, b.co_current)
+                rho_g, nb_j, target, te_r, b.Eb_keV, b.species, V, v_phi_m_s, b.co_current,
+                config.cm_energy_correction)
             pf_beam += p
             dens_bt += d
             if b.species == "D":
                 p_dd, r_dd, d_dd = physics.beam_target_dd_fusion_power_from_profiles(
-                    rho_g, nb_j, nD_r, te_r, b.Eb_keV, V, v_phi_m_s, b.co_current)
+                    rho_g, nb_j, nD_r, te_r, b.Eb_keV, V, v_phi_m_s, b.co_current,
+                    config.cm_energy_correction)
                 pf_dd_beam += p_dd
                 dd_beam_neutrons += r_dd
                 dens_bt += d_dd
@@ -1061,7 +1074,7 @@ def solve_operating_point(
         bb = physics.beam_beam_fusion_power(
             nb0_per_beam[0], e1, b1.species, b1.co_current,
             nb0_per_beam[1], e2, b2.species, b2.co_current,
-            V,
+            V, config.cm_energy_correction,
         )
         pf_bb_dt = bb["pf_dt_w"]
         pf_bb_dd = bb["pf_dd_w"]

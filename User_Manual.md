@@ -776,8 +776,21 @@ $V\langle h_j\rangle = 1$
   its birth density per volume diverges there. The beam is therefore sampled
   as $5\times5$ parallel sub-chords over a Gaussian cross-section
   $\exp(-r^2/w^2)$ with $w = 0.10$ m, shifted in tangency radius and height.
-- **Prompt loss.** Births beyond the first-orbit-loss radius are removed
-  (already counted in the orbit-loss power).
+- **Prompt loss** (already counted in the orbit-loss power), two options
+  (`orbit_loss_deposition`; HOT-Jass: MODELS, "Orbit loss consistent in
+  deposition"):
+  - `"cutoff"` (default, historical): every birth beyond
+    `orbit_cutoff_rho` is removed. That radius is set by the worst-case
+    (trapped) orbit, so at low current, where the banana width approaches
+    the minor radius, it removes far more births than the loss formula
+    removes power (TCV at 150 kA: 72 % of births against 13 % of power),
+    and the confined beam is renormalised onto the remaining core births.
+  - `"consistent"` (ST orbit models): each birth is weighted by
+    $1 - P_{lost}(\rho, |\lambda_0|)$, the per-birth rule of the
+    pitch-resolved loss formula (`physics.st_orbit_loss_probability`, also
+    used for the lost power), with $|\lambda_0| = R_t/R$ along each chord.
+    It changes NBCD by about 30 % on TCV, about 6 % on MAST and 6-19 % on
+    NSTX-U, and is therefore an option, off by default.
 - **Orbit-width smoothing.** Births are spread over half the passing orbit
   width (at least $0.03$ in $\rho$), as a *volume-weighted* average of the
   birth density, so that births do not pile up on the axis.
@@ -1002,30 +1015,46 @@ over-drive), and $f_{NI} = (I_{NB}+I_{BS})/I_p$.
 
 ### Validation
 
-TRANSP and CRONOS references, at matched $\beta_N$ (by adjusting $\tau_E$)
-where the reference confinement could not be reproduced directly:
+TRANSP, ASTRA and CRONOS references (details, figures and scripts in
+`docs/Validation/HI-Jass_validation.md`, sec. F-H). NSTX-U, MAST and TCV use
+the centre-of-mass cross-sections and are given for both deposition options
+(cutoff / consistent), with $\tau_E$ tuned to the reference stored energy or
+temperatures; ITER and JET at matched $\beta_N$ (cutoff, earlier runs):
 
 | Case | $I_{NB}$ model / ref. | $I_{BS}$ model / ref. |
 |---|---|---|
-| NSTX-U 0.975 MA, 12.6 MW 90 kV, H98=1 | 476 / $\approx 370$ kA | 471 / $\approx 605$ kA |
-| NSTX-U 0.87 MA, 10.2 MW 80 kV, H98=1 | 396 / $\approx 287$ kA | 415 / $\approx 583$ kA |
-| NSTX-U 1.1 MA, 15.6 MW 100 kV, H98=1 | 561 / $\approx 396$ kA | 535 / $\approx 704$ kA |
+| NSTX-U 0.87 MA, 10.2 MW 80 kV, H98=1 | 353 / 285 / 287 kA | 594 / 621 / 583 kA |
+| NSTX-U 0.975 MA, 12.6 MW 90 kV, H98=1 | 404 / 327 / 370 kA | 653 / 682 / 604 kA |
+| NSTX-U 1.1 MA, 15.6 MW 100 kV, H98=1 | 466 / 381 / 396 kA | 762 / 793 / 704 kA |
+| NSTX-U 0.635 MA, 0.75 T, 6.8 MW 80 kV | 199 / 211 / 184 kA | 441 / 444 / 451 kA |
+| MAST #18808 0.62 MA, 3.5 MW off-axis | 287 / 268 / 253 kA | 147-161 / $\approx 45$ kA |
+| TCV #59429 0.15 MA, 1.15 MW (ASTRA) | 91-124 / 67-89 / $\approx 49$ kA | 74-80 / $\approx 81$ kA |
 | ITER hybrid 12 MA, $\beta_N$ 2.65 | 3.33 / 3.5 MA | 5.82 / 4.7 MA |
 | ITER steady state (no ITB) 10 MA, $\beta_N$ 2.70 | 4.31 / 3.6 MA | 5.45 / 5.0 MA |
 | JET #58323 1.4 MA, $\beta_N$ 2.8 | 0.55 / 0.33 MA | 0.51 / 0.32 MA |
 
 References: NSTX-U, Gerhardt et al., *Nucl. Fusion* **52** (2012) 083020
-(fully non-inductive scenarios, Table 2; total $f_{NI}$ reproduced within
-0.93 to 1.00). ITER, Parail et al., *Nucl. Fusion* **53** (2013) 113002
-(Table 3). JET, Sips, EPS 2003 O-1.3A (TRANSP; density and beam set-up only
-approximately known, $a = 0.95$ m used for the diverted plasma).
+(fully non-inductive TRANSP scenarios, Table 2, broad profiles; $W_{tot}$
+matched, $f_{NI}$ = 1.03-1.07 with the consistent deposition). MAST,
+Turnyanskiy et al., *Nucl. Fusion* **49** (2009) 065002 (TRANSP classical;
+the bootstrap value is read off a stacked plot). TCV, Piron et al., *Nucl.
+Fusion* **59** (2019) 096012 (ASTRA profiles, digitised and integrated, about
+20 % uncertainty; ECCD not modelled). ITER, Parail et al., *Nucl. Fusion*
+**53** (2013) 113002 (Table 3). JET, Sips, EPS 2003 O-1.3A (TRANSP; density
+and beam set-up only approximately known, $a = 0.95$ m used for the diverted
+plasma).
 
-NBCD comes out high except at ITER's 1 MeV. Part of this is the
-**full-energy-only beam**: the $E/2$ and $E/3$ components of positive-ion
-beams are not modelled (on the NSTX-U case they lower $I_{NB}$ from 476 to
-404 kA). The bootstrap current agrees within about 25 % at ITER but is low on
-NSTX-U and high on JET, i.e. no single bias; it is sensitive to the assumed
-profile shapes and $q$.
+With the consistent deposition NBCD agrees within about 15 % on NSTX-U and
+6 % on MAST; TCV stays 1.4-1.8x high (charge-exchange loss the main
+uncertainty). The cutoff deposition over-predicts NBCD wherever the orbits
+are wide. The bootstrap current agrees within about 15 % on NSTX-U and TCV
+and 25 % at ITER, but is about 3x the MAST reference and high on JET.
+Matching $\beta_N$ instead of the stored energy raises both NSTX-U currents
+by 20-30 % (the codes normalise $\beta_N$ differently), so cross-code
+comparisons should match $W$. Remaining systematic effects: the
+**full-energy-only beam** ($E/2$ and $E/3$ not modelled; on NSTX-U they
+lowered $I_{NB}$ by about 15 % in an earlier test) and a first-orbit loss
+of 25-40 % on spherical tokamaks, well above TRANSP's few per cent.
 
 ### Limitations
 
@@ -1505,6 +1534,24 @@ $$
 \qquad
 v_j(E)=\sqrt{\frac{2E}{m_j}}
 $$
+
+**Cross-section energy.** The Bosch-Hale cross-section fits take the
+centre-of-mass energy, while every beam-target and beam-beam call passes the
+lab energy of a deuteron on a target at rest, $\frac12 m_D v_{rel}^2$. By
+default (historical) the fits are evaluated at that lab energy. With
+`cm_energy_correction` (HOT-Jass: MODELS, "COM energy in beam
+cross-sections") they use
+
+$$
+E_{cm} = E\,\frac{m_{target}}{m_D + m_{target}}:\qquad
+E_{cm} = E/2\ (\text{D-D}),\qquad E_{cm}\simeq0.6\,E\ (\text{D-T}).
+$$
+
+The lab-energy default over-predicts D-D beam-target rates (about 3x at
+60 keV; MAST neutron rates 2-3.5x TRANSP instead of 0.5-0.9x) and misplaces
+the D-T resonance (beam-target D-T too low above about 80 keV, x0.5 at
+120 keV). Thermal reactivities are not affected. Off by default until
+checked on more cases.
 
 For a D-T beam-target reaction $E_f = 17.6$ MeV. For a D beam,
 $n_{\mathrm{target},j}=n_{T0}$; for a T beam, $n_{\mathrm{target},j}=n_{D0}$.
