@@ -449,7 +449,7 @@ White & Boozer, *Phys. Rev. Lett.* **47** (1981) 1004; Goldston & Rutherford,
 
 ### Orbit-boundary model from the constants of motion (`orbit_model = "st_pphi"`)
 
-HOT-Jass: MODELS, "ST orbits - P_phi orbit boundary". Instead of estimating
+HOT-Jass: MODELS, "ST orbits - P$_\phi$ orbit boundary". Instead of estimating
 drift and banana widths, each birth is followed along its guiding-centre orbit
 (`physics.pphi_orbit_loss_probability`). Energy, magnetic moment
 $\mu = m v_\perp^2/2B$ and canonical toroidal angular momentum
@@ -502,8 +502,8 @@ profile; no wall or centre-post shape beyond the LCFS; collisions during the
 first orbit neglected.
 
 Comparison with the pitch-resolved model (presets, beam-axis NBI-1 / NBI-2):
-co-current losses fall strongly (SANTE 23 % -> 9 %, MAST-U 30 % -> 15 %,
-NSTX-U 29 % -> 19 %, TCV 24 % -> 5 %, JET 4.7 % -> 2.4 %, T-15MD 5.4 % ->
+co-current losses fall strongly (SANTE 23 % $\to$ 9 %, MAST-U 30 % $\to$ 15 %,
+NSTX-U 29 % $\to$ 19 %, TCV 24 % $\to$ 5 %, JET 4.7 % $\to$ 2.4 %, T-15MD 5.4 % $\to$
 1.4 %), counter-current ones stay large (SANTE NBI-2 55 %, TCV NBI-2 28 %).
 
 References: Rome & Peng, *Nucl. Fusion* **19** (1979) 1193 (orbit topology and
@@ -1590,11 +1590,70 @@ reverse direction:
   loading a record from a much older HI-Jass version may reproduce a
   slightly different result if the underlying physics changed meanwhile).
 
+### U-files for ASTRA / TRANSP (HOT-Jass web)
+
+In HOT-Jass web, **Results** $\to$ **Save** $\to$ **Save U-files** writes the last calculation
+as ASCII U-files (the TRANSP / ITPA profile-database format read by ASTRA and
+other transport codes): one quantity per file, all in one zip named
+`hot_jass_ufiles_<TOK><shot>.zip`, with a `README.txt` listing every file. The
+shot number is set in the dialog (*Shot #*); the 4-character tokamak tag comes
+from the active device name. Files are named `<TOK><shot>_<NAME>.2d` /
+`.1d`.
+
+The operating point is steady state, so every file carries the same values at
+two times, $t = 0$ and $100$ s: a code reading any time in between gets this
+point. Radial profiles use 51 points in $\rho$ from 0 to 1, where $\rho$ is
+the HOT-Jass flux label $\sqrt{((R-R_0)/a)^2 + (Z/\kappa a)^2}$ (normalised
+minor radius on elliptical surfaces), **not** the toroidal-flux
+$\rho_{tor}$.
+
+2-D files, $f(\rho, t)$:
+
+| Name | Units | Quantity |
+|---|---|---|
+| NE | M\*\*-3 | electron density |
+| TE | EV | electron temperature |
+| TI | EV | ion temperature |
+| ZEFF | -- | effective charge (flat) |
+| NFAST | M\*\*-3 | NBI fast-ion density |
+| QNBIE | W/M\*\*3 | NBI heating of electrons |
+| QNBII | W/M\*\*3 | NBI heating of ions |
+| SNBII | M\*\*-3/S | NBI fast-ion source (confined births) |
+| PFUS | W/M\*\*3 | fusion power density (thermal + beam-target) |
+| CURNBI | A/M\*\*2 | NB-driven current density |
+| CURBS | A/M\*\*2 | bootstrap current density |
+| Q | -- | safety factor of the assumed current profile |
+
+1-D files, $f(t)$: IP [A] and BT [T] (signed, positive counter-clockwise seen
+from above), PNBI [W] (injected NBI power), RGEO and AMIN [M] ($R_0$, $a$),
+KAPPA, DELTA.
+
+Notes:
+
+- QNBIE, QNBII, SNBII, PFUS, CURNBI, CURBS and Q need profile-corrected 0-D
+  (MODELS); without it only the other files are written, and the README says
+  so.
+- QNBIE / QNBII put the deposited NBI power at the birth radius and split it
+  between electrons and ions with each beam component's slowing-down
+  fraction (no radial redistribution during slowing down). The README checks
+  $\int (Q_{NBIE} + Q_{NBII})\,dV$ against the useful NBI power of the power
+  balance and warns if they differ: with the historical cutoff deposition, a
+  beam born entirely outside the orbit-loss cutoff radius has no births
+  although its useful power is counted ("Orbit loss consistent in deposition"
+  or the P$_\phi$ orbit model avoid this).
+- CURNBI, CURBS and Q are diagnostics on an assumed current profile (Current
+  tab), not a current evolution.
+- Format: label lines with `;-...-` descriptions from column 32 (name 20
+  characters, units 10), then the X grid, the time grid and $f$ with X varying
+  fastest, 6 numbers per line, 13 characters each (`E13.5`, so a negative
+  value keeps a leading blank and both fixed-width and whitespace readers
+  work), then the `;----END-OF-DATA` trailer and free-text comments.
+
 ## Interface font size (accessibility)
 
 The 👓 button next to the Operating point/Scan mode toggle, above the Run
-button, cycles the whole interface through four zoom levels: 100% -> 115%
--> 130% -> 150% -> back to 100%. Each click rescales every rail
+button, cycles the whole interface through four zoom levels: 100% $\to$ 115%
+$\to$ 130% $\to$ 150% $\to$ back to 100%. Each click rescales every rail
 label/entry/button, the Dashboard, and all plot text (titles, axis labels,
 legends, tick labels) together, redrawing the currently solved point
 immediately so nothing looks mismatched. The chosen level is written to
