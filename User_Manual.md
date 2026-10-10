@@ -27,6 +27,87 @@ The default configuration contains two neutral beams:
 | NBI-1 | D | 120 keV | 10 MW | 0.5 m | co |
 | NBI-2 | T | 180 keV | 0.1 MW | 0.6 m | counter |
 
+## Beam vertical angle
+
+`BeamParams.vertical_angle_deg` ($\alpha$, HOT-Jass: NBI "vertical angle",
+default 0) inclines the beam axis to its horizontal projection about the
+fixed tangency point $(R_t, Z_t)$; $\alpha > 0$ rises along the travel. With
+$y$ the horizontal distance from the tangency point (negative before it):
+
+$$
+R(y) = \sqrt{R_t^2 + y^2},\qquad Z(y) = Z_t + y\tan\alpha,\qquad ds = dy/\cos\alpha .
+$$
+
+`physics.tangential_chords` finds the entry and exit through the LCFS by
+bisection on the outermost crossings (samples in between outside the plasma,
+e.g. in the hole, carry $n_e = 0$); the centre-post blocks at the same $y$ as
+for $\alpha = 0$. Shine-through, the birth profile and the first-orbit-loss
+chord all use this path, and the vertical ray offsets of a finite beam become
+$v/\cos\alpha$ in $Z$. The birth pitch (below) includes the inclination,
+and the NBI torque is multiplied by $\cos\alpha$, since only the horizontal
+velocity carries toroidal momentum. $\alpha = 0$ keeps the horizontal-chord
+geometry exactly.
+
+## Field directions and the beam birth pitch
+
+Convention: $I_p > 0$ and $B_t > 0$ both counter-clockwise seen from above
+($+\phi$ in right-handed $(R, \phi, Z)$), as the HOT-Jass Geometry arrows show;
+B is along $I_p$. In the poloidal $(R, Z)$ view $+\phi$ points into the page
+and $\mathbf{B}_p = B_p\,\hat e_\phi\times\hat n$ ($\hat n$ the outward normal of
+the elliptical flux surface) circulates clockwise: outward at the top, down on
+the outboard side.
+
+Reversed fields: `PlasmaParams.ip_sign` / `bt_sign = -1` (HOT-Jass: negative
+Ip / B0 inputs) reverse $I_p$ (and $\mathbf{B}_p$ with it) or $B_t$. The
+plasma current and field stay magnitudes in every scaling, q, orbit-width and
+Greenwald formula; the signs enter only the birth pitch, and co-current beams
+always run along $I_p$. The pitch is returned relative to $I_p$
+($\xi_0 = \sigma_I\sigma_B\,\xi_{lab}$), so only the relative direction of
+$B_t$ and $I_p$ matters: reversing $I_p$ alone is the mirror image of the
+machine in a vertical plane (identical results), reversing both is the
+machine turned upside down (up- and down-inclined beams, and $\pm Z_t$,
+swap), and reversing $B_t$ alone is therefore equivalent to swapping the up
+and down inclinations.
+
+The birth pitch is taken against the full field (`physics.beam_birth_pitch`),
+
+$$
+\xi_0 = \frac{\mathbf{v}\cdot\mathbf{B}}{vB}
+= \frac{\cos\alpha\,(y/R)\,B_R \pm \cos\alpha\,(R_t/R)\,B_\phi + \sin\alpha\,B_Z}
+       {\sqrt{B_\phi^2 + B_p^2}},
+\qquad B_\phi = B_t R_0/R,
+$$
+
+$\pm$ for co / counter beams, with $B_p(\rho) = \mu_0 I(\rho)/L_p(\rho)$ from
+the assumed current profile $j \propto (1-\rho^2)^\nu$, $\nu = q_{cyl}/q_0 - 1$
+(`physics.poloidal_field_T`, the same profile as the Current tab;
+`TokamakConfig.q0`). The $B_R$ and $B_Z$ terms make an up- and a down-inclined
+beam differ, and the normalisation by $|B|$ lowers $|\xi_0|$ below the
+toroidal direction cosine $R_t/R$ by $B_\phi/B$. $\xi_0$ is used by the
+pitch-resolved ST orbit loss (`first_orbit_loss_fraction_st(..., pitch=)`),
+the consistent birth weighting and NBCD; an ion born with $\xi_0 < 0$ moves
+against $I_p$ and is treated as counter-current.
+
+## Beam energy components (full, half, third)
+
+A positive-ion source also extracts D2+ and D3+ (H2+/H3+, T2+/T3+), which
+dissociate in the neutraliser into atoms at $E_b/2$ and $E_b/3$. Each beam
+therefore carries **power fractions** $f_1, f_2, f_3$ of its full-, half- and
+third-energy components (`BeamParams.energy_fractions`, default $(1, 0, 0)$ --
+a mono-energetic beam):
+
+$$
+E_k = E_b/k,\qquad P_k = f_k\,P_{NB},\qquad k = 1, 2, 3 .
+$$
+
+`HotJassModel` splits every beam into its non-zero components before the
+solve (`beam_components()`), so shine-through, orbit and CX losses,
+slowing-down, beam-target fusion and current drive all run per component, and
+the per-beam result lists (`f_capture`, `I_nb_per_beam_A`, ...) hold one entry
+per component. The particle fractions follow from $N_k \propto P_k/E_k$, i.e.
+$\propto k f_k$. Beam-beam fusion sums over every component pair of the two
+beamlines.
+
 ## Two-beam slowing-down model
 
 The slowing-down quantities are calculated independently for each beam. For beam $j$:
@@ -366,6 +447,72 @@ References: Akers *et al.*, *Nucl. Fusion* (START NBI, $A\sim1.4$); Goldston,
 White & Boozer, *Phys. Rev. Lett.* **47** (1981) 1004; Goldston & Rutherford,
 *Introduction to Plasma Physics* (1995), Ch. 12.
 
+### Orbit-boundary model from the constants of motion (`orbit_model = "st_pphi"`)
+
+HOT-Jass: MODELS, "ST orbits - P_phi orbit boundary". Instead of estimating
+drift and banana widths, each birth is followed along its guiding-centre orbit
+(`physics.pphi_orbit_loss_probability`). Energy, magnetic moment
+$\mu = m v_\perp^2/2B$ and canonical toroidal angular momentum
+
+$$
+P_\phi = m R v_\phi - e\Psi
+$$
+
+are conserved, with $\Psi(\rho)$ the poloidal flux per radian, increasing
+outward relative to $I_p$, $d\Psi/d\rho = R_0 B_p(\rho)\,a\sqrt{(1+\kappa^2)/2}$
+(`physics.poloidal_flux_profile`, $B_p$ from the assumed current profile, see
+"Field directions and the beam birth pitch"). With $B \approx B_0R_0/R$ and
+$v_\phi \approx v_\parallel$, a birth at $(R_b, \Psi_b)$ with signed pitch
+$\xi_0$ (positive along $I_p$) sits at major radius $R$ of an orbit leg on
+
+$$
+\Psi(R) = \Psi_b + \frac{m}{e}\left[R\,v_\parallel(R) - R_b v\,\xi_0\right],
+\qquad v_\parallel(R) = \pm v\sqrt{1 - (1-\xi_0^2)\,R_b/R},
+$$
+
+with the bounce point at $R = R_b(1-\xi_0^2)$. The orbit exists at $R$ where
+$\Psi(R) \ge \Psi(\rho = |R-R_0|/a)$ (the flux surface reaches that $R$). The
+birth leg is followed over the connected range of $R$ around $R_b$ where it
+exists; if that range reaches the bounce point (a trapped ion), the return leg
+(opposite sign of $v_\parallel$) is added. The ion is lost if the outermost
+flux reached corresponds to $\rho \ge 1 - \rho_{Li}/a$ (the gyro criterion of
+the other ST models). There are no fitted constants: a co-current ion born on
+the outboard side is at the outermost point of its orbit (its banana or drift
+orbit lies inward) and is lost only within a Larmor radius of the edge; a
+counter-current ion is at the innermost point, its orbit reaching a full
+banana or drift width outward. The birth pitch carries the same 0.1 Gaussian
+spread (beam divergence, finite chord) as the pitch-resolved model, as a
+3-point Gauss-Hermite average.
+
+Implementation: in this up-down symmetric approximation the outward excursion
+$\rho_{out} - \rho_b$ depends on $(R_b, \rho_b, \xi_0)$ only; it is tabulated
+once per beam energy and machine on a $33\times33\times65$ grid
+(`_pphi_excursion_table`, cached, ~0.2 s) and interpolated, and the loss
+criterion is applied per birth, which keeps the loss boundary sharp (table
+against direct orbits: mean loss within ~2 %). The lost power fraction is the
+loss probability averaged over the births along the beam-axis chord, weighted
+by the birth rate $n_e(\rho)\sigma_s e^{-\tau}$ with the real density profile;
+the birth profile is always weighted by the same probability (no cutoff
+radius, the "consistent" option is implied).
+
+Approximations: up-down symmetric elliptical flux surfaces; $|B| \approx
+B_\phi$ in the bounce condition and $v_\phi \approx v_\parallel$; flux-surface
+averaged $B_p$ ($|\nabla\psi| \approx R_0 B_p$) from the assumed current
+profile; no wall or centre-post shape beyond the LCFS; collisions during the
+first orbit neglected.
+
+Comparison with the pitch-resolved model (presets, beam-axis NBI-1 / NBI-2):
+co-current losses fall strongly (SANTE 23 % -> 9 %, MAST-U 30 % -> 15 %,
+NSTX-U 29 % -> 19 %, TCV 24 % -> 5 %, JET 4.7 % -> 2.4 %, T-15MD 5.4 % ->
+1.4 %), counter-current ones stay large (SANTE NBI-2 55 %, TCV NBI-2 28 %).
+
+References: Rome & Peng, *Nucl. Fusion* **19** (1979) 1193 (orbit topology and
+loss boundaries from the constants of motion); Eriksson & Porcelli,
+*Plasma Phys. Control. Fusion* **43** (2001) R145 (review of energetic-ion
+orbits); Heidbrink & Sadler, *Nucl. Fusion* **34** (1994) 535 (fast ions in
+tokamak experiments, prompt losses); White, *The Theory of Toroidally Confined
+Plasmas* (guiding-centre motion, canonical momentum).
+
 ## Charge-exchange loss
 
 A captured fast ion can charge-exchange with a background cold neutral during
@@ -563,8 +710,9 @@ beams' slowing-down spectra (a genuine 2-D relative-velocity integral), each
 population is approximated by a single characteristic velocity at its own
 average fast-ion energy (`average_fast_energy_keV`, the same representative
 energy this project already uses for pressure/energy-density diagnostics),
-signed by its own co/counter direction. Only the **first two** useful beams
-are paired -- this project's tested scope is exactly two NBI sources.
+signed by its own co/counter direction. Only the **first two** beamlines
+are paired -- this project's tested scope is exactly two NBI sources -- summed
+over every pair of their energy components.
 
 The relevant physical quantity is the beam-beam **relative** velocity:
 
@@ -771,11 +919,24 @@ $V\langle h_j\rangle = 1$
 - **Attenuation** along tangential chords (Beer-Lambert) on the
   $n_{e0}(1-\rho^2)^{2p_n}$ profile, with the same stopping cross-section as
   the shine-through model.
-- **Finite beam width.** A pencil chord tangent at $R_t$ deposits a finite
-  number of ions into the vanishing volume of the flux surface $\rho(R_t)$, so
-  its birth density per volume diverges there. The beam is therefore sampled
-  as $5\times5$ parallel sub-chords over a Gaussian cross-section
-  $\exp(-r^2/w^2)$ with $w = 0.10$ m, shifted in tangency radius and height.
+- **Beam cross-section** (`BeamParams.beam_diameter_m`, HOT-Jass: NBI
+  "diameter"). $D = 0$ (default) is a single pencil ray. $D > 0$ is a circular
+  beam with a Gaussian power profile $p(r) \propto \exp[-(2r/D)^2]$ ($D$ the
+  1/e diameter, $\sigma = D/2\sqrt2$), sampled by parallel rays shifted in
+  tangency radius and height (`physics.beam_ray_bundle`): a square grid over
+  $\pm3\sigma$, clipped to the $3\sigma$ circle, with Gaussian weights and
+  spacing $\le 0.1\,a$ (odd, 3 to 21 rays per axis). A single tangential ray
+  puts a finite number of ions into the vanishing volume of its tangency
+  surface $\rho(R_t)$, a singular birth density there; the rays have to be
+  closer than the profile smoothing scale (orbit width, $\ge 0.03$) for their
+  singular profiles to add up to a smooth one. Against a 6500-ray reference
+  the grid is within 1.5 % (L1) and ~10 % on axis for $D$ up to $0.8a$. All
+  rays are evaluated in one vectorised pass (`physics.tangential_chords`),
+  a few ms per beam: a $D = 0.2$ m beam on a 0.55 m plasma uses 49 rays in
+  3 ms, against 7 ms for the previous fixed $5\times5$ bundle. The
+  shine-through fraction is averaged over the same rays (`captured_power_
+  fraction(..., beam_diameter_m)`; rays that miss the plasma shine through).
+  First-orbit loss keeps the beam-axis chord.
 - **Prompt loss** (already counted in the orbit-loss power), two options
   (`orbit_loss_deposition`; HOT-Jass: MODELS, "Orbit loss consistent in
   deposition"):
@@ -788,7 +949,8 @@ $V\langle h_j\rangle = 1$
   - `"consistent"` (ST orbit models): each birth is weighted by
     $1 - P_{lost}(\rho, |\lambda_0|)$, the per-birth rule of the
     pitch-resolved loss formula (`physics.st_orbit_loss_probability`, also
-    used for the lost power), with $|\lambda_0| = R_t/R$ along each chord.
+    used for the lost power), with $|\lambda_0| = |\xi_0|$ (the full-field birth
+    pitch, "Field directions and the beam birth pitch") along each chord.
     It changes NBCD by about 30 % on TCV, about 6 % on MAST and 6-19 % on
     NSTX-U, and is therefore an option, off by default.
 - **Orbit-width smoothing.** Births are spread over half the passing orbit
@@ -933,8 +1095,8 @@ where:
 
 - $S\,h(\rho)$ is the confined birth rate per volume (above), and $\tau_s$
   the Spitzer slowing-down time ($dv/dt = -(v/\tau_s)(1+v_c^3/v^3)$).
-- $\xi_0 = R_t/R$ is the birth pitch. A horizontal chord tangent at $R_t$
-  crosses radius $R$ with toroidal direction cosine $R_t/R$; it is averaged
+- $\xi_0$ is the full-field birth pitch ("Field directions and the beam
+  birth pitch"; $\approx R_t/R$ for a horizontal midplane chord with weak $B_p$); it is averaged
   over the same sub-chords as $h$ and weighted by births, and is negative
   for counter-current beams.
 - $u = v/v_b$, $u_c^3 = (E_c/E_b)^{3/2}$, with the critical energy from the

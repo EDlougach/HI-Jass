@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from typing import Dict, List
 
 import numpy as np
@@ -42,7 +42,7 @@ class PlasmaParams:
     tauE_enhancement: float = 0.0      # h = H - 1: tau_E = (1 + h) * scaling (not used with fixed tauE)
     enable_orbit_loss: bool = True
     orbit_loss_co_current: bool = True
-    orbit_model: str = "st_pitch"  # "large_aspect" | "st_meanshift" | "st_pitch"
+    orbit_model: str = "st_pitch"  # "large_aspect" | "st_meanshift" | "st_pitch" | "st_pphi"
     profile_averaging: bool = False  # treat central_density as ON-AXIS; balance runs on <n_e>
     cx_loss_fraction: float = 0.1
     cx_model: str = "manual_fraction"  # "manual_fraction" | "manual_n0" | "penetration"
@@ -56,6 +56,11 @@ class PlasmaParams:
     enable_beam_beam: bool = False     # reduced monoenergetic beam-beam fusion between the first two NBI sources
     enable_equipartition: bool = True
     q0: float = 1.0                    # on-axis safety factor of the ASSUMED current profile (bootstrap diagnostic only)
+    # Directions of I_p and B_t (+1: counter-clockwise seen from above, -1:
+    # reversed). plasma_current / toroidal_field stay magnitudes; the signs
+    # only enter the beam birth pitch (physics.beam_birth_pitch).
+    ip_sign: float = 1.0
+    bt_sign: float = 1.0
 
 
 @dataclass
@@ -72,6 +77,32 @@ class BeamParams:
     shine_through_model: str = "manual"
     manual_shine_through_fraction: float = 0.01
     co_current: bool = True  # this beamline's injection direction (co- vs counter-Ip)
+    # Power fractions of the full/half/third-energy components (E, E/2, E/3):
+    # a positive-ion source also extracts D2+/D3+ (H2+/H3+, T2+/T3+), which
+    # dissociate into atoms at E/2 and E/3. (1, 0, 0) is a mono-energetic beam.
+    energy_fractions: tuple = (1.0, 0.0, 0.0)
+    # Circular beam cross-section: 1/e diameter [m] of a Gaussian power profile
+    # (physics.beam_ray_bundle); 0 = a single (pencil) ray.
+    beam_diameter_m: float = 0.0
+    # Vertical injection angle [deg] between the beam axis and its horizontal
+    # projection, about the fixed tangency point; positive = rising.
+    vertical_angle_deg: float = 0.0
+
+
+def energy_components(beam: BeamParams) -> List[BeamParams]:
+    """Mono-energetic sub-beams of `beam`: component k (k = 1, 2, 3) carries
+    beam_energy_keV / k and power_MW * f_k, with the power fractions f_k
+    normalised to sum to 1. Zero-fraction components are dropped; a
+    mono-energetic beam (or all-zero fractions) is returned unchanged."""
+    fr = [max(float(f), 0.0) for f in beam.energy_fractions]
+    total = sum(fr)
+    if total <= 0.0 or fr[1] == 0.0 and fr[2] == 0.0:
+        return [beam]
+    return [
+        replace(beam, power_MW=beam.power_MW * f / total, beam_energy_keV=beam.beam_energy_keV / k,
+                energy_fractions=(1.0, 0.0, 0.0))
+        for k, f in enumerate(fr, start=1) if f > 0.0
+    ]
 
 
 class HotJassModel:
@@ -122,6 +153,7 @@ class HotJassModel:
             cm_energy_correction=self.plasma.cm_energy_correction,
             orbit_loss_deposition=self.plasma.orbit_loss_deposition,
             enable_equipartition=self.plasma.enable_equipartition,
+            q0=self.plasma.q0, ip_sign=self.plasma.ip_sign, bt_sign=self.plasma.bt_sign,
             enable_alpha_heating=self.plasma.alpha_heating,
             f_alpha=self.plasma.f_alpha,
         )
@@ -239,15 +271,22 @@ class HotJassModel:
                 break
         return op
 
+    def beam_components(self) -> List[tuple]:
+        """(beamline index, mono-energetic sub-beam) pairs, in the order of the
+        solver's per-beam lists (OperatingPoint.f_capture etc., CurrentDrive
+        *_per_beam): one entry per beamline unless energy_fractions splits it."""
+        return [(i, c) for i, beam in enumerate(self.beams) for c in energy_components(beam)]
+
     def _beam_specs(self) -> List[BeamSpec]:
         return [
             BeamSpec(
                 beam.beam_energy_keV, beam.power_MW * 1.0e6, beam.species.upper(),
                 beam.tangent_R_m, beam.tangent_Z_m,
                 beam.shine_through_model, beam.manual_shine_through_fraction,
-                bool(beam.co_current),
+                bool(beam.co_current), group=i, diameter_m=float(beam.beam_diameter_m),
+                vertical_angle_deg=float(beam.vertical_angle_deg),
             )
-            for beam in self.beams
+            for i, beam in self.beam_components()
         ]
 
     def operating_point(self, n_e: float | None = None):
@@ -317,7 +356,8 @@ class HotJassModel:
                     ), tangent_R_m=beam.tangent_R_m, tangent_Z_m=beam.tangent_Z_m,
                     model=beam.shine_through_model,
                     manual_shine_through_fraction=beam.manual_shine_through_fraction,
-                    Zeff=self.plasma.effective_charge,
+                    Zeff=self.plasma.effective_charge, beam_diameter_m=beam.diameter_m,
+                    vertical_angle_deg=beam.vertical_angle_deg,
                 )
                 tau = thermalization_time(float(density), float(point.Te_keV), beam.Eb_keV, beam.species)
                 weighted_tau += useful * tau

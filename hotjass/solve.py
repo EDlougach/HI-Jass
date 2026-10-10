@@ -7,6 +7,7 @@ derivation.
 
 from __future__ import annotations
 
+import math
 from dataclasses import dataclass, field
 
 import numpy as np
@@ -35,6 +36,12 @@ class BeamSpec:
     manual_shine_through_fraction: float = 0.01
     co_current: bool = True  # per-beamline injection direction (co- vs counter-Ip);
     #   used for first-orbit loss instead of the (now-legacy) config.orbit_loss_co_current
+    group: int | None = None  # beamline this spec belongs to: the E, E/2, E/3 components
+    #   of one beamline share it (None: every spec is its own beamline)
+    diameter_m: float = 0.0   # 1/e diameter of the Gaussian beam cross-section (0: single ray);
+    #   used for shine-through and the birth profile -- first-orbit loss keeps the axis ray
+    vertical_angle_deg: float = 0.0  # beam inclination about the tangency point (+ = rising):
+    #   chord geometry, and the birth pitch / torque by cos(alpha)
 
 
 @dataclass
@@ -79,6 +86,10 @@ class TokamakConfig:
     #     a pitch-angle-resolved 2-D integral (co-passing / counter-passing /
     #     trapped classes). Both ST variants are offered so they can be
     #     compared; neither touches the large-aspect result.
+    #   "st_pphi": physics.pphi_orbit_loss_probability -- per-birth orbit
+    #     boundary from the constants of motion (E, mu, P_phi), along the real
+    #     chord, weighted by first_orbit_loss_fraction_st(loss_probability=);
+    #     the birth profile always uses the same probability.
     # First-orbit loss (physics.first_orbit_loss_fraction/passing_orbit_width):
     # a fraction of CAPTURED beam power (post shine-through) is lost
     # promptly -- born close enough to the LCFS that a fast ion's passing-
@@ -164,6 +175,9 @@ class TokamakConfig:
     # "consistent" removes births with the same pitch-resolved rule that sets
     # the lost power (ST orbit models only).
     orbit_loss_deposition: str = "cutoff"
+    q0: float = 1.0   # on-axis q of the assumed current profile: B_p in the beam birth pitch
+    ip_sign: float = 1.0   # direction of I_p (+1 counter-clockwise from above) -- Bt0/Ip_MA are magnitudes
+    bt_sign: float = 1.0   # direction of B_t (+1 counter-clockwise from above); both only enter the pitch
     enable_equipartition: bool = False
     # Fusion alpha self-heating. When enable_alpha_heating is True the caller
     # (hotjass_core) closes a fixed-point P_alpha = f_alpha*(3.5/17.6)*P_fusion,
@@ -686,7 +700,8 @@ def solve_operating_point(
             geometry=config.geometry, tangent_R_m=beam.tangent_R_m, tangent_Z_m=beam.tangent_Z_m,
             model=beam.shine_through_model,
             manual_shine_through_fraction=beam.manual_shine_through_fraction,
-            Zeff=config.Zeff,
+            Zeff=config.Zeff, beam_diameter_m=beam.diameter_m,
+            vertical_angle_deg=beam.vertical_angle_deg,
         )
         f_capture_list.append(f_capt)
         P_NB_total_w += beam.P_NB_W
@@ -709,31 +724,85 @@ def solve_operating_point(
             _R0 = config.geometry.major_radius
             _tR = beam.tangent_R_m
             orbit_chord = None
-            _off_axis = beam.tangent_Z_m != 0.0 or (_tR is not None and abs(_tR - _R0) > 1e-6)
+            _off_axis = (beam.tangent_Z_m != 0.0 or beam.vertical_angle_deg != 0.0
+                         or (_tR is not None and abs(_tR - _R0) > 1e-6))
             if _off_axis:
                 _rcp = config.centrepost_radius_m if config.centrepost_radius_m > 0.0 else None
                 orbit_chord = physics.tangential_chord(
                     _R0, config.geometry.minor_radius, config.geometry.elongation,
                     tangent_R_m=_tR, tangent_Z_m=beam.tangent_Z_m, R_centrepost_m=_rcp,
+                    vertical_angle_deg=beam.vertical_angle_deg,
                 )
             if _off_axis and orbit_chord is None:
                 # aim point outside the plasma -> nothing born -> no orbit loss
                 f_orbit = 0.0
-            elif config.orbit_model in ("st_meanshift", "st_pitch"):
+            elif config.orbit_model in ("st_meanshift", "st_pitch", "st_pphi"):
                 widths = physics.st_orbit_widths(
                     Eb_keV=beam.Eb_keV, Bt_T=config.Bt0, Ip_MA=config.Ip_MA,
                     R0_m=config.geometry.major_radius, minor_radius_m=config.geometry.minor_radius,
                     elongation=config.geometry.elongation, triangularity=config.geometry.triangularity,
                     species=beam.species,
                 )
-                f_orbit = physics.first_orbit_loss_fraction_st(
-                    ne0_m3, beam.Eb_keV, beam.species, path_length_m,
-                    config.geometry.minor_radius, config.geometry.major_radius, widths,
-                    co_current=co,
-                    variant="pitch" if config.orbit_model == "st_pitch" else "meanshift",
-                    stopping_model=orbit_stopping_model, Zeff=config.Zeff,
-                    tangent_R_m=beam.tangent_R_m, chord=orbit_chord,
-                )
+                # Full signed birth pitch along the chord (B_phi + B_p,
+                # physics.beam_birth_pitch). On-axis: the same crude chord the
+                # orbit model builds itself, rho = |x - a|/a, Z = 0 -- except
+                # for st_pphi, whose orbit-boundary test needs the real chord
+                # geometry (births at their true R, Z) on-axis too.
+                _a = config.geometry.minor_radius
+                _Rt = _R0 if _tR is None else float(_tR)
+                _pphi = config.orbit_model == "st_pphi"
+                if _pphi and orbit_chord is None:
+                    _rcp = config.centrepost_radius_m if config.centrepost_radius_m > 0.0 else None
+                    orbit_chord = physics.tangential_chord(
+                        _R0, _a, config.geometry.elongation, tangent_R_m=_Rt, tangent_Z_m=beam.tangent_Z_m,
+                        R_centrepost_m=_rcp, vertical_angle_deg=beam.vertical_angle_deg)
+                if orbit_chord is None and not _pphi:
+                    _x = np.linspace(0.0, path_length_m, 601)
+                    _y = _x - _a
+                    _R = np.sqrt(_Rt ** 2 + _y ** 2)
+                    orbit_chord = (_x, np.abs(_y) / _a, _R)
+                    _Z = np.zeros_like(_x)
+                elif orbit_chord is not None:
+                    _s, _rho, _R, _hit, _Zc, _yc = physics.tangential_chords(
+                        _R0, _a, config.geometry.elongation, np.array([_Rt]), np.array([beam.tangent_Z_m]),
+                        _rcp, len(orbit_chord[0]), beam.vertical_angle_deg, return_z=True)
+                    orbit_chord, _Z, _y = (_s[0], _rho[0], _R[0]), _Zc[0], _yc[0]
+                    _R = _R[0]
+                orbit_pitch = None           # stays None if an st_pphi beam misses the plasma
+                if orbit_chord is not None:
+                    orbit_pitch = physics.beam_birth_pitch(
+                        _R, _Z, _y, _Rt, beam.vertical_angle_deg, co, _R0, _a, config.geometry.elongation,
+                        config.Bt0, config.Ip_MA, config.q0, config.ip_sign, config.bt_sign)
+                orbit_lp = None
+                if _pphi and orbit_pitch is not None:
+                    orbit_lp = physics.pphi_orbit_loss_probability(
+                        _R, _Z, orbit_pitch, beam.Eb_keV, beam.species, _R0, _a, config.geometry.elongation,
+                        config.Bt0, config.Ip_MA, config.q0, widths["rho_Li"])
+                if orbit_lp is not None:
+                    # Lost fraction of the births along the axis chord, with the
+                    # real n_e(rho) shape in the birth rate (n_e sigma e^-tau, as
+                    # the birth profile) -- not the flat-n_e survival weighting
+                    # of first_orbit_loss_fraction_st, which over-weights births
+                    # at the edge for a strongly attenuated beam.
+                    _A = physics.beam_mass_number(beam.species)
+                    _sig = physics.stopping_cross_section_m2(
+                        beam.Eb_keV / _A, orbit_stopping_model, ne0_m3 * 1e-6, 10.0, config.Zeff, species=beam.species)
+                    _ne = ne0_m3 * np.maximum(1.0 - orbit_chord[1] ** 2, 0.0) ** (2.0 * sh_n)
+                    _ds = np.gradient(orbit_chord[0])
+                    _tau = np.cumsum(_ne * _sig * _ds)
+                    _birth = _ne * np.exp(-(_tau - _tau[0])) * _ds
+                    f_orbit = float(np.sum(orbit_lp * _birth) / max(np.sum(_birth), 1e-300))
+                else:
+                    f_orbit = 0.0 if orbit_pitch is None else physics.first_orbit_loss_fraction_st(
+                        ne0_m3, beam.Eb_keV, beam.species, path_length_m,
+                        config.geometry.minor_radius, config.geometry.major_radius, widths,
+                        co_current=co,
+                        variant="meanshift" if config.orbit_model == "st_meanshift" else "pitch",
+                        stopping_model=orbit_stopping_model, Zeff=config.Zeff,
+                        tangent_R_m=beam.tangent_R_m, chord=orbit_chord,
+                        cos_vertical_angle=math.cos(math.radians(beam.vertical_angle_deg)),
+                        pitch=orbit_pitch,
+                    )
             else:
                 orbit_width_m = physics.passing_orbit_width(
                     Eb_keV=beam.Eb_keV, Bt_T=config.Bt0, Ip_MA=config.Ip_MA,
@@ -776,7 +845,8 @@ def solve_operating_point(
                 tangent_R_m=beam.tangent_R_m, tangent_Z_m=beam.tangent_Z_m,
                 shine_through_model=beam.shine_through_model,
                 manual_shine_through_fraction=beam.manual_shine_through_fraction,
-                co_current=beam.co_current,
+                co_current=beam.co_current, group=beam.group, diameter_m=beam.diameter_m,
+                vertical_angle_deg=beam.vertical_angle_deg,
             )
         )
     P_shine_w = P_NB_total_w - P_capt_w
@@ -848,8 +918,10 @@ def solve_operating_point(
         dep = [physics.beam_birth_density_profile(
             rho_g, ne_axis, sh_n, b.Eb_keV, b.species, config.geometry, b.tangent_R_m, b.tangent_Z_m,
             rcp, b.shine_through_model, config.Zeff, config.Bt0, config.Ip_MA, config.orbit_model,
-            bool(b.co_current), config.enable_orbit_loss, return_pitch=True,
-            orbit_loss_deposition=config.orbit_loss_deposition) for b in useful_beams]
+            bool(b.co_current), config.enable_orbit_loss, diameter_m=b.diameter_m, return_pitch=True,
+            orbit_loss_deposition=config.orbit_loss_deposition,
+            vertical_angle_deg=b.vertical_angle_deg, q0=config.q0,
+            ip_sign=config.ip_sign, bt_sign=config.bt_sign) for b in useful_beams]
         births = [d[0] for d in dep]
         pitches = [d[1] for d in dep]
         rates = [b.P_NB_W / (b.Eb_keV * 1e3 * physics.E_CHARGE) for b in useful_beams]
@@ -955,8 +1027,10 @@ def solve_operating_point(
         R0 = config.geometry.major_radius
         for beam in useful_beams:
             tR = beam.tangent_R_m if beam.tangent_R_m is not None else R0
+            # inclined beam: only the horizontal velocity cos(alpha) v carries L_phi
             torque_total_Nm += physics.nbi_torque_Nm(
-                beam.P_NB_W, beam.Eb_keV, beam.species, tR, beam.co_current)
+                beam.P_NB_W, beam.Eb_keV, beam.species, tR, beam.co_current) * math.cos(
+                    math.radians(beam.vertical_angle_deg))
         rho_i_kg_m3 = nD0_axis * physics.M_D + nT0_axis * physics.M_T
         tau_phi_s = tau_Ei_s * config.tau_phi_over_tauEi
         v_phi_m_s = physics.toroidal_rotation_velocity_ms(
@@ -1062,23 +1136,30 @@ def solve_operating_point(
         pitch_out = [x.tolist() for x in pitches]
 
     # Beam-beam fusion (config.enable_beam_beam): the ONE pairwise reaction
-    # between the first two useful beams (this project's tested scope).
-    # Off by default -- pf_bb_dt/pf_bb_dd/neutron_rate_bb all stay 0.0.
+    # between the first two beamlines (this project's tested scope) -- summed
+    # over every pair of their energy components (BeamSpec.group), each pair
+    # at its own energies. Off by default -- pf_bb_dt/pf_bb_dd/neutron_rate_bb
+    # all stay 0.0.
     pf_bb_dt = 0.0
     pf_bb_dd = 0.0
     neutron_rate_bb = 0.0
     if config.enable_beam_beam and len(useful_beams) >= 2:
-        b1, b2 = useful_beams[0], useful_beams[1]
-        e1 = physics.average_fast_energy_keV(Te0_keV, b1.Eb_keV, b1.species)
-        e2 = physics.average_fast_energy_keV(Te0_keV, b2.Eb_keV, b2.species)
-        bb = physics.beam_beam_fusion_power(
-            nb0_per_beam[0], e1, b1.species, b1.co_current,
-            nb0_per_beam[1], e2, b2.species, b2.co_current,
-            V, config.cm_energy_correction,
-        )
-        pf_bb_dt = bb["pf_dt_w"]
-        pf_bb_dd = bb["pf_dd_w"]
-        neutron_rate_bb = bb["neutron_rate_s"]
+        groups = [j if b.group is None else b.group for j, b in enumerate(useful_beams)]
+        lines = list(dict.fromkeys(groups))[:2]
+        pairs = [(j, k) for j, gj in enumerate(groups) if gj == lines[0]
+                 for k, gk in enumerate(groups) if len(lines) > 1 and gk == lines[1]]
+        for j, k in pairs:
+            b1, b2 = useful_beams[j], useful_beams[k]
+            e1 = physics.average_fast_energy_keV(Te0_keV, b1.Eb_keV, b1.species)
+            e2 = physics.average_fast_energy_keV(Te0_keV, b2.Eb_keV, b2.species)
+            bb = physics.beam_beam_fusion_power(
+                nb0_per_beam[j], e1, b1.species, b1.co_current,
+                nb0_per_beam[k], e2, b2.species, b2.co_current,
+                V, config.cm_energy_correction,
+            )
+            pf_bb_dt += bb["pf_dt_w"]
+            pf_bb_dd += bb["pf_dd_w"]
+            neutron_rate_bb += bb["neutron_rate_s"]
 
     pf_dt = pf_thermal + pf_beam + pf_bb_dt
     pf_dd = pf_dd_thermal + pf_dd_beam + pf_bb_dd

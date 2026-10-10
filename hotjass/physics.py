@@ -16,6 +16,7 @@ docs/model.md for the derivation.
 from __future__ import annotations
 
 import math
+from functools import lru_cache
 from dataclasses import dataclass
 
 import numpy as np
@@ -886,7 +887,7 @@ def tangential_path_length(minor_radius_m: float) -> float:
 def tangential_chord(
     R0_m: float, minor_radius_m: float, elongation: float,
     tangent_R_m: float | None = None, tangent_Z_m: float = 0.0,
-    R_centrepost_m: float | None = None, n_samples: int = 501,
+    R_centrepost_m: float | None = None, n_samples: int = 501, vertical_angle_deg: float = 0.0,
 ):
     """Sample a horizontal neutral-beam chord tangent to the cylinder R = R_t
     at height Z_t, through elliptical flux surfaces
@@ -908,7 +909,16 @@ def tangential_chord(
     between the column and the inboard plasma edge).
 
     Same circular / elliptical approximation as captured_power_fraction().
+
+    vertical_angle_deg != 0: the beam is inclined (positive = rising along
+    its travel) about the fixed tangency point (R_t, Z_t); see
+    tangential_chords(). s is then the 3-D distance along the beam.
     """
+    if vertical_angle_deg != 0.0:
+        s_c, rho_c, R_c, hit = tangential_chords(
+            R0_m, minor_radius_m, elongation, np.array([R0_m if tangent_R_m is None else tangent_R_m]),
+            np.array([tangent_Z_m]), R_centrepost_m, n_samples, vertical_angle_deg)
+        return (s_c[0], rho_c[0], R_c[0]) if hit[0] else None
     R0 = float(R0_m); a = float(minor_radius_m)
     R_t = R0 if tangent_R_m is None else float(tangent_R_m)
     R_cp = (R0 - a) if (R_centrepost_m is None or R_centrepost_m <= 0.0) else float(R_centrepost_m)
@@ -939,6 +949,352 @@ def tangential_chord(
     return y - y[0], rho, R
 
 
+BEAM_RAY_SPACING_A = 0.1     # max ray spacing across a finite beam, in units of the minor radius
+BEAM_RAYS_PER_AXIS_MAX = 21
+
+
+def beam_ray_bundle(diameter_m: float, minor_radius_m: float):
+    """Rays sampling a circular beam with a Gaussian power profile
+    p(r) ~ exp(-(2r/D)^2) (D = 1/e diameter, sigma = D/(2 sqrt 2)).
+
+    Returns (du, dv, w): horizontal (tangency-radius) and vertical offsets [m]
+    of each ray from the beam axis and its power weight (sum 1). D <= 0 is a
+    single ray. Otherwise a square grid over +-3 sigma, clipped to the 3-sigma
+    circle, with spacing <= BEAM_RAY_SPACING_A * a: the birth profile in rho of
+    a single tangential ray is singular at its tangency surface, so the rays
+    must be closer than the profile's smoothing scale (orbit width, >= 0.03 a)
+    to sum to a smooth profile. Tested against a 6500-ray reference: L1 error
+    <= 1.5 %, on-axis error <= ~10 % for D up to 0.8 a, at a few ms per beam
+    (all rays are evaluated in one vectorised pass, tangential_chords()).
+    """
+    if diameter_m <= 0.0:
+        return np.zeros(1), np.zeros(1), np.ones(1)
+    sig = 0.5 * float(diameter_m) / math.sqrt(2.0)
+    m = int(math.ceil(6.0 * sig / (BEAM_RAY_SPACING_A * max(minor_radius_m, 1e-6)))) + 1
+    m = min(max(m + (m + 1) % 2, 3), BEAM_RAYS_PER_AXIS_MAX)    # odd: keeps the axis ray
+    x = np.linspace(-3.0, 3.0, m)
+    U, V = np.meshgrid(x, x)
+    keep = U ** 2 + V ** 2 <= 9.0 + 1e-9
+    w = np.exp(-0.5 * (U[keep] ** 2 + V[keep] ** 2))
+    return U[keep] * sig, V[keep] * sig, w / w.sum()
+
+
+def tangential_chords(
+    R0_m: float, minor_radius_m: float, elongation: float, tangent_R_m: np.ndarray,
+    tangent_Z_m: np.ndarray, R_centrepost_m: float | None = None, n_samples: int = 600,
+    vertical_angle_deg: float = 0.0, return_z: bool = False,
+):
+    """tangential_chord() for many parallel rays at once (same geometry, miss
+    and centre-post rules). Returns (s, rho, R, hit): [n_rays, n_samples]
+    arrays and a boolean hit mask (rows of missing rays are filler); with
+    return_z also Z [m] and the horizontal distance y [m] from the tangency
+    point (negative before it) as 5th and 6th items.
+
+    vertical_angle_deg = alpha != 0: each ray is inclined by alpha to the
+    horizontal about its own tangency point, Z(y) = Z_t + y tan(alpha) with
+    y the horizontal distance from tangency (negative before it, so alpha > 0
+    rises along the travel). Entry and exit through the LCFS are found by
+    bisection on the outermost crossings; samples in between that lie
+    outside the plasma (e.g. in the hole) get rho = 1, n_e = 0, as for the
+    horizontal chord. s is the 3-D path length, (y - y_entry)/cos(alpha).
+    The centre-post (an infinite cylinder) blocks at the same y as for
+    alpha = 0."""
+    if vertical_angle_deg != 0.0:
+        return _tilted_chords(R0_m, minor_radius_m, elongation, tangent_R_m, tangent_Z_m,
+                              R_centrepost_m, n_samples, vertical_angle_deg, return_z)
+    R0 = float(R0_m); a = float(minor_radius_m)
+    R_t = np.maximum(np.asarray(tangent_R_m, dtype=float), 1e-3)
+    R_cp = (R0 - a) if (R_centrepost_m is None or R_centrepost_m <= 0.0) else float(R_centrepost_m)
+    zc = np.asarray(tangent_Z_m, dtype=float) / max(elongation * a, 1e-12)
+    zc, R_t = np.broadcast_arrays(zc, R_t)
+    inside = np.abs(zc) < 1.0
+    outer_R = R0 + a * np.sqrt(np.clip(1.0 - zc ** 2, 0.0, None))
+    half = np.sqrt(np.clip(outer_R ** 2 - R_t ** 2, 0.0, None))
+    hit = inside & (R_t < outer_R - 0.02 * a) & (half > 0.05 * a)
+    y_lo = -half
+    blocked = R_t < R_cp
+    y_hi = np.where(blocked, -np.sqrt(np.clip(R_cp ** 2 - R_t ** 2, 0.0, None)), half)
+    hit &= ~blocked | (y_hi - y_lo > 0.05 * a)
+    t = np.linspace(0.0, 1.0, int(max(n_samples, 11)))
+    y = y_lo[:, None] + (y_hi - y_lo)[:, None] * t[None, :]
+    R = np.sqrt(R_t[:, None] ** 2 + y ** 2)
+    rho = np.sqrt(np.clip(((R - R0) / a) ** 2 + zc[:, None] ** 2, 0.0, 1.0))
+    if return_z:
+        return y - y[:, :1], rho, R, hit, np.broadcast_to(zc[:, None] * elongation * a, rho.shape), y
+    return y - y[:, :1], rho, R, hit
+
+
+def _tilted_chords(R0_m, minor_radius_m, elongation, tangent_R_m, tangent_Z_m,
+                   R_centrepost_m, n_samples, vertical_angle_deg, return_z):
+    """tangential_chords() for an inclined beam (see its docstring)."""
+    R0 = float(R0_m); a = float(minor_radius_m); ka = max(elongation * a, 1e-12)
+    R_t = np.maximum(np.asarray(tangent_R_m, dtype=float), 1e-3)
+    Z_t = np.asarray(tangent_Z_m, dtype=float)
+    R_t, Z_t = np.broadcast_arrays(R_t, Z_t)
+    alpha = math.radians(float(vertical_angle_deg))
+    tan_a, cos_a = math.tan(alpha), math.cos(alpha)
+    R_cp = (R0 - a) if (R_centrepost_m is None or R_centrepost_m <= 0.0) else float(R_centrepost_m)
+
+    def g(y):   # rho^2 (unclipped) along each ray at horizontal distance y
+        return ((np.sqrt(R_t[:, None] ** 2 + y ** 2) - R0) / a) ** 2 + ((Z_t[:, None] + y * tan_a) / ka) ** 2
+
+    L = R0 + a                      # inside the plasma R <= R0 + a, so |y| <= L
+    yc = np.linspace(-L, L, 1601)
+    inside = g(yc[None, :] * np.ones((len(R_t), 1))) < 1.0
+    hit = inside.any(axis=1)
+    i0 = np.where(hit, inside.argmax(axis=1), 1)
+    i1 = np.where(hit, len(yc) - 1 - inside[:, ::-1].argmax(axis=1), 1)
+
+    def crossing(y_out, y_in):      # bisection for g = 1 between an outside and an inside point
+        for _ in range(40):
+            mid = 0.5 * (y_out + y_in)
+            mid_in = g(mid[:, None])[:, 0] < 1.0
+            y_in, y_out = np.where(mid_in, mid, y_in), np.where(mid_in, y_out, mid)
+        return 0.5 * (y_out + y_in)
+
+    y_lo = np.where(i0 > 0, crossing(yc[np.maximum(i0 - 1, 0)], yc[i0]), yc[0])
+    y_hi = np.where(i1 < len(yc) - 1, crossing(yc[np.minimum(i1 + 1, len(yc) - 1)], yc[i1]), yc[-1])
+    blocked = R_t < R_cp
+    y_block = -np.sqrt(np.clip(R_cp ** 2 - R_t ** 2, 0.0, None))
+    hit &= ~(blocked & (y_lo >= y_block) & (y_lo <= -y_block))    # enters inside the post's shadow
+    y_hi = np.where(blocked & (y_lo < y_block), np.minimum(y_hi, y_block), y_hi)
+    hit &= (y_hi - y_lo) > 0.05 * a
+    t = np.linspace(0.0, 1.0, int(max(n_samples, 11)))
+    y = y_lo[:, None] + (y_hi - y_lo)[:, None] * t[None, :]
+    R = np.sqrt(R_t[:, None] ** 2 + y ** 2)
+    Z = Z_t[:, None] + y * tan_a
+    rho = np.sqrt(np.clip(((R - R0) / a) ** 2 + (Z / ka) ** 2, 0.0, 1.0))
+    s_c = (y - y[:, :1]) / cos_a
+    return (s_c, rho, R, hit, Z, y) if return_z else (s_c, rho, R, hit)
+
+
+def poloidal_field_T(rho, Ip_MA: float, Bt_T: float, R0_m: float, minor_radius_m: float,
+                     elongation: float, q0: float = 1.0) -> np.ndarray:
+    """B_p(rho) [T] of the assumed current profile j ~ (1-rho^2)^nu,
+    nu = q_cyl/q0 - 1 -- the same profile hotjass.current uses for q(rho) and
+    the bootstrap current: B_p = mu0 I(rho)/L_p(rho), I(rho) = I_p [1 -
+    (1-rho^2)^(nu+1)], L_p = 2 pi rho a sqrt((1+kappa^2)/2)."""
+    a = minor_radius_m
+    q_cyl = safety_factor_cyl_edge(Ip_MA, Bt_T, R0_m, a, elongation)
+    nu = max(q_cyl / max(float(q0), 0.05) - 1.0, 0.0)
+    rr = np.maximum(np.asarray(rho, dtype=float), 1e-4)
+    frac = 1.0 - np.maximum(1.0 - rr ** 2, 0.0) ** (nu + 1.0)
+    return MU0 * Ip_MA * 1e6 * frac / (2.0 * math.pi * a * math.sqrt((1.0 + elongation ** 2) / 2.0) * rr)
+
+
+def beam_birth_pitch(R, Z, y, tangent_R_m: float, vertical_angle_deg: float, co_current: bool,
+                     R0_m: float, minor_radius_m: float, elongation: float, Bt_T: float, Ip_MA: float,
+                     q0: float = 1.0, ip_sign: float = 1.0, bt_sign: float = 1.0) -> np.ndarray:
+    """Signed birth pitch along a beam chord: xi0 = v.B/(v B), expressed
+    relative to the plasma current (xi0 > 0: v_par moves along I_p).
+
+    Convention: positive I_p and B_t run counter-clockwise seen from above
+    (+phi in right-handed (R, phi, Z)); ip_sign / bt_sign = -1 reverse them
+    (Bt_T and Ip_MA are magnitudes). A co-current beam travels along I_p.
+    Beam direction at horizontal distance y from its tangency point (y
+    increases along the travel), inclined by alpha: v/v = cos(alpha) (y/R) e_R
+    + s ip_sign cos(alpha) (R_t/R) e_phi + sin(alpha) e_Z, s = +1 co / -1
+    counter. Field: B_phi = bt_sign B_t R0/R; B_p = ip_sign poloidal_field_T(rho)
+    e_phi x n (n the outward flux-surface normal): for I_p > 0 downward at
+    the outboard midplane, outward at the top. The B_p terms make an up- and
+    a down-inclined beam differ; reversing both I_p and B_t (the machine
+    turned upside down) swaps them. The lab-frame v.B/(vB) is multiplied by
+    ip_sign * bt_sign, the sign of B_phi relative to I_p."""
+    R = np.asarray(R, dtype=float); Z = np.asarray(Z, dtype=float); y = np.asarray(y, dtype=float)
+    a, ka = minor_radius_m, elongation * minor_radius_m
+    ca, sa = math.cos(math.radians(vertical_angle_deg)), math.sin(math.radians(vertical_angle_deg))
+    s_dir = 1.0 if co_current else -1.0
+    Rs = np.maximum(R, 1e-6)
+    sI, sB = (1.0 if ip_sign >= 0.0 else -1.0), (1.0 if bt_sign >= 0.0 else -1.0)
+    v_R, v_phi = ca * y / Rs, s_dir * sI * ca * np.asarray(tangent_R_m, dtype=float) / Rs
+    B_phi = sB * abs(Bt_T) * R0_m / Rs
+    nR, nZ = (R - R0_m) / a ** 2, Z / ka ** 2
+    nn = np.hypot(nR, nZ)
+    nR, nZ = np.where(nn > 0.0, nR / np.maximum(nn, 1e-300), 0.0), np.where(nn > 0.0, nZ / np.maximum(nn, 1e-300), 0.0)
+    rho = np.sqrt(np.clip(((R - R0_m) / a) ** 2 + (Z / ka) ** 2, 0.0, 1.0))
+    B_p = poloidal_field_T(rho, abs(Ip_MA), abs(Bt_T), R0_m, a, elongation, q0)
+    B_R, B_Z = sI * B_p * nZ, -sI * B_p * nR
+    xi_lab = (v_R * B_R + v_phi * B_phi + sa * B_Z) / np.sqrt(B_phi ** 2 + B_p ** 2)
+    return np.clip(sI * sB * xi_lab, -1.0, 1.0)
+
+
+def poloidal_flux_profile(rho: np.ndarray, Ip_MA: float, Bt_T: float, R0_m: float, minor_radius_m: float,
+                          elongation: float, q0: float = 1.0) -> np.ndarray:
+    """Poloidal flux per radian Psi(rho) [T m^2], 0 on the axis and increasing
+    outward (taken relative to I_p): dPsi/drho = R0 B_p(rho) a sqrt((1+kappa^2)/2),
+    B_p from poloidal_field_T() -- the flux-surface-averaged |grad psi| = R B_p
+    with R ~ R0 and the effective radius r = rho a sqrt((1+kappa^2)/2) that
+    sets L_p there."""
+    rho = np.asarray(rho, dtype=float)
+    d = (R0_m * poloidal_field_T(rho, Ip_MA, Bt_T, R0_m, minor_radius_m, elongation, q0)
+         * minor_radius_m * math.sqrt((1.0 + elongation ** 2) / 2.0))
+    return np.concatenate([[0.0], np.cumsum(0.5 * (d[1:] + d[:-1]) * np.diff(rho))])
+
+
+PPHI_PITCH_SPREAD = 0.10   # birth-pitch spread (beam divergence, finite chord), as st_orbit_loss_probability
+PPHI_N_R = 64              # major-radius samples per orbit leg
+
+
+def _pphi_outer_rho(R, psi_b, xb, k_m, R0, a, rho_tab, psi_tab, n_R):
+    """Outermost flux label rho reached by the orbit of each birth at major
+    radius R, flux Psi_b, pitch xb (see pphi_orbit_loss_probability) -- one
+    orbit per element, vectorised. rho_tab/psi_tab extend beyond rho = 1."""
+    idx = np.arange(int(n_R))
+    sgn = np.where(xb < 0.0, -1.0, 1.0)
+    R_bounce = R * (1.0 - xb ** 2)
+    R_lo = np.maximum(R_bounce, R0 - a)
+    R_hi = R0 + a
+    Rg = R_lo[:, None] + (R_hi - R_lo)[:, None] * np.linspace(0.0, 1.0, int(n_R))[None, :]
+    vpar = np.sqrt(np.clip(1.0 - ((1.0 - xb ** 2) * R)[:, None] / Rg, 0.0, None))
+    psi_mid = np.interp(np.abs(Rg - R0) / a, rho_tab, psi_tab)
+    base = (psi_b - k_m * R * xb)[:, None]
+    psi1 = base + k_m * Rg * sgn[:, None] * vpar          # birth leg
+    psi2 = base - k_m * Rg * sgn[:, None] * vpar          # return leg (trapped)
+    ib = np.clip(np.rint((R - R_lo) / np.maximum(R_hi - R_lo, 1e-12) * (n_R - 1)).astype(int), 0, n_R - 1)
+    ok1 = psi1 >= psi_mid
+    ok1[np.arange(len(R)), ib] = True
+    left_bad = np.where(~ok1 & (idx[None, :] < ib[:, None]), idx[None, :], -1).max(axis=1)
+    right_bad = np.where(~ok1 & (idx[None, :] > ib[:, None]), idx[None, :], n_R).min(axis=1)
+    comp1 = (idx[None, :] > left_bad[:, None]) & (idx[None, :] < right_bad[:, None])
+    psi_out = np.where(comp1, psi1, -np.inf).max(axis=1)
+    trapped = (left_bad < 0) & (R_bounce > R0 - a)
+    ok2 = psi2 >= psi_mid
+    ok2[:, 0] = True
+    right_bad2 = np.where(~ok2, idx[None, :], n_R).min(axis=1)
+    comp2 = (idx[None, :] < right_bad2[:, None]) & trapped[:, None]
+    psi_out = np.maximum(psi_out, np.where(comp2, psi2, -np.inf).max(axis=1))
+    return np.interp(psi_out, psi_tab, rho_tab)
+
+
+def _pphi_setup(Eb_keV, species, R0, a, elongation, Bt_T, Ip_MA, q0):
+    # Flux table out to rho = 1.5 (B_p ~ 1/rho outside the current), so an
+    # orbit beyond the LCFS still maps to a label rho > 1.
+    rho_tab = np.linspace(0.0, 1.5, 301)
+    psi_tab = poloidal_flux_profile(rho_tab, abs(Ip_MA), abs(Bt_T), R0, a, elongation, q0)
+    k_m = 2.0 * Eb_keV * 1.0e3 / float(beam_velocity(Eb_keV, species))   # m v / e [T m]
+    return rho_tab, psi_tab, k_m
+
+
+PPHI_TABLE_SHAPE = (33, 33, 65)   # (R_b, rho_b, xi) grid of the cached loss table
+PPHI_TABLE_N_R = 48               # major-radius samples per orbit leg when tabulating
+
+
+@lru_cache(maxsize=64)
+def _pphi_excursion_table(Eb_keV, species, R0, a, elongation, Bt_T, Ip_MA, q0, n_R):
+    """Outward orbit excursion d_rho = rho_out - rho_b on a (R_b, rho_b, xi)
+    grid -- a smooth quantity, so interpolating it keeps the loss boundary
+    (rho_b + d_rho >= 1 - rho_L/a) sharp. Cached: it depends on the beam and
+    machine only, not on the density or temperatures, so one table serves
+    every solve of a scan."""
+    rho_tab, psi_tab, k_m = _pphi_setup(Eb_keV, species, R0, a, elongation, Bt_T, Ip_MA, q0)
+    nr, nh, nx = PPHI_TABLE_SHAPE
+    Rax = np.linspace(R0 - a, R0 + a, nr)
+    hax = np.linspace(0.0, 1.0, nh)
+    xax = np.linspace(-1.0, 1.0, nx)
+    # Only cells a birth can occupy (rho_b >= |R_b - R0|/a, one cell of
+    # margin for the interpolation) are computed; the others copy the
+    # nearest valid rho_b at the same R_b.
+    h_min = np.abs(Rax - R0) / a
+    j0 = np.clip(np.floor(h_min / (hax[1] - hax[0])).astype(int) - 1, 0, nh - 1)
+    valid = np.arange(nh)[None, :] >= j0[:, None]
+    ii, jj = np.nonzero(valid)
+    Rv = np.repeat(Rax[ii], nx)
+    hv = np.repeat(np.maximum(hax[jj], h_min[ii]), nx)
+    xv = np.tile(xax, len(ii))
+    tab = np.empty((nr, nh, nx))
+    tab[ii, jj] = (_pphi_outer_rho(Rv, np.interp(hv, rho_tab, psi_tab), xv, k_m, R0, a, rho_tab, psi_tab, n_R)
+                   - hv).reshape(len(ii), nx)
+    for i in range(nr):
+        tab[i, :j0[i]] = tab[i, j0[i]]
+    return Rax, hax, xax, np.maximum(tab, 0.0)
+
+
+def _trilinear(axes, tab, pts):
+    """Trilinear interpolation of tab on regular axes at points pts (3 arrays)."""
+    out = np.zeros_like(pts[0], dtype=float)
+    idx, frac = [], []
+    for ax, p in zip(axes, pts):
+        u = np.clip((p - ax[0]) / (ax[1] - ax[0]), 0.0, len(ax) - 1.000001)
+        i = np.floor(u).astype(int)
+        idx.append(i)
+        frac.append(u - i)
+    for c0 in (0, 1):
+        for c1 in (0, 1):
+            for c2 in (0, 1):
+                w = ((frac[0] if c0 else 1 - frac[0]) * (frac[1] if c1 else 1 - frac[1])
+                     * (frac[2] if c2 else 1 - frac[2]))
+                out += w * tab[idx[0] + c0, idx[1] + c1, idx[2] + c2]
+    return out
+
+
+def pphi_orbit_loss_probability(
+    R, Z, xi, Eb_keV: float, species: str, R0_m: float, minor_radius_m: float, elongation: float,
+    Bt_T: float, Ip_MA: float, q0: float = 1.0, rho_L_m: float = 0.0,
+    pitch_spread: float = PPHI_PITCH_SPREAD, n_R: int = PPHI_N_R, use_table: bool = True,
+) -> np.ndarray:
+    """Prompt first-orbit-loss probability (0..1) of ions born at (R, Z) with
+    signed pitch xi (> 0 along I_p, beam_birth_pitch()), from the guiding-
+    centre constants of motion -- energy, magnetic moment mu and canonical
+    toroidal angular momentum P_phi = m R v_phi - e Psi (Psi increasing
+    outward, relative to I_p; poloidal_flux_profile()) -- instead of
+    orbit-width estimates.
+
+    With B ~ B0 R0/R (B_p << B_phi) and v_phi ~ v_par, mu conservation gives
+    v_par(R) = +-v sqrt(1 - (1 - xi^2) R_b/R) (bounce at R = R_b (1 - xi^2)),
+    and P_phi conservation the flux the orbit sits on at each R of a leg:
+
+        Psi(R) = Psi_b + (m/e) [R v_par(R) - R_b v xi].
+
+    The orbit exists where Psi(R) >= Psi(rho = |R - R0|/a) (the flux surface
+    reaches that R). Starting from the birth radius, the birth leg (sign of
+    xi) is followed over the connected R-range where it exists; if that range
+    reaches the bounce point (a trapped ion) the return leg is added. The ion
+    is lost if the outermost flux reached is at or beyond rho = 1 - rho_L/a
+    (one Larmor radius inside the LCFS, the same gyro criterion as the other
+    ST models). A co-moving ion born on the outboard side is then at the
+    outermost point of its orbit (its banana or drift orbit lies inward); a
+    counter-moving one at the innermost, its orbit extending a full banana /
+    drift width outward. pitch_spread > 0 averages over a 3-point
+    Gauss-Hermite spread in xi; there are no fitted constants otherwise.
+    The model is up-down symmetric in this approximation, so the orbit's
+    outward excursion depends on (R_b, rho_b, xi) only: use_table
+    interpolates a cached table of it (_pphi_excursion_table) and applies
+    the loss criterion per birth; use_table=False evaluates every orbit
+    directly.
+
+    References: Rome & Peng, Nucl. Fusion 19 (1979) 1193 (orbit topology from
+    the constants of motion); Eriksson & Porcelli, Plasma Phys. Control.
+    Fusion 43 (2001) R145; White, The Theory of Toroidally Confined Plasmas.
+    """
+    shape = np.shape(R)
+    R = np.asarray(R, dtype=float).ravel()
+    Z = np.broadcast_to(np.asarray(Z, dtype=float), shape).ravel()
+    xi = np.clip(np.broadcast_to(np.asarray(xi, dtype=float), shape).ravel(), -1.0, 1.0)
+    a, R0 = float(minor_radius_m), float(R0_m)
+    rho_b = np.sqrt(np.clip(((R - R0) / a) ** 2 + (Z / (elongation * a)) ** 2, 0.0, 1.0))
+    rho_lim = 1.0 - rho_L_m / a
+    if use_table:
+        Rax, hax, xax, tab = _pphi_excursion_table(float(Eb_keV), species, R0, a, float(elongation),
+                                                   abs(float(Bt_T)), abs(float(Ip_MA)), float(q0), PPHI_TABLE_N_R)
+        Rc = np.clip(R, R0 - a, R0 + a)
+
+        def outer(xb):
+            return rho_b + _trilinear((Rax, hax, xax), tab, (Rc, rho_b, xb))
+    else:
+        rho_tab, psi_tab, k_m = _pphi_setup(Eb_keV, species, R0, a, elongation, Bt_T, Ip_MA, q0)
+        psi_b = np.interp(rho_b, rho_tab, psi_tab)
+
+        def outer(xb):
+            return _pphi_outer_rho(R, psi_b, xb, k_m, R0, a, rho_tab, psi_tab, n_R)
+    if pitch_spread > 0.0:
+        d = math.sqrt(3.0) * pitch_spread
+        out = sum(w * (outer(np.clip(xi + dx, -1.0, 1.0)) >= rho_lim)
+                  for dx, w in ((-d, 1.0 / 6.0), (0.0, 2.0 / 3.0), (d, 1.0 / 6.0)))
+    else:
+        out = (outer(xi) >= rho_lim).astype(float)
+    return np.asarray(out, dtype=float).reshape(shape)
+
+
 def captured_power_fraction(
     ne0: float,
     Eb_keV: float,
@@ -953,6 +1309,8 @@ def captured_power_fraction(
     manual_shine_through_fraction: float | None = None,
     Zeff: float = 2.0,
     Te_keV: float = 10.0,
+    beam_diameter_m: float = 0.0,
+    vertical_angle_deg: float = 0.0,
 ) -> float:
     """Fraction of injected neutral-beam power actually absorbed by the
     plasma (1 - shine-through), under Beer-Lambert attenuation of the
@@ -965,8 +1323,27 @@ def captured_power_fraction(
     1 across the central chord. Depends only on density, beam energy/species,
     path length, and profile shape -- NOT on T_e -- so it can be evaluated
     before the T_e solve.
+
+    beam_diameter_m > 0 (with geometry): a circular Gaussian beam
+    (beam_ray_bundle), the captured fraction averaged over its rays; rays
+    that miss the plasma are fully shone through.
+
+    vertical_angle_deg != 0 (with geometry): the inclined chord of
+    tangential_chords() (no centre-post, like the horizontal chord here),
+    the column density integrated over its 3-D path; vertical ray offsets
+    are measured perpendicular to the beam, i.e. v / cos(alpha) in Z.
     """
     normalized_model = model.strip().lower().replace("/", "_").replace("-", "_")
+    if geometry is not None and beam_diameter_m > 0.0 and normalized_model != "manual":
+        R_t0 = geometry.major_radius if tangent_R_m is None else tangent_R_m
+        du, dv, w = beam_ray_bundle(beam_diameter_m, geometry.minor_radius)
+        dz = dv / math.cos(math.radians(vertical_angle_deg))
+        return float(sum(
+            wk * captured_power_fraction(
+                ne0, Eb_keV, species, path_length_m, density_peaking, n_samples, geometry,
+                R_t0 + u, tangent_Z_m + v, model, manual_shine_through_fraction, Zeff, Te_keV,
+                vertical_angle_deg=vertical_angle_deg)
+            for u, v, wk in zip(du, dz, w)))
     if normalized_model == "manual":
         if manual_shine_through_fraction is None:
             raise ValueError("Manual shine-through mode requires manual_shine_through_fraction")
@@ -975,7 +1352,17 @@ def captured_power_fraction(
     sigma_m2 = stopping_cross_section_m2(
         Eb_keV / A, normalized_model, ne0 * 1e-6, Te_keV, Zeff, species=species
     )
-    if geometry is not None:
+    if geometry is not None and vertical_angle_deg != 0.0:
+        R_t = geometry.major_radius if tangent_R_m is None else tangent_R_m
+        s_c, rho_c, _R, hit = tangential_chords(
+            geometry.major_radius, geometry.minor_radius, geometry.elongation, np.array([R_t]),
+            np.array([tangent_Z_m]), R_centrepost_m=1e-6, n_samples=max(int(n_samples), 3),
+            vertical_angle_deg=vertical_angle_deg)
+        if not hit[0]:
+            return 0.0
+        profile = np.maximum(1.0 - rho_c[0] ** 2, 0.0) ** (2.0 * max(density_peaking, 0.0))
+        optical_depth = sigma_m2 * ne0 * _trapezoidal_integral(s_c[0], profile)
+    elif geometry is not None:
         R_t = geometry.major_radius if tangent_R_m is None else tangent_R_m
         z_normalized = tangent_Z_m / max(geometry.elongation * geometry.minor_radius, 1e-12)
         if abs(z_normalized) >= 1.0:
@@ -1500,12 +1887,21 @@ def st_orbit_loss_probability(
     return lost
 
 
+def _signed_pitch_loss(rho, xi, a, R0_m, widths, variant: str = "pitch") -> np.ndarray:
+    """st_orbit_loss_probability() for a signed pitch xi (> 0 along I_p)."""
+    lost = st_orbit_loss_probability(rho, np.abs(xi), a, R0_m, widths, True, variant)
+    if np.any(xi < 0.0):
+        lost = np.where(xi < 0.0, st_orbit_loss_probability(rho, np.abs(xi), a, R0_m, widths, False, variant), lost)
+    return lost
+
+
 def first_orbit_loss_fraction_st(
     ne0: float, Eb_keV: float, species: str, path_length_m: float,
     minor_radius_m: float, R0_m: float, widths: dict, co_current: bool = True,
     variant: str = "meanshift", stopping_model: str = "riviere",
     Zeff: float = 2.0, Te_keV: float = 10.0, tangent_R_m: float | None = None,
-    chord: tuple | None = None,
+    chord: tuple | None = None, cos_vertical_angle: float = 1.0, pitch: np.ndarray | None = None,
+    loss_probability: np.ndarray | None = None,
 ) -> float:
     """Prompt first-orbit-loss fraction of the CAPTURED beam at ARBITRARY
     aspect ratio -- the spherical-tokamak counterpart of
@@ -1606,8 +2002,17 @@ def first_orbit_loss_fraction_st(
         # |pitch| is fixed by the injection geometry -- it does NOT depend on
         # the poloidal-field / current direction. Only the SIGN of v_par
         # relative to I_p flips (co <-> counter), carried by s_dir.
-        abs_lam0 = np.clip(R_t / R_chord, 0.0, 1.0)
-        lost_frac_x = st_orbit_loss_probability(rho, abs_lam0, a, R0_m, widths, co_current, "pitch")
+        if loss_probability is not None:
+            # per-sample loss probability from another orbit model (e.g.
+            # pphi_orbit_loss_probability), weighted here by the attenuation
+            lost_frac_x = np.asarray(loss_probability, dtype=float)
+        elif pitch is not None:
+            # full signed pitch along the chord (beam_birth_pitch): an ion with
+            # xi0 < 0 moves against I_p and is lost as a counter-current one
+            lost_frac_x = _signed_pitch_loss(rho, np.asarray(pitch, dtype=float), a, R0_m, widths)
+        else:
+            abs_lam0 = np.clip(R_t / R_chord, 0.0, 1.0) * cos_vertical_angle   # inclined beam: v_phi/v = cos(alpha) R_t/R
+            lost_frac_x = st_orbit_loss_probability(rho, abs_lam0, a, R0_m, widths, co_current, "pitch")
         frac = _trapezoidal_integral(x, lost_frac_x * density) / total
     else:
         raise ValueError(f"unknown first_orbit_loss_fraction_st variant {variant!r}")
@@ -1946,10 +2351,6 @@ def beam_target_dd_power_density_profile(
 # time), instead of a single 0-D n_b0 spread like tau_s alone.
 # ---------------------------------------------------------------------------
 
-BEAM_HALFWIDTH_M = 0.10      # 1/e half-width of a beam's Gaussian cross-section
-_BEAM_BUNDLE_OFFSETS = (-1.5, -0.75, 0.0, 0.75, 1.5)   # sub-chord offsets in sigma = w/sqrt(2)
-
-
 def orbit_cutoff_rho(
     Eb_keV: float, species: str, Bt_T: float, Ip_MA: float, R0_m: float, minor_radius_m: float,
     elongation: float, triangularity: float, orbit_model: str, co_current: bool = True,
@@ -1959,8 +2360,8 @@ def orbit_cutoff_rho(
     loss zone): births beyond it are lost on their first orbit. Same criteria
     as first_orbit_loss_fraction[_st] (gyro radius, passing drift, trapped
     tip); ported from hi_jass_app.py's `_orbit_cutoff_rho`."""
-    if not enable_orbit_loss:
-        return 1.0
+    if not enable_orbit_loss or orbit_model == "st_pphi":
+        return 1.0      # st_pphi: per-birth criterion, always "consistent" deposition
     a = minor_radius_m
     rho_li = larmor_radius_m(Eb_keV, Bt_T, species)
     if orbit_model in ("st_meanshift", "st_pitch"):
@@ -1982,8 +2383,9 @@ def beam_birth_density_profile(
     geometry: "TokamakGeometry", tangent_R_m: float | None, tangent_Z_m: float,
     R_centrepost_m: float | None, shine_model: str, Zeff: float,
     Bt_T: float, Ip_MA: float, orbit_model: str, co_current: bool, enable_orbit_loss: bool,
-    halfwidth_m: float = BEAM_HALFWIDTH_M, n_bins: int = 40, return_pitch: bool = False,
-    orbit_loss_deposition: str = "cutoff",
+    diameter_m: float = 0.0, n_bins: int = 40, return_pitch: bool = False,
+    orbit_loss_deposition: str = "cutoff", vertical_angle_deg: float = 0.0, q0: float = 1.0,
+    ip_sign: float = 1.0, bt_sign: float = 1.0,
 ):
     """Confined fast-ion BIRTH rate per unit volume h(rho) [m^-3] for one
     beam, normalised so its volume integral is 1 (V * <h> = 1; zeros if the
@@ -1992,11 +2394,12 @@ def beam_birth_density_profile(
     - Beer-Lambert attenuation along tangential chords (tangential_chord), the
       stopping cross-section evaluated exactly as captured_power_fraction does
       (central n_e, its default T_e), on the n_e0 (1-rho^2)^(2 p_n) profile.
-    - Finite beam width: a pencil chord tangent at R_t deposits a finite number
-      of ions into the vanishing volume of the flux surface rho(R_t), so the
-      density per volume diverges there; the beam is sampled as 5 x 5 parallel
-      sub-chords over a Gaussian cross-section exp(-r^2/w^2), w = halfwidth_m,
-      shifted in tangency radius and height.
+    - Beam cross-section: diameter_m = 0 is a single (pencil) ray; > 0 a
+      circular beam with a Gaussian power profile of 1/e diameter diameter_m,
+      sampled by the parallel rays of beam_ray_bundle(), shifted in tangency
+      radius and height. A pencil chord tangent at R_t puts a finite number of
+      ions into the vanishing volume of the flux surface rho(R_t); the binning
+      and the orbit-width smoothing below keep that finite.
     - Prompt first-orbit loss (already counted in the orbit-loss power):
       orbit_loss_deposition="cutoff" (default, historical) removes every
       birth beyond orbit_cutoff_rho (the worst-case trapped criterion);
@@ -2009,9 +2412,10 @@ def beam_birth_density_profile(
       density, which cannot pile births onto the axis.
 
     return_pitch=True also returns the birth-weighted mean pitch
-    xi0(rho) = v_par/v at birth: a horizontal chord tangent at R_t crosses
-    radius R with toroidal direction cosine R_t/R (poloidal field and the
-    chord's vertical tilt neglected), negative for counter-current beams.
+    xi0(rho) = v_par/v at birth (beam_birth_pitch: full field incl. the
+    poloidal field of the assumed current profile, q0; positive along I_p),
+    for a chord tangent at R_t inclined by alpha = vertical_angle_deg. The
+    same signed pitch enters the "consistent" orbit-loss weighting.
     Averaged over the same sub-chords and smoothed with the same kernel,
     weighted by births. Used for the NBCD estimate (hotjass.current).
     """
@@ -2024,36 +2428,45 @@ def beam_birth_density_profile(
     ctr = 0.5 * (edges[:-1] + edges[1:])
     counts = np.zeros(len(ctr))
     xi_sum = np.zeros(len(ctr))
-    s_off = halfwidth_m / math.sqrt(2.0)
     r_t0 = R0 if tangent_R_m is None else float(tangent_R_m)
     pk = max(density_peaking, 0.0)
-    consistent = (orbit_loss_deposition == "consistent" and enable_orbit_loss
-                  and orbit_model in ("st_meanshift", "st_pitch"))
-    if consistent:
-        widths = st_orbit_widths(Eb_keV, Bt_T, Ip_MA, R0, a, kappa, geometry.triangularity, species)
-        variant = "pitch" if orbit_model == "st_pitch" else "meanshift"
-    for u in _BEAM_BUNDLE_OFFSETS:
-        for v in _BEAM_BUNDLE_OFFSETS:
-            ch = tangential_chord(R0, a, kappa, tangent_R_m=r_t0 + u * s_off,
-                                  tangent_Z_m=tangent_Z_m + v * s_off,
-                                  R_centrepost_m=R_centrepost_m, n_samples=600)
-            if ch is None:
-                continue
-            s, rho_c, R_c = ch
-            ne_c = ne0 * np.maximum(1.0 - rho_c ** 2, 0.0) ** (2.0 * pk)
-            ds = np.gradient(s)
-            tau = np.cumsum(ne_c * sigma_m2 * ds)
-            birth = ne_c * sigma_m2 * np.exp(-(tau - tau[0]))
-            if consistent:
-                lam0 = np.clip(max(r_t0 + u * s_off, 1e-3) / R_c, 0.0, 1.0)
-                birth = birth * (1.0 - st_orbit_loss_probability(rho_c, lam0, a, R0, widths, co_current, variant))
-            wgt = math.exp(-0.5 * (u * u + v * v))
-            h, _ = np.histogram(rho_c, bins=edges, weights=birth * ds)
-            counts += wgt * h
-            if return_pitch:
-                xi_c = np.clip(max(r_t0 + u * s_off, 1e-3) / R_c, 0.0, 1.0)
-                hx, _ = np.histogram(rho_c, bins=edges, weights=birth * ds * xi_c)
-                xi_sum += wgt * hx
+    consistent = enable_orbit_loss and (
+        orbit_model == "st_pphi"
+        or (orbit_loss_deposition == "consistent" and orbit_model in ("st_meanshift", "st_pitch")))
+    du, dv, w_ray = beam_ray_bundle(diameter_m, a)
+    rt_ray = r_t0 + du
+    cos_a = math.cos(math.radians(vertical_angle_deg))
+    s_c, rho_c, R_c, hit, Z_c, y_c = tangential_chords(
+        R0, a, kappa, rt_ray, tangent_Z_m + dv / cos_a, R_centrepost_m=R_centrepost_m, n_samples=600,
+        vertical_angle_deg=vertical_angle_deg, return_z=True)
+    if hit.any():
+        rho_c, R_c, s_c, rt_ray, w_ray = rho_c[hit], R_c[hit], s_c[hit], rt_ray[hit], w_ray[hit]
+        Z_c, y_c = Z_c[hit], y_c[hit]
+        ne_c = ne0 * np.maximum(1.0 - rho_c ** 2, 0.0) ** (2.0 * pk)
+        ds = np.gradient(s_c, axis=1)
+        tau = np.cumsum(ne_c * sigma_m2 * ds, axis=1)
+        birth = ne_c * sigma_m2 * np.exp(-(tau - tau[:, :1])) * ds * w_ray[:, None]
+        xi_c = beam_birth_pitch(R_c, Z_c, y_c, np.maximum(rt_ray, 1e-3)[:, None], vertical_angle_deg,
+                                co_current, R0, a, kappa, Bt_T, Ip_MA, q0, ip_sign, bt_sign)
+        if consistent and orbit_model == "st_pphi":
+            # P_phi orbit boundary on every 4th chord sample (and the last),
+            # interpolated along the chord: the probability varies on the
+            # orbit-width scale, much coarser than the 600-sample chord.
+            n_s = rho_c.shape[1]
+            sub = np.unique(np.r_[np.arange(0, n_s, 4), n_s - 1])
+            lp_sub = pphi_orbit_loss_probability(
+                R_c[:, sub], Z_c[:, sub], xi_c[:, sub], Eb_keV, species, R0, a, kappa, Bt_T, Ip_MA, q0,
+                larmor_radius_m(Eb_keV, Bt_T, species))
+            lp = np.array([np.interp(np.arange(n_s), sub, row) for row in lp_sub])
+            birth = birth * (1.0 - lp)
+        elif consistent:
+            widths = st_orbit_widths(Eb_keV, Bt_T, Ip_MA, R0, a, kappa, geometry.triangularity, species)
+            variant = "pitch" if orbit_model == "st_pitch" else "meanshift"
+            birth = birth * (1.0 - _signed_pitch_loss(rho_c, xi_c, a, R0, widths, variant))
+        idx = np.minimum((rho_c * len(ctr)).astype(int), len(ctr) - 1).ravel()
+        counts = np.bincount(idx, weights=birth.ravel(), minlength=len(ctr))
+        if return_pitch:
+            xi_sum = np.bincount(idx, weights=(birth * xi_c).ravel(), minlength=len(ctr))
     zero = (np.zeros_like(rho), np.zeros_like(rho)) if return_pitch else np.zeros_like(rho)
     if counts.sum() <= 0.0:
         return zero
@@ -2064,7 +2477,7 @@ def beam_birth_density_profile(
     xi_sum = np.where(ctr > rc, 0.0, xi_sum)
     if counts.sum() <= 0.0:
         return zero
-    if orbit_model in ("st_meanshift", "st_pitch"):
+    if orbit_model in ("st_meanshift", "st_pitch", "st_pphi"):
         width = st_orbit_widths(Eb_keV, Bt_T, Ip_MA, R0, a, kappa, geometry.triangularity, species)["w_pass"]
     else:
         width = passing_orbit_width(Eb_keV, Bt_T, Ip_MA, R0, a, kappa, species)
@@ -2082,7 +2495,7 @@ def beam_birth_density_profile(
     ok = den > 1e-12 * den.max()
     xi_b = num[ok] / den[ok]
     xi = np.interp(rho, ctr[ok], xi_b, left=xi_b[0], right=xi_b[-1])
-    return h_out, (1.0 if co_current else -1.0) * xi
+    return h_out, xi
 
 
 def thermal_fusion_power_from_profiles(rho, nD, nT, Ti_keV, volume_m3):
