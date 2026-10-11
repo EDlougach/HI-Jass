@@ -88,6 +88,13 @@ pitch-resolved ST orbit loss (`first_orbit_loss_fraction_st(..., pitch=)`),
 the consistent birth weighting and NBCD; an ion born with $\xi_0 < 0$ moves
 against $I_p$ and is treated as counter-current.
 
+HOT-Jass web, Beam tab: the *Fast-ion birth vs normalised radius* panel also
+plots each NBI's birth-weighted mean pitch $\xi_0(\rho)$ for its full-energy
+component (dash-dot, right axis), from the same deposition model
+(`beam_birth_density_profile(..., return_pitch=True)`, with $q_0$ and the
+$I_p$/$B_t$ signs the solver uses); it is blanked where the beam deposits
+less than 2 % of its peak.
+
 ## Beam energy components (full, half, third)
 
 A positive-ion source also extracts D2+ and D3+ (H2+/H3+, T2+/T3+), which
@@ -213,6 +220,11 @@ the loss criterion are built:
 - **ST orbits — mean-shift (arbitrary $A$)** and **ST orbits — pitch-resolved** —
   two spherical-tokamak variants described in *ST orbit models* at the end of
   this section. Both give non-zero co-current loss.
+- **ST orbits — P$_\phi$ orbit boundary** — births followed along their
+  guiding-centre orbits from the constants of motion (*Orbit-boundary model*
+  at the end of this section). In HOT-Jass web it is the default of the
+  spherical presets (SANTE, ST40, MAST-U, NSTX-U); JET and TCV default to
+  the pitch-resolved model, ITER and T-15MD to the large-aspect one.
 
 ### Birth profile along the chord
 
@@ -1220,8 +1232,9 @@ of 25-40 % on spherical tokamaks, well above TRANSP's few per cent.
 
 ### Limitations
 
-- Mono-energetic beam (no $E/2$, $E/3$), no anomalous fast-ion diffusion, no
-  current diffusion (steady state assumed).
+- Each energy component ($E$, $E/2$, $E/3$) is a separate mono-energetic
+  source; no anomalous fast-ion diffusion, no current diffusion (steady state
+  assumed).
 - Assumed current profile and $q(\rho)$; no equilibrium.
 - Where fast ions make the thermal-ion density hollow (fixed $n_e$, large
   $n_b$ in the core), the thermal bootstrap reverses near the axis (seen on
@@ -1519,6 +1532,41 @@ difference matters where fast ions carry a large share of the pressure (low
 density, high beam power). $\beta$ is a diagnostic: nothing in the solve
 depends on it.
 
+**Fast-ion pressure in the NBI\_OUT export (HOT-Jass web).** The parallel and
+perpendicular pressures written to NBI\_OUT (PBLON, PBPER) follow the
+*Fast-ion pressure* choice at the end of MODELS:
+
+$$
+p_\parallel = 2\langle\xi^2\rangle\,u_{fast},\qquad
+p_\perp = \bigl(1-\langle\xi^2\rangle\bigr)\,u_{fast},\qquad
+p_\perp + p_\parallel/2 = u_{fast},
+$$
+
+so the stored energy does not depend on it. *Isotropic* ($1/3$) and
+*Anisotropic (parallel)* ($1$) are the two bounds above. The default,
+*Birth pitch + scattering*, takes a local $\langle\xi^2\rangle(\rho)$ per
+beam component from the steady slowing-down distribution of the NBCD model
+(electron and ion drag plus ion pitch-angle scattering, see *Neutral-beam
+current drive*). The $l = 2$ Legendre moment of the pitch starts at the birth
+value and decays as $G^{\beta}$ while the ion slows down ($G^{\beta/3}$ is the
+$l = 1$ factor of the NBCD integral); weighting by energy over the
+distribution $\propto u^2/(u^3+u_c^3)$:
+
+$$
+\langle\xi^2\rangle = \frac{1}{3} + \frac{2}{3}\,P_2(\xi_0)\,
+\frac{\int_0^1 \frac{u^4}{u^3+u_c^3}\,G^{\beta}\,du}
+     {\int_0^1 \frac{u^4}{u^3+u_c^3}\,du},
+\qquad G = \frac{u^3(1+u_c^3)}{u^3+u_c^3},
+\qquad P_2 = \frac{3\xi_0^2-1}{2},
+$$
+
+with $u = v/v_b$, $u_c$, $\beta = Z_{eff}/\bar Z$ and the profiles exactly as
+in the NBCD calculation and $\xi_0(\rho)$ the birth-weighted mean pitch (the
+pitch spread within a radial bin is neglected). Beam-averaged values on the
+presets: NSTX-U 0.23 / 0.49 (NBI-1 is born at low pitch, more perpendicular
+than isotropic), MAST-U 0.50 / 0.57, ITER 0.49 / 0.55 -- between the bounds,
+as expected for tangential beams.
+
 ## Results tabs (Operating point)
 
 - **Dashboard** — scalar table of the operating point (temperatures, and their
@@ -1648,6 +1696,71 @@ Notes:
   fastest, 6 numbers per line, 13 characters each (`E13.5`, so a negative
   value keeps a leading blank and both fixed-width and whitespace readers
   work), then the `;----END-OF-DATA` trailer and free-text comments.
+
+### NBI\_OUT for ASTRA (HOT-Jass web)
+
+**Results** $\to$ **Save** $\to$ **NBI\_OUT** writes `nbi_out.dat` in the
+NBI\_OUT v1 format of the file-based NBI coupling to ASTRA (module $\to$
+ASTRA): line 1 `# NBI_OUT v1`; 15 scalar `KEY value` lines in fixed order;
+`SOURCES` and one row per beamline (source number, PINJ, PSHINE, PION, PLOSS
+[W], with the $E$, $E/2$, $E/3$ components added); `NPROF 22`, a `COLUMNS`
+line and NA1 rows; `END`. SI units (m$^{-3}$, W, A, Pa, N); reals `ES24.16`,
+integers `I10`, no comment lines. **NBI\_OUT Preview** plots all 21 columns
+against RHO with the scalars before saving; both use the same data.
+
+HOT-Jass is not called by an ASTRA stub (no NBI\_IN), so TIME = NCALL = 0.
+The grid is NA1 cell centres, set in the dialog (default 100),
+$\rho_j = (j-\tfrac12)/N_{A1}$ of the HOT-Jass elliptical label, written as
+RHO $= \rho_j\,a\sqrt\kappa$ [m] (approximately the toroidal-flux radius
+$\sqrt{\Phi/\pi B_0}$; not ASTRA's own equilibrium $\rho$). Volume integrals
+use $\int f\,dV = V\sum_j f_j\,2\rho_j\Delta\rho$.
+
+Profile columns, from the solver's profiles and the confined birth rate
+$S_k h_k(\rho)$ of each energy component $k$ (normalised to its useful
+power):
+
+| Column | Units | Computed as |
+|---|---|---|
+| RHO | m | $\rho_j a\sqrt\kappa$ |
+| PEBM, PIBM | W/m$^3$ | $\sum_k L_{e,k} S_k h_k E_k$, $\sum_k L_{i,k} S_k h_k E_k$ |
+| PBEAM | W/m$^3$ | PEBM + PIBM |
+| NIBM | m$^{-3}$ | $\sum_k S_k h_k\,\tau_{th,k}(n_e, T_e)$ |
+| PBLON, PBPER | Pa | $2\langle\xi^2\rangle u$, $(1-\langle\xi^2\rangle)\,u$ |
+| CUFI, CUBM | A/m$^2$ | Current tab: unshielded, shielded |
+| SNEBM | m$^{-3}$s$^{-1}$ | $\sum_k S_k h_k$ |
+| SNNBM | m$^{-3}$s$^{-1}$ | zeros (not modelled) |
+| SNIBM1, 2, 3 | m$^{-3}$s$^{-1}$ | $S_k h_k$ of the H, D, T components |
+| SCUBM | N/m$^3$ | $\pm\sum_k S_k h_k\,m_b v_b R_t/R_0$ |
+| NNBM1, 2, 3 | m$^{-3}$ | zeros (not modelled) |
+| STNBDP, SDNBDP1/2, SDNBTP | s$^{-1}$ | $n_b\langle\sigma v\rangle$ per target ion |
+
+PEBM and PIBM put the deposited power at the birth radius and split it with
+each component's slowing-down fractions $L_{e,k}$, $L_{i,k}$; PBEAM counts
+confined births only. NIBM is the solver's fast-ion density. In PBLON and
+PBPER, $u = \sum_k n_{b,k}\langle E\rangle_k$ and $\langle\xi^2\rangle$
+follows *Fast-ion pressure* (see *Plasma beta*). SCUBM is positive along
+$I_p$. The beam-target rates use the local slowing-down spectrum: STNBDP T
+beam on D; SDNBDP1 D on D, t + p branch; SDNBDP2 D on D, n + $^3$He branch;
+SDNBTP D beam on T.
+
+Scalars: PINJ, PSHINE, PION, PLOSS (prompt orbit + CX) from the solver's
+power balance; PHEAT $= \int(\mathrm{PEBM}+\mathrm{PIBM})\,dV$; WFAST $=
+\int(\mathrm{PBPER}+\mathrm{PBLON}/2)\,dV$; IBM the NB-driven current of the
+Current tab; TORQ $= \sum 2P_{useful}R_t/v_b$ (also with rotation off);
+NRATE the beam-target plus beam-beam neutron rate; NSRC the number of
+beamlines. STATUS: 0 OK; 1 if $|\mathrm{PION}-\mathrm{PHEAT}-\mathrm{PLOSS}|
+> 10^{-2}\,\mathrm{PION}$, with the difference in MESSAGE (the historical
+cutoff deposition, or a coarse grid: below about 50 points the grid sum is off
+by 1--2 %); $-3$ without profile-corrected 0-D (all columns but RHO zero).
+
+Checks on the presets: PION = PHEAT + PLOSS within 0.1 %; NIBM within 0.5 %
+of the solver's fast-ion density; $R_0\int\mathrm{SCUBM}\,dV$ = TORQ; the
+beam-target columns times the thermal D, T densities reproduce the solver's
+beam neutron rate. Approximations: global $L_e$, $L_i$ per component and no
+radial redistribution while slowing down; ions lost promptly or by CX are not
+in the sources; SCUBM uses $R_0$ for the local $R$; the SDNBDP1/2 branch
+assignment follows the v1 specification, which itself lists it as still to be
+checked against ASTRA.
 
 ## Interface font size (accessibility)
 
