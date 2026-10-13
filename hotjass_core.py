@@ -28,6 +28,7 @@ class PlasmaParams:
     plasma_current: float = 1.5e6
     deuterium_fraction: float = 0.2
     tritium_fraction: float = 0.8
+    hydrogen_fraction: float = 0.0     # thermal H (protium); H + D + T fractions sum to 1
     tauE_e: float = 0.15
     tauE_i: float = 0.15
     alpha_heating: bool = False  # fusion alpha self-heating fed back into the T_e/T_i balance
@@ -81,9 +82,11 @@ class BeamParams:
     # a positive-ion source also extracts D2+/D3+ (H2+/H3+, T2+/T3+), which
     # dissociate into atoms at E/2 and E/3. (1, 0, 0) is a mono-energetic beam.
     energy_fractions: tuple = (1.0, 0.0, 0.0)
-    # Circular beam cross-section: 1/e diameter [m] of a Gaussian power profile
-    # (physics.beam_ray_bundle); 0 = a single (pencil) ray.
-    beam_diameter_m: float = 0.0
+    # Beam cross-section: full width (horizontal) and height (vertical) [m] of
+    # the elliptic duct aperture; inside it a Gaussian power profile truncated
+    # at 2 sigma (physics.beam_ray_bundle); both 0 = a single (pencil) ray.
+    beam_width_m: float = 0.0
+    beam_height_m: float = 0.0
     # Vertical injection angle [deg] between the beam axis and its horizontal
     # projection, about the fixed tangency point; positive = rising.
     vertical_angle_deg: float = 0.0
@@ -131,6 +134,7 @@ class HotJassModel:
             Zeff=self.plasma.effective_charge,
             mix_D=self.plasma.deuterium_fraction,
             mix_T=self.plasma.tritium_fraction,
+            mix_H=self.plasma.hydrogen_fraction,
             density_peaking=self.plasma.density_peaking,
             temperature_peaking=self.plasma.temp_peaking,
             temperature_peaking_i=self.plasma.temp_peaking_i,
@@ -283,7 +287,8 @@ class HotJassModel:
                 beam.beam_energy_keV, beam.power_MW * 1.0e6, beam.species.upper(),
                 beam.tangent_R_m, beam.tangent_Z_m,
                 beam.shine_through_model, beam.manual_shine_through_fraction,
-                bool(beam.co_current), group=i, diameter_m=float(beam.beam_diameter_m),
+                bool(beam.co_current), group=i, width_m=float(beam.beam_width_m),
+                height_m=float(beam.beam_height_m),
                 vertical_angle_deg=float(beam.vertical_angle_deg),
             )
             for i, beam in self.beam_components()
@@ -356,7 +361,7 @@ class HotJassModel:
                     ), tangent_R_m=beam.tangent_R_m, tangent_Z_m=beam.tangent_Z_m,
                     model=beam.shine_through_model,
                     manual_shine_through_fraction=beam.manual_shine_through_fraction,
-                    Zeff=self.plasma.effective_charge, beam_diameter_m=beam.diameter_m,
+                    Zeff=self.plasma.effective_charge, beam_width_m=beam.width_m, beam_height_m=beam.height_m,
                     vertical_angle_deg=beam.vertical_angle_deg,
                 )
                 tau = thermalization_time(float(density), float(point.Te_keV), beam.Eb_keV, beam.species)
@@ -371,6 +376,7 @@ class HotJassModel:
                 for fraction, species in (
                     (self.plasma.deuterium_fraction, "D"),
                     (self.plasma.tritium_fraction, "T"),
+                    (self.plasma.hydrogen_fraction, "H"),
                 )
             )
             p_ie = -p_ei
@@ -463,6 +469,7 @@ class HotJassModel:
             "temperature_peaking": self.plasma.temp_peaking,
             "deuterium_fraction": self.plasma.deuterium_fraction,
             "tritium_fraction": self.plasma.tritium_fraction,
+            "hydrogen_fraction": self.plasma.hydrogen_fraction,
             "elongation": self.plasma.elongation,
             "triangularity": self.plasma.triangularity,
             "tauE_e": self.plasma.tauE_e,

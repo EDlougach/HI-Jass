@@ -951,32 +951,44 @@ def tangential_chord(
 
 BEAM_RAY_SPACING_A = 0.1     # max ray spacing across a finite beam, in units of the minor radius
 BEAM_RAYS_PER_AXIS_MAX = 21
+BEAM_EDGE_SIGMA = 2.0         # duct-aperture edge of the beam, in Gaussian sigma (truncated there)
 
 
-def beam_ray_bundle(diameter_m: float, minor_radius_m: float):
-    """Rays sampling a circular beam with a Gaussian power profile
-    p(r) ~ exp(-(2r/D)^2) (D = 1/e diameter, sigma = D/(2 sqrt 2)).
+def beam_ray_bundle(width_m: float, height_m: float, minor_radius_m: float):
+    """Rays sampling a beam bounded by its duct aperture: an ellipse of full
+    width W (horizontal) and height H (vertical). Inside it the power profile
+    is Gaussian, p(u, v) ~ exp(-(u/sigma_u)^2/2 - (v/sigma_v)^2/2), truncated
+    at the aperture edge, which sits at BEAM_EDGE_SIGMA sigma (sigma_u =
+    W / (2 BEAM_EDGE_SIGMA)): p is still exp(-2) ~ 14 % of the peak there and
+    zero outside. W = H is a circular aperture.
 
     Returns (du, dv, w): horizontal (tangency-radius) and vertical offsets [m]
-    of each ray from the beam axis and its power weight (sum 1). D <= 0 is a
-    single ray. Otherwise a square grid over +-3 sigma, clipped to the 3-sigma
-    circle, with spacing <= BEAM_RAY_SPACING_A * a: the birth profile in rho of
-    a single tangential ray is singular at its tangency surface, so the rays
-    must be closer than the profile's smoothing scale (orbit width, >= 0.03 a)
-    to sum to a smooth profile. Tested against a 6500-ray reference: L1 error
-    <= 1.5 %, on-axis error <= ~10 % for D up to 0.8 a, at a few ms per beam
-    (all rays are evaluated in one vectorised pass, tangential_chords()).
+    of each ray from the beam axis and its power weight (sum 1, i.e. the rays
+    together carry P_NB). W, H <= 0 is a single ray; one of them <= 0 is a
+    line of rays along the other. Otherwise a rectangular grid spanning the
+    aperture, clipped to the ellipse (every ray inside it), with spacing <=
+    BEAM_RAY_SPACING_A * a: the birth profile in rho of a single tangential
+    ray is singular at its tangency surface, so the rays must be closer than
+    the profile's smoothing scale (orbit width, >= 0.03 a) to sum to a smooth
+    profile. All rays are evaluated in one vectorised pass (tangential_chords()).
     """
-    if diameter_m <= 0.0:
+    if width_m <= 0.0 and height_m <= 0.0:
         return np.zeros(1), np.zeros(1), np.ones(1)
-    sig = 0.5 * float(diameter_m) / math.sqrt(2.0)
-    m = int(math.ceil(6.0 * sig / (BEAM_RAY_SPACING_A * max(minor_radius_m, 1e-6)))) + 1
-    m = min(max(m + (m + 1) % 2, 3), BEAM_RAYS_PER_AXIS_MAX)    # odd: keeps the axis ray
-    x = np.linspace(-3.0, 3.0, m)
-    U, V = np.meshgrid(x, x)
-    keep = U ** 2 + V ** 2 <= 9.0 + 1e-9
+    k = BEAM_EDGE_SIGMA
+
+    def axis(size_m):
+        if size_m <= 0.0:
+            return 0.0, np.zeros(1)
+        m = int(math.ceil(float(size_m) / (BEAM_RAY_SPACING_A * max(minor_radius_m, 1e-6)))) + 1
+        m = min(max(m + (m + 1) % 2, 3), BEAM_RAYS_PER_AXIS_MAX)    # odd: keeps the axis ray
+        return 0.5 * float(size_m) / k, np.linspace(-k, k, m)
+
+    sig_u, xu = axis(width_m)
+    sig_v, xv = axis(height_m)
+    U, V = np.meshgrid(xu, xv)
+    keep = U ** 2 + V ** 2 <= k * k + 1e-9
     w = np.exp(-0.5 * (U[keep] ** 2 + V[keep] ** 2))
-    return U[keep] * sig, V[keep] * sig, w / w.sum()
+    return U[keep] * sig_u, V[keep] * sig_v, w / w.sum()
 
 
 def tangential_chords(
@@ -1309,7 +1321,8 @@ def captured_power_fraction(
     manual_shine_through_fraction: float | None = None,
     Zeff: float = 2.0,
     Te_keV: float = 10.0,
-    beam_diameter_m: float = 0.0,
+    beam_width_m: float = 0.0,
+    beam_height_m: float = 0.0,
     vertical_angle_deg: float = 0.0,
 ) -> float:
     """Fraction of injected neutral-beam power actually absorbed by the
@@ -1324,8 +1337,8 @@ def captured_power_fraction(
     path length, and profile shape -- NOT on T_e -- so it can be evaluated
     before the T_e solve.
 
-    beam_diameter_m > 0 (with geometry): a circular Gaussian beam
-    (beam_ray_bundle), the captured fraction averaged over its rays; rays
+    beam_width_m or beam_height_m > 0 (with geometry): a Gaussian beam
+    truncated by its elliptic duct aperture W x H (beam_ray_bundle), the captured fraction averaged over its rays; rays
     that miss the plasma are fully shone through.
 
     vertical_angle_deg != 0 (with geometry): the inclined chord of
@@ -1334,9 +1347,9 @@ def captured_power_fraction(
     are measured perpendicular to the beam, i.e. v / cos(alpha) in Z.
     """
     normalized_model = model.strip().lower().replace("/", "_").replace("-", "_")
-    if geometry is not None and beam_diameter_m > 0.0 and normalized_model != "manual":
+    if geometry is not None and max(beam_width_m, beam_height_m) > 0.0 and normalized_model != "manual":
         R_t0 = geometry.major_radius if tangent_R_m is None else tangent_R_m
-        du, dv, w = beam_ray_bundle(beam_diameter_m, geometry.minor_radius)
+        du, dv, w = beam_ray_bundle(beam_width_m, beam_height_m, geometry.minor_radius)
         dz = dv / math.cos(math.radians(vertical_angle_deg))
         return float(sum(
             wk * captured_power_fraction(
@@ -1653,7 +1666,7 @@ def ion_ion_collision_frequency_hz(Ti_keV: float, ni_m3: float, species: str = "
 def neoclassical_tau_Ei_s(
     Ti_keV: float, n_thermal_m3: float, Bt_T: float, Ip_MA: float,
     R0_m: float, a_m: float, elongation: float, mix_D: float, mix_T: float,
-    arbitrary_A: bool = False, triangularity: float = 0.0,
+    arbitrary_A: bool = False, triangularity: float = 0.0, mix_H: float = 0.0,
 ) -> float:
     """Neoclassical (banana-regime) ion energy confinement time -- the
     textbook order-unity-coefficient estimate (Wesson "Tokamaks" /
@@ -1695,7 +1708,7 @@ def neoclassical_tau_Ei_s(
     populations (mix_D/mix_T), but Chang-Hinton itself is already only an
     order-unity estimate -- so rather than a full two-species neoclassical
     combination, this uses ONE effective ion mass
-    (mix_D*M_D + mix_T*M_T, weighted by density fraction) and the total
+    (mix_H*M_H + mix_D*M_D + mix_T*M_T, weighted by density fraction) and the total
     n_thermal, treating the ion channel as a single effective species for
     rho_i/nu_ii. Consistent with the base formula's own level of rigor;
     flagged here as a modeling choice, not asserted as exact.
@@ -1706,12 +1719,12 @@ def neoclassical_tau_Ei_s(
     solve._solve_ti_neoclassical_keV).
     """
     eps = a_m / R0_m
-    m_eff_kg = mix_D * M_D + mix_T * M_T
+    m_eff_kg = mix_D * M_D + mix_T * M_T + mix_H * M_H
     v_thi = math.sqrt(2.0 * max(Ti_keV, 1e-9) * 1e3 * E_CHARGE / m_eff_kg)
     rho_i = m_eff_kg * v_thi / (E_CHARGE * Bt_T)
     nu_ii_D = ion_ion_collision_frequency_hz(Ti_keV, mix_D * n_thermal_m3, "D")
     nu_ii_T = ion_ion_collision_frequency_hz(Ti_keV, mix_T * n_thermal_m3, "T")
-    nu_ii = nu_ii_D + nu_ii_T
+    nu_ii = nu_ii_D + nu_ii_T + ion_ion_collision_frequency_hz(Ti_keV, mix_H * n_thermal_m3, "H")
     if arbitrary_A:
         q = safety_factor_cyl_edge_arbitrary_A(Ip_MA, Bt_T, R0_m, a_m, elongation, triangularity)
         f_t = trapped_particle_fraction(eps)
@@ -2383,7 +2396,7 @@ def beam_birth_density_profile(
     geometry: "TokamakGeometry", tangent_R_m: float | None, tangent_Z_m: float,
     R_centrepost_m: float | None, shine_model: str, Zeff: float,
     Bt_T: float, Ip_MA: float, orbit_model: str, co_current: bool, enable_orbit_loss: bool,
-    diameter_m: float = 0.0, n_bins: int = 40, return_pitch: bool = False,
+    width_m: float = 0.0, height_m: float = 0.0, n_bins: int = 40, return_pitch: bool = False,
     orbit_loss_deposition: str = "cutoff", vertical_angle_deg: float = 0.0, q0: float = 1.0,
     ip_sign: float = 1.0, bt_sign: float = 1.0,
 ):
@@ -2394,8 +2407,9 @@ def beam_birth_density_profile(
     - Beer-Lambert attenuation along tangential chords (tangential_chord), the
       stopping cross-section evaluated exactly as captured_power_fraction does
       (central n_e, its default T_e), on the n_e0 (1-rho^2)^(2 p_n) profile.
-    - Beam cross-section: diameter_m = 0 is a single (pencil) ray; > 0 a
-      circular beam with a Gaussian power profile of 1/e diameter diameter_m,
+    - Beam cross-section: width_m = height_m = 0 is a single (pencil) ray;
+      otherwise a Gaussian beam truncated at 2 sigma by its elliptic duct
+      aperture of full width width_m and height height_m,
       sampled by the parallel rays of beam_ray_bundle(), shifted in tangency
       radius and height. A pencil chord tangent at R_t puts a finite number of
       ions into the vanishing volume of the flux surface rho(R_t); the binning
@@ -2433,7 +2447,7 @@ def beam_birth_density_profile(
     consistent = enable_orbit_loss and (
         orbit_model == "st_pphi"
         or (orbit_loss_deposition == "consistent" and orbit_model in ("st_meanshift", "st_pitch")))
-    du, dv, w_ray = beam_ray_bundle(diameter_m, a)
+    du, dv, w_ray = beam_ray_bundle(width_m, height_m, a)
     rt_ray = r_t0 + du
     cos_a = math.cos(math.radians(vertical_angle_deg))
     s_c, rho_c, R_c, hit, Z_c, y_c = tangential_chords(

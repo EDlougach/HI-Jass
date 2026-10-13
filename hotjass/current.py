@@ -139,13 +139,13 @@ def current_drive(config, beams, op, q0: float = 1.0) -> CurrentDrive | None:
     n_fuel = np.asarray(op.n_fuel_profile_m3, dtype=float)
     _ne1, nc1 = physics.compute_charge_neutrality(1.0, Zeff)
     n_c = (nc1 / _ne1) * ne                                  # carbon-like impurity
-    mD, mT = float(config.mix_D), float(config.mix_T)
-    nD, nT = mD * n_fuel, mT * n_fuel
+    mD, mT, mH = float(config.mix_D), float(config.mix_T), float(config.mix_H)
+    nD, nT, nH = mD * n_fuel, mT * n_fuel, mH * n_fuel
     Zc = physics.Z_IMPURITY
     eps = np.clip(rho * a / R0, 0.0, 0.999)
 
     # ---------------- NBCD ----------------
-    zh = (nD / 2.0 + nT / 3.0 + n_c * Zc ** 2 / _MASS_NUMBER_C) / ne        # sum n Z^2 / (n_e A)
+    zh = (nH + nD / 2.0 + nT / 3.0 + n_c * Zc ** 2 / _MASS_NUMBER_C) / ne        # sum n Z^2 / (n_e A)
     G = np.clip((1.55 + 0.85 / Zeff) * np.sqrt(eps) - (0.20 + 1.55 / Zeff) * eps, 0.0, 1.0)
     shield = 1.0 - (1.0 / Zeff) * (1.0 - G)
     j_fast, j_nb, I_beam, eta_beam = [], [], [], []
@@ -162,7 +162,7 @@ def current_drive(config, beams, op, q0: float = 1.0) -> CurrentDrive | None:
         tau_s = np.array([physics.slowing_down_time(float(n), float(t), b.species) for n, t in zip(ne, te)])
         Ec = 14.8 * Ab * te * zh ** (2.0 / 3.0)
         uc3 = (Ec / b.Eb_keV) ** 1.5
-        zbar = (nD * Ab / 2.0 + nT * Ab / 3.0 + n_c * Zc ** 2 * Ab / _MASS_NUMBER_C) / ne
+        zbar = (nH * Ab + nD * Ab / 2.0 + nT * Ab / 3.0 + n_c * Zc ** 2 * Ab / _MASS_NUMBER_C) / ne
         beta = Zeff / np.maximum(zbar, 1e-6)
         if k == 0:
             beta_out = beta

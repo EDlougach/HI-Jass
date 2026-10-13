@@ -38,7 +38,8 @@ class BeamSpec:
     #   used for first-orbit loss instead of the (now-legacy) config.orbit_loss_co_current
     group: int | None = None  # beamline this spec belongs to: the E, E/2, E/3 components
     #   of one beamline share it (None: every spec is its own beamline)
-    diameter_m: float = 0.0   # 1/e diameter of the Gaussian beam cross-section (0: single ray);
+    width_m: float = 0.0      # full width / height of the elliptic duct aperture (Gaussian
+    height_m: float = 0.0     #   truncated at 2 sigma inside it; both 0: single ray);
     #   used for shine-through and the birth profile -- first-orbit loss keeps the axis ray
     vertical_angle_deg: float = 0.0  # beam inclination about the tangency point (+ = rising):
     #   chord geometry, and the birth pitch / torque by cos(alpha)
@@ -52,6 +53,8 @@ class TokamakConfig:
     Zeff: float = 1.0
     mix_D: float = 0.5
     mix_T: float = 0.5
+    mix_H: float = 0.0   # thermal protium fraction (no fusion; mass enters heat exchange,
+    #   tau_Ei, ITER98 M_eff, rotation, NBCD); mix_H + mix_D + mix_T = 1
     density_peaking: float = 0.0
     temperature_peaking: float = 0.0        # electron T profile exponent
     temperature_peaking_i: float = -1.0     # ion T profile exponent; < 0 -> same as temperature_peaking
@@ -267,6 +270,7 @@ class OperatingPoint:
     nb0_m3: float = 0.0
     nD0_m3: float = 0.0
     nT0_m3: float = 0.0
+    nH0_m3: float = 0.0
     n_thermal_m3: float = 0.0
     n_thermal_fraction: float = 0.0  # n_thermal / (n_thermal + n_b0): how close to the
     # n_thermal<=0 feasibility edge this point sits. Near 0, T_i blows up (a fixed P_i
@@ -474,8 +478,10 @@ def _solve_te_ti_coupled_keV(
     def p_ei(Te_keV: float, Ti_keV: float, n_thermal_eff: float) -> float:
         nD0 = config.mix_D * n_thermal_eff
         nT0 = config.mix_T * n_thermal_eff
+        nH0 = config.mix_H * n_thermal_eff
         return (physics.equipartition_power_w(nD0, Te_keV, Ti_keV, ne0_m3, "D", volume_m3)
-                + physics.equipartition_power_w(nT0, Te_keV, Ti_keV, ne0_m3, "T", volume_m3))
+                + physics.equipartition_power_w(nT0, Te_keV, Ti_keV, ne0_m3, "T", volume_m3)
+                + physics.equipartition_power_w(nH0, Te_keV, Ti_keV, ne0_m3, "H", volume_m3))
 
     def solve_ti(Te_keV: float, n_thermal_eff: float, P_i_beam: float) -> float:
         def residual(Ti_keV: float) -> float:
@@ -554,7 +560,7 @@ def _solve_ti_neoclassical_keV(
         return physics.neoclassical_tau_Ei_s(
             Ti_keV, n_thermal_m3, config.Bt0, config.Ip_MA,
             geom.major_radius, geom.minor_radius, geom.elongation,
-            config.mix_D, config.mix_T,
+            config.mix_D, config.mix_T, mix_H=config.mix_H,
             arbitrary_A=(config.tau_Ei_mode == "neoclassical_arbA"),
             triangularity=geom.triangularity,
         )
@@ -700,7 +706,7 @@ def solve_operating_point(
             geometry=config.geometry, tangent_R_m=beam.tangent_R_m, tangent_Z_m=beam.tangent_Z_m,
             model=beam.shine_through_model,
             manual_shine_through_fraction=beam.manual_shine_through_fraction,
-            Zeff=config.Zeff, beam_diameter_m=beam.diameter_m,
+            Zeff=config.Zeff, beam_width_m=beam.width_m, beam_height_m=beam.height_m,
             vertical_angle_deg=beam.vertical_angle_deg,
         )
         f_capture_list.append(f_capt)
@@ -845,7 +851,7 @@ def solve_operating_point(
                 tangent_R_m=beam.tangent_R_m, tangent_Z_m=beam.tangent_Z_m,
                 shine_through_model=beam.shine_through_model,
                 manual_shine_through_fraction=beam.manual_shine_through_fraction,
-                co_current=beam.co_current, group=beam.group, diameter_m=beam.diameter_m,
+                co_current=beam.co_current, group=beam.group, width_m=beam.width_m, height_m=beam.height_m,
                 vertical_angle_deg=beam.vertical_angle_deg,
             )
         )
@@ -886,7 +892,7 @@ def solve_operating_point(
             Ip_MA=config.Ip_MA, Bt_T=config.Bt0, ne0_m3=ne_bal, P_heat_W=p_loss_scaling_w,
             R0_m=config.geometry.major_radius, minor_radius_m=config.geometry.minor_radius,
             elongation=config.geometry.elongation,
-            M_eff_amu=config.mix_D * 2.0 + config.mix_T * 3.0,
+            M_eff_amu=config.mix_D * 2.0 + config.mix_T * 3.0 + config.mix_H * 1.0,
         ) * h_fac
         if config.tau_Ee_mode == "iter98y2":
             tau_E_s = iter98y2_tau_s
@@ -918,7 +924,7 @@ def solve_operating_point(
         dep = [physics.beam_birth_density_profile(
             rho_g, ne_axis, sh_n, b.Eb_keV, b.species, config.geometry, b.tangent_R_m, b.tangent_Z_m,
             rcp, b.shine_through_model, config.Zeff, config.Bt0, config.Ip_MA, config.orbit_model,
-            bool(b.co_current), config.enable_orbit_loss, diameter_m=b.diameter_m, return_pitch=True,
+            bool(b.co_current), config.enable_orbit_loss, width_m=b.width_m, height_m=b.height_m, return_pitch=True,
             orbit_loss_deposition=config.orbit_loss_deposition,
             vertical_angle_deg=b.vertical_angle_deg, q0=config.q0,
             ip_sign=config.ip_sign, bt_sign=config.bt_sign) for b in useful_beams]
@@ -1001,6 +1007,7 @@ def solve_operating_point(
 
     nD0 = config.mix_D * n_thermal
     nT0 = config.mix_T * n_thermal
+    nH0 = config.mix_H * n_thermal
 
     # On-axis values for the fusion / pressure integrals. With profile_averaging
     # off, pk_n == pk_te == pk_ti == 1 so these equal the balance quantities
@@ -1031,7 +1038,8 @@ def solve_operating_point(
             torque_total_Nm += physics.nbi_torque_Nm(
                 beam.P_NB_W, beam.Eb_keV, beam.species, tR, beam.co_current) * math.cos(
                     math.radians(beam.vertical_angle_deg))
-        rho_i_kg_m3 = nD0_axis * physics.M_D + nT0_axis * physics.M_T
+        rho_i_kg_m3 = (nD0_axis * physics.M_D + nT0_axis * physics.M_T
+                       + nH0 * pk_n * physics.M_H)
         tau_phi_s = tau_Ei_s * config.tau_phi_over_tauEi
         v_phi_m_s = physics.toroidal_rotation_velocity_ms(
             torque_total_Nm, rho_i_kg_m3, R0, V, tau_phi_s)
@@ -1208,7 +1216,7 @@ def solve_operating_point(
 
     return OperatingPoint(
         ne0_m3=ne0_m3, feasible=True, Te_keV=Te_keV, Ti_keV=Ti_keV,
-        nb0_m3=nb0_total, nD0_m3=nD0, nT0_m3=nT0, n_thermal_m3=n_thermal,
+        nb0_m3=nb0_total, nD0_m3=nD0, nT0_m3=nT0, nH0_m3=nH0, n_thermal_m3=n_thermal,
         n_thermal_fraction=n_thermal / n_sum,
         P_e_w=P_e_w, P_i_w=P_i_w, P_ei_w=P_ei_w, P_alpha_w=extra_e_source_w + extra_i_source_w,
             P_aux_e_w=aux_e_source_w, P_aux_i_w=aux_i_source_w,
