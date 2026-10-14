@@ -223,7 +223,7 @@ the loss criterion are built:
 - **ST orbits — P$_\phi$ orbit boundary** — births followed along their
   guiding-centre orbits from the constants of motion (*Orbit-boundary model*
   at the end of this section). In HOT-Jass web it is the default of the
-  spherical presets (SANTE, ST40, MAST-U, NSTX-U); JET and TCV default to
+  spherical presets (PONTE, ST40, MAST-U, NSTX-U); JET and TCV default to
   the pitch-resolved model, ITER and T-15MD to the large-aspect one.
 
 ### Birth profile along the chord
@@ -514,9 +514,9 @@ profile; no wall or centre-post shape beyond the LCFS; collisions during the
 first orbit neglected.
 
 Comparison with the pitch-resolved model (presets, beam-axis NBI-1 / NBI-2):
-co-current losses fall strongly (SANTE 23 % $\to$ 9 %, MAST-U 30 % $\to$ 15 %,
+co-current losses fall strongly (PONTE 23 % $\to$ 9 %, MAST-U 30 % $\to$ 15 %,
 NSTX-U 29 % $\to$ 19 %, TCV 24 % $\to$ 5 %, JET 4.7 % $\to$ 2.4 %, T-15MD 5.4 % $\to$
-1.4 %), counter-current ones stay large (SANTE NBI-2 55 %, TCV NBI-2 28 %).
+1.4 %), counter-current ones stay large (PONTE NBI-2 55 %, TCV NBI-2 28 %).
 
 References: Rome & Peng, *Nucl. Fusion* **19** (1979) 1193 (orbit topology and
 loss boundaries from the constants of motion); Eriksson & Porcelli,
@@ -740,7 +740,7 @@ beam's own velocity* playing the role $v_\phi$ played there. **This is why
 counter-injecting the second beam matters physically**: two co-current
 beams at similar per-amu energy have a small $v_\mathrm{rel}$ (their
 velocities nearly cancel) and thus a negligible beam-beam yield, while
-opposite directions maximize $v_\mathrm{rel}$ -- exactly DANTE's default
+opposite directions maximize $v_\mathrm{rel}$ -- exactly PONTE's default
 configuration (D co-current, T counter-current). D-T and D-D pairs are
 handled (the only cross-section fits this project carries); T-T pairs, or
 a beam-beam calculation with fewer than two useful beams, contribute
@@ -753,7 +753,7 @@ the alpha-heating closure (Sec. "Alpha self-heating" below) with no
 separate wiring needed. The Dashboard's D-T/D-D fusion-power rows show all
 three contributions (thermal / beam-target / beam-beam); the Scan tab's
 "Neutrons" group breaks the neutron rate out the same way, with the
-beam-beam panel showing a genuine (if usually small, for DANTE's default
+beam-beam panel showing a genuine (if usually small, for PONTE's default
 0.1 MW counter-beam) nonzero curve once enabled, rather than the flat zero
 it shows while off.
 
@@ -931,24 +931,31 @@ $V\langle h_j\rangle = 1$
 - **Attenuation** along tangential chords (Beer-Lambert) on the
   $n_{e0}(1-\rho^2)^{2p_n}$ profile, with the same stopping cross-section as
   the shine-through model.
-- **Beam cross-section** (`BeamParams.beam_diameter_m`, HOT-Jass: NBI
-  "diameter"). $D = 0$ (default) is a single pencil ray. $D > 0$ is a circular
-  beam with a Gaussian power profile $p(r) \propto \exp[-(2r/D)^2]$ ($D$ the
-  1/e diameter, $\sigma = D/2\sqrt2$), sampled by parallel rays shifted in
-  tangency radius and height (`physics.beam_ray_bundle`): a square grid over
-  $\pm3\sigma$, clipped to the $3\sigma$ circle, with Gaussian weights and
-  spacing $\le 0.1\,a$ (odd, 3 to 21 rays per axis). A single tangential ray
-  puts a finite number of ions into the vanishing volume of its tangency
-  surface $\rho(R_t)$, a singular birth density there; the rays have to be
-  closer than the profile smoothing scale (orbit width, $\ge 0.03$) for their
-  singular profiles to add up to a smooth one. Against a 6500-ray reference
-  the grid is within 1.5 % (L1) and ~10 % on axis for $D$ up to $0.8a$. All
-  rays are evaluated in one vectorised pass (`physics.tangential_chords`),
-  a few ms per beam: a $D = 0.2$ m beam on a 0.55 m plasma uses 49 rays in
-  3 ms, against 7 ms for the previous fixed $5\times5$ bundle. The
-  shine-through fraction is averaged over the same rays (`captured_power_
-  fraction(..., beam_diameter_m)`; rays that miss the plasma shine through).
-  First-orbit loss keeps the beam-axis chord.
+- **Beam cross-section** (`BeamParams.beam_width_m`, `beam_height_m`;
+  HOT-Jass: NBI "width W", "height H"). The beam is bounded by its duct
+  aperture, an ellipse of full width $W$ (horizontal) and height $H$
+  (vertical); $W = H$ is a circular aperture. Inside it the power profile is
+  Gaussian, $p(u,v) \propto \exp[-u^2/2\sigma_u^2 - v^2/2\sigma_v^2]$,
+  truncated at the aperture edge, which sits at $2\sigma$
+  (`BEAM_EDGE_SIGMA`; $\sigma_u = W/4$, $\sigma_v = H/4$): the profile there
+  is still $e^{-2}\approx14\,\%$ of the peak, and zero outside. All of
+  $P_{\mathrm{NB}}$ passes inside the aperture. $W = H = 0$ (default) is a
+  single pencil ray; one of them 0 is a line of rays along the other.
+  Otherwise `physics.beam_ray_bundle` samples the aperture with parallel
+  rays shifted in tangency radius and height: a rectangular grid spanning
+  it, clipped to the ellipse (every ray inside), with Gaussian weights
+  summing to 1 and spacing $\le 0.1\,a$ (odd, 3 to 21 rays per axis, so the
+  axis ray is always kept). A single tangential ray puts a finite number of
+  ions into the vanishing volume of its tangency surface $\rho(R_t)$, a
+  singular birth density there; the rays have to be closer than the profile
+  smoothing scale (orbit width, $\ge 0.03$) for their singular profiles to
+  add up to a smooth one. All rays are evaluated in one vectorised pass
+  (`physics.tangential_chords`), a few ms per beam. The shine-through
+  fraction is averaged over the same rays (`captured_power_fraction(...,
+  width_m, height_m)`; rays that miss the plasma shine through). First-orbit
+  loss keeps the beam-axis chord. Saves from before October 2026 carry a
+  circular 1/e diameter $D$ ($\sigma = D/2\sqrt2$); HOT-Jass loads it as the
+  aperture with the same $\sigma$, $W = H = \sqrt2\,D$.
 - **Prompt loss** (already counted in the orbit-loss power), two options
   (`orbit_loss_deposition`; HOT-Jass: MODELS, "Orbit loss consistent in
   deposition"):
@@ -980,9 +987,30 @@ birth pitch $\xi_{0,j}(\rho)$). Their volume integrals are exactly the
 reported totals. With profile-corrected 0-D off the flat model is kept
 unchanged.
 
-On the ASCOT5/BBNBI DANTE reference case (4 MW D at 80 keV) the deposition
+On the ASCOT5/BBNBI PONTE reference case (4 MW D at 80 keV) the deposition
 model gives 1.24 MW of fusion power against ASCOT's 1.4 MW; the earlier
 single-$n_{b0}$ model gave 0.87 MW.
+
+## Thermal ion mix (H, D, T)
+
+The thermal ions are a mix of protium, deuterium and tritium with density
+fractions $f_H + f_D + f_T = 1$ (`PlasmaParams.hydrogen_fraction`,
+`deuterium_fraction`, `tritium_fraction`; HOT-Jass: PLASMA "H/D/T fraction",
+checked at Start). Hydrogen does not fuse, but its mass enters everywhere the
+ion mass does:
+
+- electron-ion energy exchange (a separate H channel next to D and T);
+- the neoclassical $\tau_{E,i}$ (effective mass and ion-ion collision
+  frequency);
+- the isotope mass of IPB98(y,2),
+  $M_{\mathrm{eff}} = f_H\cdot1 + f_D\cdot2 + f_T\cdot3$, so a pure H plasma
+  has $\tau_E$ lower by $(1/2)^{0.19} = 0.88$ than a pure D one;
+- the rotation mass density and the NBCD stopping terms.
+
+$f_H = 0$ (default) reproduces the D-T-only results exactly. A plasma with
+neither D nor T (e.g. the HOT-Jass T-15MD preset: H beams into an H plasma)
+makes no fusion power; HOT-Jass then shows "no fusion fuel" instead of the
+fusion plots.
 
 ## Particle balance and fuelling
 
@@ -1004,13 +1032,13 @@ $$
 
 reduces both thermal and beam-target fusion, which scale with the thermal
 fuel densities. It is largest for low-energy beams into a moderate-density,
-hot plasma (long slowing-down time), e.g. $\sim14\%$ for the DANTE design
+hot plasma (long slowing-down time), e.g. $\sim14\%$ for the PONTE design
 point.
 
 ### Steady-state balance per species
 
-For each thermal fuel species $s=\mathrm{D},\mathrm{T}$, holding the input
-D:T mix at the solved density,
+For each thermal species $s=\mathrm{H},\mathrm{D},\mathrm{T}$ present,
+holding the input H:D:T mix at the solved density,
 
 $$
 S_{\mathrm{ext},s} + S_{\mathrm{beam}\to s} - R_{\mathrm{burn},s}
@@ -1037,7 +1065,8 @@ where
 - $R_{\mathrm{burn},s}$ is the thermal ions consumed by fusion: one D and one T
   per D-T reaction (thermal-thermal reactions consume one of each thermal
   species; beam-target reactions consume the fast ion and one thermal ion of
-  the other species). D-D burn-up ($\sim10^{-3}$ of D-T) is neglected;
+  the other species). H never burns, and D-D burn-up ($\sim10^{-3}$ of D-T)
+  is neglected;
 - $S_{\mathrm{ext},s}$ is the external fuelling (gas puff or pellets) needed
   to hold the mix. It is also given as a gas throughput, using
   $1\ \mathrm{Pa\,m^3}$ of $\mathrm{D_2}/\mathrm{T_2}$ at 273 K
@@ -1050,14 +1079,15 @@ the plasma loses: the mix can then only be held by pumping. With no external
 fuelling of that species its thermal fraction settles at
 
 $$
-f_s = \frac{(S_{\mathrm{beam}\to s}-R_{\mathrm{burn},s})\,\tau_p^\ast}{N_D+N_T}.
+f_s = \frac{(S_{\mathrm{beam}\to s}-R_{\mathrm{burn},s})\,\tau_p^\ast}{\sum_{s'} N_{s'}}.
 $$
 
-This is the typical situation for D beams into a tritium-rich target (DANTE:
+This is the typical situation for D beams into a tritium-rich target (PONTE:
 $S_{\mathrm{beam}}(\mathrm{D})=4.85\times10^{20}\ \mathrm{s^{-1}}$ against a D
 loss of $2.85\times10^{20}\ \mathrm{s^{-1}}$ at D:T = 10:90, so the D fraction
-would rise to $\simeq0.17$ with tritium-only fuelling). Hydrogen beams are
-reported separately: H is not part of the D:T mix and has to be pumped.
+would rise to $\simeq0.17$ with tritium-only fuelling). A beam species that is
+not in the mix at all (fraction 0, e.g. an H beam into a D-T plasma) has to be
+pumped entirely.
 
 ### Power balance view
 
@@ -1238,7 +1268,7 @@ of 25-40 % on spherical tokamaks, well above TRANSP's few per cent.
 - Assumed current profile and $q(\rho)$; no equilibrium.
 - Where fast ions make the thermal-ion density hollow (fixed $n_e$, large
   $n_b$ in the core), the thermal bootstrap reverses near the axis (seen on
-  DANTE).
+  PONTE).
 - Low-peaking presets ($p\simeq0.1$ to $0.25$) put roughly 28 % of
   $I_{BS}$ at $\rho > 0.95$: the power-law shapes act like a pedestal.
 
@@ -1566,6 +1596,78 @@ pitch spread within a radial bin is neglected). Beam-averaged values on the
 presets: NSTX-U 0.23 / 0.49 (NBI-1 is born at low pitch, more perpendicular
 than isotropic), MAST-U 0.50 / 0.57, ITER 0.49 / 0.55 -- between the bounds,
 as expected for tangential beams.
+
+## HOT-Jass web: new machine, minimal input and input checks
+
+The HOT-Jass web app starts in the **NEW MACHINE** state: every input cell is
+empty and every model is at its simplest option (fixed $\tau_E$, Manual
+shine-through, large-aspect orbits, manual CX fraction, rotation off, all
+optional physics off except the profile-corrected 0-D). A step-by-step
+introduction for new users -- seven numbers that define a tokamak, and a
+machine built from the empty rail -- is the **Beginner guide**
+(`docs/HOT-Jass_Beginner_Guide.pdf` in the HOT-Jass web repository, also
+offered in its Help dialog).
+
+### Minimal input
+
+A cell may be left empty when the calculation does not need it. Each cell
+is, given the other inputs:
+
+- **required** (yellow while empty; blocks Start): $R_0$, $a$, $B_0$, $I_p$,
+  $n_{e0}$; $\tau_{E,e}$ and $\tau_{E,i}$ with Confinement = Fixed; $E_b$
+  and tangent $R$ of a beam whose power is above 0. At least one heating power
+  ($P_{\mathrm{NB}}$, $P_{\mathrm{ECRH}}$, $P_{\mathrm{ICRH}}$) must be above 0;
+- **default** (the empty cell shows its value in gray italics; the defaults
+  used are listed at Start): $\kappa=1$, $\delta=0$, $Z_{\mathrm{eff}}=1$,
+  density and temperature peaking 1, ion peaking $-1$ (same as electrons),
+  centre-post $R=-1$ ($R_0-a$), $q_0=1$, $\tau_p^\ast/\tau_E=2$, powers 0,
+  beam species D, beam size, $Z_t$ and vertical angle 0, manual shine-through
+  and CX fraction 0, ECRH $f_e=1$, ICRH $f_e=f_i=0.5$;
+- **not used** (gray): fields of a beam that is off, ECRH/ICRH fractions at
+  zero power, $\tau_E$ inputs with a scaling law, the CX and rotation
+  parameters of models not selected, the manual shine-through fraction unless
+  Shine-through = Manual.
+
+Fractions that must add up -- H + D + T $=1$, each beam's E + E/2 + E/3
+$=100\,\%$, ICRH $f_e+f_i=1$ -- take their defaults when the whole group is
+empty (pure D; mono-energetic; 0.5/0.5). If exactly one cell of a group is
+empty it takes the remainder; otherwise empty cells count as 0.
+
+### Blocking errors
+
+Start is refused, with the reason in the Input check dialog, for an empty
+required cell, an unparseable or out-of-range value, a group that does not
+add up, $a \ge R_0$, and a beam aimed outside the plasma
+($R_t > R_0 + a$; with the Manual shine-through model such a beam would
+otherwise still be counted as absorbed).
+
+### "Worth checking" flags
+
+Allowed but probably unintended inputs and results are flagged in orange;
+they never block Start.
+
+| Flag | Condition | Where |
+|---|---|---|
+| $q_0$ has no effect | $q_0 \ge q_{\mathrm{cyl}}$ (flat assumed current profile) | before Start |
+| $q_0$ below 1 | $q_0 < 1$ (sawteeth would hold $q_0 \approx 1$) | before Start |
+| Kink limit | $q_{95} < 2$ | before Start |
+| Greenwald | line-average $n_e > n_{\mathrm{GW}}$ | before Start |
+| Beam hits the centre-post | $R_t <$ centre-post radius | before Start |
+| Orbit model | $R_0/a < 2$ with the large-aspect model | before Start |
+| Peaking | peaking set with profile-corrected 0-D off | before Start |
+| Shine-through | $> 25\,\%$ of $P_{\mathrm{NB}}$ | Power tab |
+| First-orbit loss | $> 30\,\%$ of $P_{\mathrm{NB}}$ | Power tab |
+| $\beta_N$ | $> 3.5$ ($> 5.5$ for $R_0/a < 2$) | Plasma tab |
+| Fast ions | $> 10\,\%$ of all ions | Beam tab |
+
+The PONTE preset uses a **demanding** profile: $q_{95}<3$,
+$n/n_{\mathrm{GW}} > 0.8$, shine-through $> 10\,\%$, first-orbit loss
+$> 15\,\%$, fast ions $> 5\,\%$, $\beta_N > 3.0$ (4.5 for $R_0/a<2$), plus
+checks of the model choices (fixed $\tau_E$, equipartition off, an orbit model
+other than P$_\phi$, D and T beams without beam-beam fusion) and of the result
+($T_{i0}/T_{e0} > 2$, $T_{i0} > 30$ keV, thermal ions below 70 %, fast-ion
+energy density above the thermal one, $f_{NI} > 1$, shine-through above
+0.5 MW).
 
 ## Results tabs (Operating point)
 
@@ -2062,29 +2164,29 @@ but *not* further reduced for orbit-loss/CX-loss of the already-absorbed
 fast-ion population). HI-Jass's convention therefore under-feeds $P$ into
 these negative-exponent scalings, which should **overestimate $\tau_E$**
 whenever orbit-loss/CX-loss are significant -- worst for compact/ST-like
-geometries such as this project's own DANTE default.
+geometries such as this project's own PONTE default.
 
-### DANTE: how much would the fix change $\tau_E$?
+### PONTE: how much would the fix change $\tau_E$?
 
-For the DANTE preset, at fixed NBI/ECRH settings, switching from
+For the PONTE preset, at fixed NBI/ECRH settings, switching from
 $P_{\mathrm{useful}}$ to the raw total injected NBI power (an upper bound on
 the proposed fix -- shine-through would still be subtracted in the real fix)
 lowers $\tau_E$ by **~10-20%**, depending on the scaling and the density:
 
-![DANTE: tau_E vs n_e, P_useful vs P_NBI_total, one panel per scaling](docs/Validation/tauE_scaling_Ploss_comparison.png)
+![PONTE: tau_E vs n_e, P_useful vs P_NBI_total, one panel per scaling](docs/Validation/tauE_scaling_Ploss_comparison_PONTE.png)
 
-Orbit-loss + CX-loss account for ~25-32% of DANTE's injected NBI power over
+Orbit-loss + CX-loss account for ~25-32% of PONTE's injected NBI power over
 this scan -- that gap is the direct cause of the shift above.
 
 ### But the scaling choice itself matters far more
 
-The same DANTE comparison, with all three scalings drawn on one axis, shows
+The same PONTE comparison, with all three scalings drawn on one axis, shows
 the **scaling-choice spread is ~4-6x** across the density range -- 20-30x
 larger than the $P$-definition effect above. Red shading marks densities
 where HI-Jass has no feasible solution at all for this preset (the model's
 thermal-ion density would go negative):
 
-![DANTE: all 3 scalings combined, full n_e range with infeasibility marked](docs/Validation/tauE_scaling_combined_comparison_DANTE.png)
+![PONTE: all 3 scalings combined, full n_e range with infeasibility marked](docs/Validation/tauE_scaling_combined_comparison_PONTE.png)
 
 The same view for the **ITER** preset shows an even larger spread (~10-12x),
 but with the *ranking reversed* -- IPB98(y,2) now sits far above both Kaye
@@ -2096,7 +2198,7 @@ curves, at multi-second $\tau_E$ values:
 Kaye's scalings were fit purely to NSTX data ($I_p\lesssim1.5$ MA,
 $B_t\lesssim0.5$ T); ITER's $I_p=15$ MA / $B_t=5.3$ T is a huge
 extrapolation *outside* that database, in the opposite direction from
-DANTE/NSTX-like devices. IPB98(y,2), by contrast, was fit including
+PONTE/NSTX-like devices. IPB98(y,2), by contrast, was fit including
 larger, more ITER-like devices, so it is the more trustworthy of the two
 here -- the "spread" for ITER is mostly a statement about extrapolation
 validity, not a genuine disagreement in overlapping-validity physics.
