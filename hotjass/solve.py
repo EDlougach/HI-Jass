@@ -178,6 +178,12 @@ class TokamakConfig:
     # "consistent" removes births with the same pitch-resolved rule that sets
     # the lost power (ST orbit models only).
     orbit_loss_deposition: str = "cutoff"
+    # Delayed orbit loss by pitch-angle scattering (physics.delayed_loss_survival):
+    # multiplier k on the pitch-averaged orbit-loss probability of scattered
+    # fast ions; 0 (default) = off, byte-identical; 1 = orbit physics only;
+    # > 1 stands in for ripple / anomalous losses. Needs profile_averaging
+    # and enable_orbit_loss (the loss is radius-dependent).
+    delayed_loss_factor: float = 0.0
     q0: float = 1.0   # on-axis q of the assumed current profile: B_p in the beam birth pitch
     ip_sign: float = 1.0   # direction of I_p (+1 counter-clockwise from above) -- Bt0/Ip_MA are magnitudes
     bt_sign: float = 1.0   # direction of B_t (+1 counter-clockwise from above); both only enter the pitch
@@ -299,7 +305,13 @@ class OperatingPoint:
     cx_gamma: list[float] = field(default_factory=list)  # per-beam gamma_cx figure of merit (0 in "manual_fraction" mode)
     cx_escape_probability: list[float] = field(default_factory=list)  # per-beam informational escape factor (1.0 in "manual_fraction" mode)
     cx_n0_m3: list[float] = field(default_factory=list)  # per-beam background-neutral density actually used (0 in "manual_fraction" mode)
-    P_useful_w: float = 0.0  # P_capt_w - P_orbit_loss_w - P_cx_loss_w == P_e_w + P_i_w -- what actually heats the plasma
+    P_useful_w: float = 0.0  # P_capt_w - P_orbit_loss_w - P_cx_loss_w == P_e_w + P_i_w + P_delayed_loss_w
+    # Delayed (pitch-scattering) orbit loss, config.delayed_loss_factor > 0 only: the beam power
+    # carried out by fast ions lost while slowing down (taken from P_e_w/P_i_w), its fraction of each
+    # beam's useful power, and the fraction of each beam's confined births lost before thermalising.
+    P_delayed_loss_w: float = 0.0
+    f_delayed_loss: list[float] = field(default_factory=list)
+    f_delayed_loss_N: list[float] = field(default_factory=list)
     pf_thermal_w: float = 0.0   # D-T thermal fusion power
     pf_beam_w: float = 0.0      # D-T beam-target fusion power
     pf_dt_w: float = 0.0        # pf_thermal_w + pf_beam_w -- the D-T total (drives the alpha closure)
@@ -356,8 +368,21 @@ class OperatingPoint:
     ne_profile_m3: list[float] = field(default_factory=list)
     Te_profile_keV: list[float] = field(default_factory=list)
     Ti_profile_keV: list[float] = field(default_factory=list)
+    # Per-beam deposition on deposition_rho (== rho_profile with profile_averaging; also filled with
+    # it off, at flat n_e, for the NBCD estimate and the delayed orbit loss -- rho_profile stays empty)
+    deposition_rho: list[float] = field(default_factory=list)
     beam_birth_profiles_m3s: list[list[float]] = field(default_factory=list)
     beam_pitch_profiles: list[list[float]] = field(default_factory=list)
+    # Delayed orbit loss (delayed_loss_factor > 0), per beam on deposition_rho: tau_eff/tau_S, and the
+    # survival P(u) on each radius' own speed grid u = v/v_b (rows of physics.delayed_loss_survival).
+    beam_tau_ratio_profiles: list[list[float]] = field(default_factory=list)
+    beam_survival_u: list[list[list[float]]] = field(default_factory=list)
+    beam_survival_P: list[list[list[float]]] = field(default_factory=list)
+    # ... and per birth at rho: energy carried out (fraction of E_b) from the electron / ion share,
+    # and the probability of being lost before thermalising
+    beam_dl_eps_e_profiles: list[list[float]] = field(default_factory=list)
+    beam_dl_eps_i_profiles: list[list[float]] = field(default_factory=list)
+    beam_dl_lost_N_profiles: list[list[float]] = field(default_factory=list)
 
 
 def _n_sum_for_ne(ne0_m3: float, Zeff: float) -> float:
@@ -372,7 +397,7 @@ def _n_sum_for_ne(ne0_m3: float, Zeff: float) -> float:
 
 
 def _solve_te_keV(ne0_m3: float, beams: list[BeamSpec], tau_E_s: float, volume_m3: float,
-                  extra_e_source_w: float = 0.0) -> float:
+                  extra_e_source_w: float = 0.0, heat_loss_of_te=None) -> float:
     """Step 1: solve the electron power balance
         (3/2)*ne0*Te*(1e3*e)*V/tau_E = sum_i Le(Eb_i/Ec_i(Te)) * P_NB_i + P_extra_e
     for Te alone (proof of a unique root: docs/model.md). extra_e_source_w is a
@@ -390,10 +415,14 @@ def _solve_te_keV(ne0_m3: float, beams: list[BeamSpec], tau_E_s: float, volume_m
     def residual(Te_keV: float) -> float:
         lhs = 1.5 * ne0_m3 * Te_keV * 1e3 * physics.E_CHARGE * volume_m3 / tau_E_s
         rhs = extra_e_source_w
-        for beam in beams:
+        losses = heat_loss_of_te(Te_keV) if heat_loss_of_te is not None else None
+        for j, beam in enumerate(beams):
             Ec = physics.critical_energy_keV(Te_keV, beam.species)
             x = beam.Eb_keV / max(Ec, 1e-12)
-            rhs += physics.electron_heating_fraction(x) * beam.P_NB_W
+            le = physics.electron_heating_fraction(x)
+            if losses is not None:
+                le -= min(losses[j][0], le)     # delayed orbit loss: electron share carried out
+            rhs += le * beam.P_NB_W
         return lhs - rhs
 
     lo, hi = 1.0e-3, 1.0
@@ -417,7 +446,7 @@ def _solve_te_keV(ne0_m3: float, beams: list[BeamSpec], tau_E_s: float, volume_m
 def _solve_te_ti_coupled_keV(
     ne0_m3: float, useful_beams: list[BeamSpec], tau_Ee_s: float, tau_Ei_s: float, volume_m3: float,
     config: TokamakConfig, extra_e_source_w: float = 0.0, extra_i_source_w: float = 0.0,
-    nb_of_te=None,
+    nb_of_te=None, heat_loss_of_te=None,
 ) -> tuple[float, float, float, float, list[float], list[float], float, float, float]:
     """Coupled electron/ion power balance with equipartition
     (config.enable_equipartition):
@@ -464,13 +493,17 @@ def _solve_te_ti_coupled_keV(
     def le_li_split(Te_keV: float):
         P_e_beam, P_i_beam = 0.0, 0.0
         Le_list, Li_list = [], []
-        for beam in useful_beams:
+        losses = heat_loss_of_te(Te_keV) if heat_loss_of_te is not None else None
+        for j, beam in enumerate(useful_beams):
             Ec = physics.critical_energy_keV(Te_keV, beam.species)
             x = beam.Eb_keV / max(Ec, 1e-12)
             li = physics.ion_heating_fraction(x)
             le = 1.0 - li
             Le_list.append(le)
             Li_list.append(li)
+            if losses is not None:              # delayed orbit loss carries part of each share out
+                le -= min(losses[j][0], le)
+                li -= min(losses[j][1], li)
             P_e_beam += le * beam.P_NB_W
             P_i_beam += li * beam.P_NB_W
         return P_e_beam, P_i_beam, Le_list, Li_list
@@ -913,9 +946,15 @@ def solve_operating_point(
     # thermalisation time. Its volume average replaces the 0-D n_b0 =
     # sum P tau_s(<n_e>, <T_e>)/(E e V) inside the balance, so dilution,
     # n_thermal and the fusion integrals below all use the same fast ions.
-    # With profile_averaging off the old flat model is kept unchanged.
+    # With profile_averaging off the old flat model is kept; the deposition
+    # h_j(rho) and birth pitch are still computed (flat n_e, for the NBCD
+    # estimate and the delayed orbit loss), on the same rho grid.
     nb_model = None
-    if config.profile_averaging and useful_beams:
+    heat_loss_model = None
+    dl_of_te = None
+    births_avg = None
+    rho_g = None
+    if useful_beams:
         rho_g = np.linspace(0.0, 1.0, 121)
         base = np.maximum(1.0 - rho_g ** 2, 0.0)
         n_shape, te_shape, ti_shape = base ** (2.0 * sh_n), base ** (2.0 * sh_te), base ** (2.0 * sh_ti)
@@ -932,19 +971,74 @@ def solve_operating_point(
         pitches = [d[1] for d in dep]
         rates = [b.P_NB_W / (b.Eb_keV * 1e3 * physics.E_CHARGE) for b in useful_beams]
 
+        # Delayed orbit loss (config.delayed_loss_factor > 0): pitch-averaged
+        # orbit-loss tables L(rho, E) per beam (T_e-independent, built once),
+        # and the survival at each trial T_e (cached for the last T_e: the
+        # n_b and heating evaluations of one solver step share it).
+        dl_tables = None
+        if config.delayed_loss_factor > 0.0 and config.enable_orbit_loss:
+            dl_beta = [physics.pitch_scattering_beta(config.Zeff, config.mix_H, config.mix_D, config.mix_T,
+                                                     b.species) for b in useful_beams]
+            dl_tables = [np.stack([physics.isotropic_orbit_loss_probability(
+                rho_g, b.Eb_keV * u * u, b.species, config.geometry, config.Bt0, config.Ip_MA,
+                config.orbit_model, config.q0) for u in physics.DELAYED_LOSS_U], axis=1)
+                for b in useful_beams]
+        dl_cache: dict = {}
+
+        def dl_of_te(Te_bal_keV: float):
+            if dl_tables is None:
+                return None
+            key = float(Te_bal_keV)
+            if key not in dl_cache:
+                dl_cache.clear()
+                te_r = Te_bal_keV * pk_te * te_shape
+                dl_cache[key] = [physics.delayed_loss_survival(t, b.Eb_keV, te_r, b.species, bt,
+                                                               config.delayed_loss_factor)
+                                 for t, b, bt in zip(dl_tables, useful_beams, dl_beta)]
+            return dl_cache[key]
+
         def nb_profiles(Te_bal_keV: float) -> list:
             te_r = Te_bal_keV * pk_te * te_shape
+            dl = dl_of_te(Te_bal_keV)
             out = []
-            for b, h, S in zip(useful_beams, births, rates):
+            for j, (b, h, S) in enumerate(zip(useful_beams, births, rates)):
                 tau = np.array([physics.thermalization_time(float(n), float(t), b.Eb_keV, b.species)
                                 if (n > 0.0 and t > 1.0e-4) else 0.0 for n, t in zip(ne_r, te_r)])
+                if dl is not None:
+                    tau = tau * dl[j]["tau_ratio"]
                 out.append(S * h * tau)
             return out
+
+        def births_avg(h, x) -> float:
+            """Birth-weighted average of x(rho) for the deposition h(rho)."""
+            w = physics.profile_volume_average(h, rho_g)
+            return physics.profile_volume_average(h * x, rho_g) / w if w > 0.0 else 0.0
+
+        def heat_loss_of_te(Te_bal_keV: float):
+            dl = dl_of_te(Te_bal_keV)
+            if dl is None:
+                return None
+            return [(births_avg(h, d["eps_e"]), births_avg(h, d["eps_i"])) for h, d in zip(births, dl)]
+
+        if dl_tables is not None:
+            heat_loss_model = heat_loss_of_te
 
         def nb_of_te(Te_bal_keV: float) -> float:
             return float(sum(physics.profile_volume_average(p, rho_g) for p in nb_profiles(Te_bal_keV)))
 
-        nb_model = nb_of_te
+        def nb_of_te_flat(Te_bal_keV: float) -> float:
+            """Flat 0-D n_b with the delayed orbit loss: the flat formula
+            sum P tau_s(<n_e>, <T_e>)/(E e V) x the birth-averaged tau_eff/tau_S."""
+            dl = dl_of_te(Te_bal_keV)
+            return float(sum(
+                b.P_NB_W * physics.thermalization_time(ne_bal, Te_bal_keV, b.Eb_keV, b.species)
+                / (b.Eb_keV * 1e3 * physics.E_CHARGE * V) * births_avg(h, d["tau_ratio"])
+                for b, h, d in zip(useful_beams, births, dl)))
+
+        if config.profile_averaging:
+            nb_model = nb_of_te
+        elif dl_tables is not None:
+            nb_model = nb_of_te_flat
 
     P_ei_w = 0.0
     if config.enable_equipartition:
@@ -953,30 +1047,48 @@ def solve_operating_point(
         # exchange) all come out of one nested-bisection call.
         Te_keV, Ti_keV, n_thermal, nb0_total, Le_list, Li_list, P_e_w, P_i_w, P_ei_w = \
             _solve_te_ti_coupled_keV(ne_bal, useful_beams, tau_E_s, tau_Ei_s, V, config,
-                                     ee_source_w, ei_source_w, nb_of_te=nb_model)
+                                     ee_source_w, ei_source_w, nb_of_te=nb_model,
+                                     heat_loss_of_te=heat_loss_model)
     else:
-        Te_keV = _solve_te_keV(ne_bal, useful_beams, tau_E_s, V, ee_source_w)
+        Te_keV = _solve_te_keV(ne_bal, useful_beams, tau_E_s, V, ee_source_w, heat_loss_model)
 
         Le_list = []
         Li_list = []
         P_e_w = 0.0
         P_i_w = 0.0
         nb0_total = 0.0
-        for beam in useful_beams:
+        losses = heat_loss_model(Te_keV) if heat_loss_model is not None else None
+        for j, beam in enumerate(useful_beams):
             Ec = physics.critical_energy_keV(Te_keV, beam.species)
             x = beam.Eb_keV / max(Ec, 1e-12)
             li = physics.ion_heating_fraction(x)
             le = 1.0 - li
             Li_list.append(li)
             Le_list.append(le)
-            P_e_w += le * beam.P_NB_W
-            P_i_w += li * beam.P_NB_W
+            if losses is not None:
+                P_e_w += (le - min(losses[j][0], le)) * beam.P_NB_W
+                P_i_w += (li - min(losses[j][1], li)) * beam.P_NB_W
+            else:
+                P_e_w += le * beam.P_NB_W
+                P_i_w += li * beam.P_NB_W
             tau_s = physics.thermalization_time(ne_bal, Te_keV, beam.Eb_keV, beam.species)
             nb0_total += beam.P_NB_W * tau_s / (beam.Eb_keV * 1e3 * physics.E_CHARGE * V)
         if nb_model is not None:
             nb0_total = nb_model(Te_keV)
 
         n_thermal = _n_sum_for_ne(ne_bal, config.Zeff) - nb0_total
+
+    P_delayed_loss_w = 0.0
+    f_dl_list: list[float] = []
+    f_dl_N_list: list[float] = []
+    dl_final = dl_of_te(Te_keV) if dl_of_te is not None else None
+    if dl_final is not None:
+        for j, (beam, (de, di)) in enumerate(zip(useful_beams, heat_loss_model(Te_keV))):
+            Le_j, Li_j = Le_list[j], Li_list[j]
+            f_j = min(de, Le_j) + min(di, Li_j)
+            f_dl_list.append(f_j)
+            f_dl_N_list.append(births_avg(births[j], dl_final[j]["f_lost_N"]))
+            P_delayed_loss_w += f_j * beam.P_NB_W
 
     n_sum = _n_sum_for_ne(ne_bal, config.Zeff)
     if n_thermal <= 0.0:
@@ -1058,6 +1170,11 @@ def solve_operating_point(
         # and charge-exchange become fast ions.
         tau_s = physics.thermalization_time(ne_axis, Te0_keV, beam.Eb_keV, beam.species)
         nb0_i = beam.P_NB_W * tau_s / (beam.Eb_keV * 1e3 * physics.E_CHARGE * V)
+        surv_0d = None
+        if dl_final is not None:      # delayed orbit loss, birth-averaged (flat 0-D)
+            jb = len(nb0_per_beam)
+            nb0_i *= births_avg(births[jb], dl_final[jb]["tau_ratio"])
+            surv_0d = physics.births_mean_survival(rho_g, births[jb], dl_final[jb])
         nb0_per_beam.append(nb0_i)
         # A non-D/T beam (e.g. hydrogen, added as a valid NBI species per an
         # explicit request) doesn't undergo D-T/D-D fusion at all -- skip
@@ -1075,14 +1192,14 @@ def solve_operating_point(
         pf_beam += physics.beam_target_fusion_power(
             nb0_i, target_n, Te0_keV, beam.Eb_keV, V, beam.species,
             ne_axis, sh_n, sh_te,
-            v_phi_m_s, beam.co_current, config.cm_energy_correction,
+            v_phi_m_s, beam.co_current, config.cm_energy_correction, survival=surv_0d,
         )
         # D-D beam-target: a fast D ion on the thermal-D population.
         if beam.species == "D" and nD0_axis > 0.0:
             p_dd, r_dd = physics.beam_target_dd_fusion_power(
                 nb0_i, nD0_axis, Te0_keV, beam.Eb_keV, V,
                 ne_axis, sh_n, sh_te,
-                v_phi_m_s, beam.co_current, config.cm_energy_correction,
+                v_phi_m_s, beam.co_current, config.cm_energy_correction, survival=surv_0d,
             )
             pf_dd_beam += p_dd
             dd_beam_neutrons += r_dd
@@ -1102,9 +1219,17 @@ def solve_operating_point(
     ne_out: list = []
     te_out: list = []
     ti_out: list = []
+    dep_rho_out: list = []
     birth_out: list = []
     pitch_out: list = []
-    if nb_model is not None:
+    tau_ratio_out: list = []
+    surv_u_out: list = []
+    surv_p_out: list = []
+    eps_e_out: list = []
+    eps_i_out: list = []
+    lost_n_out: list = []
+    e_ratio_beam = [1.0] * len(useful_beams)
+    if config.profile_averaging and nb_model is not None:
         nbp = nb_profiles(Te_keV)
         nb_tot = np.sum(nbp, axis=0)
         n_sum_r = _n_sum_for_ne(1.0, config.Zeff) * ne_r
@@ -1120,28 +1245,45 @@ def solve_operating_point(
         dd_beam_neutrons = 0.0
         dens_bt = np.zeros_like(rho_g)
         nb0_per_beam = []
-        for b, nb_j in zip(useful_beams, nbp):
+        for j, (b, nb_j) in enumerate(zip(useful_beams, nbp)):
             nb0_per_beam.append(physics.profile_volume_average(nb_j, rho_g))
             if b.species not in ("D", "T"):
                 continue
             target = nT_r if b.species == "D" else nD_r
+            surv = (None if dl_final is None else
+                    [(uu, pp) for uu, pp in zip(dl_final[j]["u"], dl_final[j]["P"])])
             p, d = physics.beam_target_fusion_power_from_profiles(
                 rho_g, nb_j, target, te_r, b.Eb_keV, b.species, V, v_phi_m_s, b.co_current,
-                config.cm_energy_correction)
+                config.cm_energy_correction, surv)
             pf_beam += p
             dens_bt += d
             if b.species == "D":
                 p_dd, r_dd, d_dd = physics.beam_target_dd_fusion_power_from_profiles(
                     rho_g, nb_j, nD_r, te_r, b.Eb_keV, V, v_phi_m_s, b.co_current,
-                    config.cm_energy_correction)
+                    config.cm_energy_correction, surv)
                 pf_dd_beam += p_dd
                 dd_beam_neutrons += r_dd
                 dens_bt += d_dd
         rho_out, nb_out, nfuel_out = rho_g.tolist(), nb_tot.tolist(), n_th_r.tolist()
         pth_out, pbt_out = (dens_th + dens_ddth).tolist(), dens_bt.tolist()
         ne_out, te_out, ti_out = ne_r.tolist(), te_r.tolist(), ti_r.tolist()
+    if rho_g is not None:
+        dep_rho_out = rho_g.tolist()
         birth_out = [(S * h).tolist() for h, S in zip(births, rates)]
         pitch_out = [x.tolist() for x in pitches]
+        if dl_final is not None:
+            tau_ratio_out = [d["tau_ratio"].tolist() for d in dl_final]
+            surv_u_out = [d["u"].tolist() for d in dl_final]
+            surv_p_out = [d["P"].tolist() for d in dl_final]
+            eps_e_out = [d["eps_e"].tolist() for d in dl_final]
+            eps_i_out = [d["eps_i"].tolist() for d in dl_final]
+            lost_n_out = [d["f_lost_N"].tolist() for d in dl_final]
+            # survivors' mean energy relative to the no-loss slowing-down spectrum, n_b-weighted
+            # (flat 0-D: weighted by h tau_eff, the shape of n_b at flat n_e, T_e)
+            nb_w = nbp if config.profile_averaging else [h * d["tau_ratio"] for h, d in zip(births, dl_final)]
+            e_ratio_beam = [physics.profile_volume_average(nb_j * d["e_ratio"], rho_g)
+                            / max(physics.profile_volume_average(nb_j, rho_g), 1e-30)
+                            for nb_j, d in zip(nb_w, dl_final)]
 
     # Beam-beam fusion (config.enable_beam_beam): the ONE pairwise reaction
     # between the first two beamlines (this project's tested scope) -- summed
@@ -1158,8 +1300,8 @@ def solve_operating_point(
                  for k, gk in enumerate(groups) if len(lines) > 1 and gk == lines[1]]
         for j, k in pairs:
             b1, b2 = useful_beams[j], useful_beams[k]
-            e1 = physics.average_fast_energy_keV(Te0_keV, b1.Eb_keV, b1.species)
-            e2 = physics.average_fast_energy_keV(Te0_keV, b2.Eb_keV, b2.species)
+            e1 = physics.average_fast_energy_keV(Te0_keV, b1.Eb_keV, b1.species) * e_ratio_beam[j]
+            e2 = physics.average_fast_energy_keV(Te0_keV, b2.Eb_keV, b2.species) * e_ratio_beam[k]
             bb = physics.beam_beam_fusion_power(
                 nb0_per_beam[j], e1, b1.species, b1.co_current,
                 nb0_per_beam[k], e2, b2.species, b2.co_current,
@@ -1188,7 +1330,8 @@ def solve_operating_point(
     if P_useful_w > 0.0:
         avg_fast_energy = sum(
             physics.average_fast_energy_keV(Te_keV, beam.Eb_keV, beam.species) * (beam.P_NB_W / P_useful_w)
-            for beam in useful_beams
+            * e_ratio_beam[j]
+            for j, beam in enumerate(useful_beams)
         )
     else:
         avg_fast_energy = 0.0
@@ -1226,6 +1369,7 @@ def solve_operating_point(
         P_cx_loss_w=P_cx_loss_w, f_cx_loss=f_cx_loss_list, cx_f_particle=cx_f_particle_list,
         cx_gamma=cx_gamma_list, cx_escape_probability=cx_escape_list, cx_n0_m3=cx_n0_list,
         P_useful_w=P_useful_w,
+        P_delayed_loss_w=P_delayed_loss_w, f_delayed_loss=f_dl_list, f_delayed_loss_N=f_dl_N_list,
         pf_thermal_w=pf_thermal, pf_beam_w=pf_beam, pf_dt_w=pf_dt,
         pf_dd_thermal_w=pf_dd_thermal, pf_dd_beam_w=pf_dd_beam, pf_dd_w=pf_dd,
         pf_total_w=pf_total, neutron_rate_s=neutron_rate,
@@ -1239,5 +1383,7 @@ def solve_operating_point(
         rho_profile=rho_out, nb_profile_m3=nb_out, n_fuel_profile_m3=nfuel_out,
         pf_thermal_profile_wm3=pth_out, pf_beam_profile_wm3=pbt_out,
         ne_profile_m3=ne_out, Te_profile_keV=te_out, Ti_profile_keV=ti_out,
-        beam_birth_profiles_m3s=birth_out, beam_pitch_profiles=pitch_out,
+        deposition_rho=dep_rho_out, beam_birth_profiles_m3s=birth_out, beam_pitch_profiles=pitch_out,
+        beam_tau_ratio_profiles=tau_ratio_out, beam_survival_u=surv_u_out, beam_survival_P=surv_p_out,
+        beam_dl_eps_e_profiles=eps_e_out, beam_dl_eps_i_profiles=eps_i_out, beam_dl_lost_N_profiles=lost_n_out,
     )

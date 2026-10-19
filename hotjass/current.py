@@ -1,11 +1,13 @@
 """Non-inductive current diagnostics: neutral-beam current drive (NBCD) and
 bootstrap current (2026-10-06).
 
-Post-processing only -- nothing here feeds back on the operating point. Both
-need the radial profiles that solve_operating_point stores when
-profile_averaging is on (OperatingPoint.rho_profile, ne/Te/Ti profiles, the
-per-beam birth rates S_j h_j(rho) and birth pitch xi0_j(rho)); with
-profile_averaging off there are no gradients and current_drive returns None.
+Post-processing only -- nothing here feeds back on the operating point. With
+profile_averaging on, both use the radial profiles the solver stores
+(OperatingPoint.rho_profile, ne/Te/Ti profiles, the per-beam birth rates
+S_j h_j(rho) and birth pitch xi0_j(rho)). With it off (flat 0-D) the solver
+still stores the deposition (deposition_rho, at flat n_e): the NBCD is then
+evaluated at the flat n_e, T_e of the 0-D solve, and the bootstrap current is
+zero (flat profiles have no gradients).
 
 NBCD -- local 1-D Cordey / Start-Cordey model
 ---------------------------------------------
@@ -84,14 +86,19 @@ class CurrentDrive:
     beta_scatter: list[float] = field(default_factory=list)   # beta = Z_eff/Zbar of beam 1, on rho
 
 
-def _pitch_integral(uc3: np.ndarray, beta: np.ndarray, n: int = 200) -> np.ndarray:
-    """J(u_c, beta) on arrays (same shape), midpoint rule in u."""
+def _pitch_integral(uc3: np.ndarray, beta: np.ndarray, n: int = 200, survival=None) -> np.ndarray:
+    """J(u_c, beta) on arrays (same shape), midpoint rule in u. survival:
+    optional per-radius (u, P) rows (OperatingPoint.beam_survival_u/_P) of the
+    delayed orbit loss -- the integrand is then weighted by P(u)."""
     u = (np.arange(n) + 0.5) / n
     u3 = u[None, :] ** 3
     c = uc3.reshape(-1, 1)
     b = beta.reshape(-1, 1)
     xi = (u3 * (1.0 + c) / (u3 + c)) ** (b / 3.0)
-    return (np.sum(u3 / (u3 + c) * xi, axis=1) / n).reshape(uc3.shape)
+    w = u3 / (u3 + c) * xi
+    if survival is not None:
+        w = w * np.array([np.interp(u, ur, pr) for ur, pr in zip(*survival)])
+    return (np.sum(w, axis=1) / n).reshape(uc3.shape)
 
 
 def _sauter_coefficients(ft, nue, nui, Z):
@@ -126,17 +133,27 @@ def current_drive(config, beams, op, q0: float = 1.0) -> CurrentDrive | None:
     """NBCD + bootstrap for a solved OperatingPoint (see module docstring).
     `beams` are the input BeamSpecs in the order passed to the solver.
     Returns None without profiles (profile_averaging off or infeasible)."""
-    if not getattr(op, "feasible", False) or not op.rho_profile or not op.ne_profile_m3:
+    if not getattr(op, "feasible", False):
+        return None
+    flat = not (op.rho_profile and op.ne_profile_m3)
+    if flat and not (getattr(op, "deposition_rho", None) and op.beam_birth_profiles_m3s):
         return None
     geo = config.geometry
     a, R0, kappa = geo.minor_radius, geo.major_radius, geo.elongation
     V = geo.volume()
     Zeff = max(float(config.Zeff), 1.0)
-    rho = np.asarray(op.rho_profile, dtype=float)
-    ne = np.maximum(np.asarray(op.ne_profile_m3, dtype=float), 1.0e10)
-    te = np.maximum(np.asarray(op.Te_profile_keV, dtype=float), 0.01)
-    ti = np.maximum(np.asarray(op.Ti_profile_keV, dtype=float), 0.01)
-    n_fuel = np.asarray(op.n_fuel_profile_m3, dtype=float)
+    if flat:      # flat 0-D: uniform n_e, T_e, T_i, fuel at the 0-D solve's values
+        rho = np.asarray(op.deposition_rho, dtype=float)
+        ne = np.full_like(rho, max(op.ne0_m3, 1.0e10))
+        te = np.full_like(rho, max(op.Te_keV, 0.01))
+        ti = np.full_like(rho, max(op.Ti_keV or 0.0, 0.01))
+        n_fuel = np.full_like(rho, op.n_thermal_m3)
+    else:
+        rho = np.asarray(op.rho_profile, dtype=float)
+        ne = np.maximum(np.asarray(op.ne_profile_m3, dtype=float), 1.0e10)
+        te = np.maximum(np.asarray(op.Te_profile_keV, dtype=float), 0.01)
+        ti = np.maximum(np.asarray(op.Ti_profile_keV, dtype=float), 0.01)
+        n_fuel = np.asarray(op.n_fuel_profile_m3, dtype=float)
     _ne1, nc1 = physics.compute_charge_neutrality(1.0, Zeff)
     n_c = (nc1 / _ne1) * ne                                  # carbon-like impurity
     mD, mT, mH = float(config.mix_D), float(config.mix_T), float(config.mix_H)
@@ -166,7 +183,10 @@ def current_drive(config, beams, op, q0: float = 1.0) -> CurrentDrive | None:
         beta = Zeff / np.maximum(zbar, 1e-6)
         if k == 0:
             beta_out = beta
-        jf = physics.E_CHARGE * src * tau_s * vb * xi0 * _pitch_integral(uc3, beta)
+        surv = None
+        if k < len(getattr(op, "beam_survival_P", [])):
+            surv = (op.beam_survival_u[k], op.beam_survival_P[k])
+        jf = physics.E_CHARGE * src * tau_s * vb * xi0 * _pitch_integral(uc3, beta, survival=surv)
         jn = jf * shield
         I_k = vol_fac * physics.profile_volume_average(jn, rho)
         j_fast.append(jf)
@@ -200,9 +220,9 @@ def current_drive(config, beams, op, q0: float = 1.0) -> CurrentDrive | None:
     # edge bootstrap grid-dependent. Gradients are taken analytically and
     # the current integrated on a fine grid clustered at the edge (the
     # integrand stays finite there: nu* -> infinity as T -> 0).
-    p_n = max(config.density_peaking, 0.0)
-    p_te = max(config.temperature_peaking, 0.0)
-    p_ti = p_te if config.temperature_peaking_i < 0.0 else max(config.temperature_peaking_i, 0.0)
+    p_n = 0.0 if flat else max(config.density_peaking, 0.0)        # flat 0-D: no gradients,
+    p_te = 0.0 if flat else max(config.temperature_peaking, 0.0)    # j_bs = 0 exactly
+    p_ti = p_te if (flat or config.temperature_peaking_i < 0.0) else max(config.temperature_peaking_i, 0.0)
     ne0_, te0_, ti0_ = ne[0], te[0], ti[0]
     nsum_per_ne = 1.0 / _ne1
     nc_per_ne = nc1 / _ne1
@@ -247,6 +267,8 @@ def current_drive(config, beams, op, q0: float = 1.0) -> CurrentDrive | None:
     I_bs = vol_fac * 2.0 * float(np.sum(0.5 * (r_f[1:] * jbs_f[1:] + r_f[:-1] * jbs_f[:-1]) * np.diff(r_f)))
     jbs, q, nue = bootstrap(rho)
     jbs[0] = jbs[1] if len(jbs) > 1 else 0.0
+    if flat:                    # no gradients: exactly zero, not round-off
+        I_bs, jbs = 0.0, np.zeros_like(jbs)
     q[0] = q_cyl / (nu + 1.0)
 
     return CurrentDrive(

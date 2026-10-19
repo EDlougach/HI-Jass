@@ -53,6 +53,7 @@ class PlasmaParams:
     manual_v_phi_m_s: float = 0.0      # "manual": bulk toroidal rotation velocity (positive = co-current)
     tau_phi_over_tauEi: float = 1.0    # "momentum_balance": tau_phi = this * tau_Ei (no validated tau_phi scaling exists)
     orbit_loss_deposition: str = "cutoff"  # "cutoff" | "consistent" -- see TokamakConfig
+    delayed_loss_factor: float = 0.0   # delayed (pitch-scattering) orbit loss multiplier, 0 = off -- see TokamakConfig
     cm_energy_correction: bool = False  # Bosch-Hale beam cross-sections at E_cm, not deuteron lab energy
     enable_beam_beam: bool = False     # reduced monoenergetic beam-beam fusion between the first two NBI sources
     enable_equipartition: bool = True
@@ -156,6 +157,7 @@ class HotJassModel:
             enable_beam_beam=self.plasma.enable_beam_beam,
             cm_energy_correction=self.plasma.cm_energy_correction,
             orbit_loss_deposition=self.plasma.orbit_loss_deposition,
+            delayed_loss_factor=self.plasma.delayed_loss_factor,
             enable_equipartition=self.plasma.enable_equipartition,
             q0=self.plasma.q0, ip_sign=self.plasma.ip_sign, bt_sign=self.plasma.bt_sign,
             enable_alpha_heating=self.plasma.alpha_heating,

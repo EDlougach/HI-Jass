@@ -957,9 +957,8 @@ $V\langle h_j\rangle = 1$
   circular 1/e diameter $D$ ($\sigma = D/2\sqrt2$); HOT-Jass loads it as the
   aperture with the same $\sigma$, $W = H = \sqrt2\,D$.
 - **Prompt loss** (already counted in the orbit-loss power), two options
-  (`orbit_loss_deposition`; HOT-Jass: MODELS, "Orbit loss consistent in
-  deposition"):
-  - `"cutoff"` (default, historical): every birth beyond
+  (`orbit_loss_deposition`; HOT-Jass always uses `"consistent"`, no switch):
+  - `"cutoff"` (HI-Jass default, historical): every birth beyond
     `orbit_cutoff_rho` is removed. That radius is set by the worst-case
     (trapped) orbit, so at low current, where the banana width approaches
     the minor radius, it removes far more births than the loss formula
@@ -971,7 +970,11 @@ $V\langle h_j\rangle = 1$
     used for the lost power), with $|\lambda_0| = |\xi_0|$ (the full-field birth
     pitch, "Field directions and the beam birth pitch") along each chord.
     It changes NBCD by about 30 % on TCV, about 6 % on MAST and 6-19 % on
-    NSTX-U, and is therefore an option, off by default.
+    NSTX-U. HOT-Jass uses it for both width-based ST models (the
+    P$_\phi$ model is always consistent; the large-aspect model keeps the
+    cutoff): a cutoff that removes far more births than power is lost is
+    not physical, and the consistent profile agrees better with ASTRA
+    (TCV) and TRANSP (MAST, NSTX-U).
 - **Orbit-width smoothing.** Births are spread over half the passing orbit
   width (at least $0.03$ in $\rho$), as a *volume-weighted* average of the
   birth density, so that births do not pile up on the axis.
@@ -1019,6 +1022,56 @@ about how that density is sustained. The HOT-Jass web app (**Balance** tab)
 adds a steady-state **particle balance** for the thermal fuel ions as a
 post-processing step: it uses the solved operating point and does not feed
 back into the solve.
+
+### Delayed orbit loss by pitch-angle scattering (optional)
+
+`delayed_loss_factor` $k$ (HOT-Jass: MODELS, "Delayed orbit loss k (pitch
+scattering)"; default 0 = off). The prompt
+first-orbit loss uses the birth pitch. While a fast ion slows down,
+pitch-angle scattering, strong below $E_c$, moves it to other pitches. It is
+lost only if the new pitch puts it on an unconfined orbit at its radius and
+current energy: in the core, where orbits are narrow, nothing is lost.
+
+- Pitch memory (the $l = 1$ Legendre decay of the Cordey slowing-down
+  distribution, the same factor as in the NBCD model), $u = v/v_b$:
+  $$G(u) = \left[\frac{u^3(1+u_c^3)}{u^3+u_c^3}\right]^{\beta/3},\qquad
+  \beta = Z_{eff}/\bar Z$$
+  (`physics.pitch_scattering_beta`, thermal ions and the carbon-like
+  impurity only).
+- Loss probability after scattering, $\langle P_{lost}\rangle_\xi(\rho, E)$
+  (`physics.isotropic_orbit_loss_probability`): each orbit model's own
+  per-birth rule averaged over a uniform pitch $\xi \in [-1, 1]$ -- the ST
+  orbit widths at energy $E$, the P$_\phi$ orbit boundary on 8 points of the
+  flux surface, or the large-aspect $q_*\rho_{Li}$ shift (counter half only).
+  Evaluated at $u$ = 1, 0.8, 0.6, 0.45, 0.3, 0.15 and interpolated.
+- Survival (cumulative: a lost ion stays lost):
+  $$P_{surv}(\rho,u) = 1 - \max_{u'\ge u}\min\{1,\ k\,[1-G(u')]\,
+  \langle P_{lost}\rangle_\xi(\rho, E_b u'^2)\}$$
+  $k = 1$ is orbit physics only; $k > 1$ stands in for TF-ripple or MHD
+  (fishbone, Alfven-eigenmode) losses, which are not computed.
+- `physics.delayed_loss_survival` samples $P_{surv}$ uniformly in
+  slowing-down time ($y = \ln(u^3 + u_c^3)$, $dt = \tau_{se}\,dy/3$), so
+  $\tau_{eff}/\tau_S$ is the time average of $P_{surv}$.
+
+Consequences: $\tau_{eff}$ replaces $\tau_S$ in $n_b(\rho)$ (dilution,
+pressure, $\beta$); the slowing-down spectrum (beam-target and beam-beam
+fusion, mean fast-ion energy) and the NBCD integrand $J$ are weighted by
+$P_{surv}$; the energy a lost ion still carries, split by $L_i(E/E_c)$ into
+the electron and ion shares it would have heated, is a separate loss
+(`OperatingPoint.P_delayed_loss_w`), so
+$P_{useful} = P_e + P_i + P_{delayed}$; lost ions do not fuel the thermal
+plasma (particle balance, NBI_OUT SNIBM). No radial fast-ion transport.
+With `profile_averaging` off (flat 0-D) the same survival is computed on the
+deposition at uniform $n_e$, $T_e$ and birth-averaged: $\tau_{eff}/\tau_S$
+scales the 0-D $n_b$, the energy loss reduces the 0-D $P_e$, $P_i$, and the
+birth-averaged $P_{surv}(u)$ weights the 0-D beam-target spectrum. A uniform
+$T_e$ is hotter than the real edge, so $E_c$ there is higher, scattering
+starts earlier and the flat-mode loss is larger than the profile one.
+
+On the presets (2026-10-20, $k = 1$): JET and ITER below 0.05 % of
+$P_{useful}$; TCV, T-15MD 0.2-0.4 %; ST40, MAST-U, NSTX-U, PONTE 1-3 % of
+the power and 5-12 % of the fast ions (lost late, at low energy),
+$I_{NB}$ -1 to -3 %, $T_e$ about -1 %.
 
 ### Fast-ion dilution
 
@@ -1116,9 +1169,23 @@ The HOT-Jass web app (**Current** tab) estimates the neutral-beam driven and
 the bootstrap current of a solved operating point (`hotjass.current`,
 `HotJassModel.current_drive(op)`). It is a **diagnostic only**: nothing feeds
 back into the solve, so an operating point whose non-inductive current exceeds
-$I_p$ is flagged rather than corrected. It needs profile-corrected 0-D, because
-it uses the solver's radial profiles, the beam deposition and the birth pitch;
-with flat profiles there are no gradients and no current is computed.
+$I_p$ is flagged rather than corrected. With profile-corrected 0-D it uses the
+solver's radial profiles, the beam deposition and the birth pitch. With it off
+(flat 0-D) the solver still computes the deposition and birth pitch at uniform
+$n_e$ (`OperatingPoint.deposition_rho`; `rho_profile` stays empty): the NBCD is
+then evaluated at the uniform $n_e$, $T_e$ of the 0-D solve, and the bootstrap
+current is exactly zero (flat profiles have no gradients). The flat NBCD
+differs from the profile one (colder core, lower $E_c$, different $\tau_s$),
+e.g. MAST-U 75 vs 131 kA, JET 1214 vs 1187 kA.
+
+The **Beam** tab shows, next to each beam's birth pitch $\xi_0(\rho)$, the
+mean pitch of the slowed-down fast ions: the same $l = 1$ pitch memory
+averaged over the steady slowing-down population (number-weighted), with the
+delayed-orbit-loss survival when that is on,
+$$\langle\xi\rangle = \xi_0\,\frac{\int_0^1 P_{surv}\,G^{\beta/3}\,u^2du/(u^3+u_c^3)}
+{\int_0^1 P_{surv}\,u^2du/(u^3+u_c^3)},\qquad G = \frac{u^3(1+u_c^3)}{u^3+u_c^3}.$$
+On the presets $\langle\xi\rangle/\xi_0 \approx 0.5$-$0.85$, lowest in the hot
+core (higher $E_c$: more of the slowing-down is scattering-dominated).
 
 ### Neutral-beam current drive
 
@@ -1780,17 +1847,17 @@ KAPPA, DELTA.
 
 Notes:
 
-- QNBIE, QNBII, SNBII, PFUS, CURNBI, CURBS and Q need profile-corrected 0-D
-  (MODELS); without it only the other files are written, and the README says
-  so.
+- QNBIE, QNBII, SNBII and PFUS need profile-corrected 0-D (PLASMA); without
+  it they are not written, and the README says so. CURNBI, CURBS and Q are
+  written in both modes (flat 0-D: NBCD at uniform $n_e$, $T_e$, CURBS = 0).
 - QNBIE / QNBII put the deposited NBI power at the birth radius and split it
   between electrons and ions with each beam component's slowing-down
   fraction (no radial redistribution during slowing down). The README checks
   $\int (Q_{NBIE} + Q_{NBII})\,dV$ against the useful NBI power of the power
   balance and warns if they differ: with the historical cutoff deposition, a
   beam born entirely outside the orbit-loss cutoff radius has no births
-  although its useful power is counted ("Orbit loss consistent in deposition"
-  or the P$_\phi$ orbit model avoid this).
+  although its useful power is counted (the large-aspect orbit model only;
+  the ST orbit models use the consistent deposition).
 - CURNBI, CURBS and Q are diagnostics on an assumed current profile (Current
   tab), not a current evolution.
 - Format: label lines with `;-...-` descriptions from column 32 (name 20

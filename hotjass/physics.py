@@ -303,11 +303,14 @@ def equipartition_power_w(
 
 def slowing_down_distribution(
     Te_keV: float, nb0: float, Eb_keV: float, energies_keV: np.ndarray, species: str = "D",
+    survival=None,
 ) -> np.ndarray:
     """Steady-state slowing-down distribution f(E) (m^-3 keV^-1) for a
     single-energy-component beam injected at Eb_keV:
         f(E) ~ sqrt(E) / (E^1.5 + Ec^1.5),  E <= Eb
     normalized so integrating f(E) over (0,Eb] recovers nb0.
+    survival: optional (u, P) row of delayed_loss_survival -- f(E) is then
+    weighted by the survival P(E) (delayed orbit loss), still normalised to nb0.
     """
     energies = np.maximum(np.asarray(energies_keV, dtype=float), 1e-3)
     Ec = critical_energy_keV(Te_keV, species)
@@ -315,6 +318,9 @@ def slowing_down_distribution(
     kernel = np.where(energies <= Eb_keV, kernel, 0.0)
     norm_grid = np.linspace(1.0e-3, Eb_keV, 501)
     norm_kernel = np.sqrt(norm_grid) / (norm_grid**1.5 + Ec**1.5)
+    if survival is not None:
+        kernel = kernel * _survival_on_energies(survival, energies, Eb_keV)
+        norm_kernel = norm_kernel * _survival_on_energies(survival, norm_grid, Eb_keV)
     integral = _trapezoidal_integral(norm_grid, norm_kernel)
     if integral <= 0.0:
         return np.zeros_like(energies)
@@ -2036,7 +2042,7 @@ def first_orbit_loss_fraction_st(
 def beam_target_fusion_power(
     nb0: float, n_target0: float, Te_keV: float, Eb_keV: float, volume_m3: float, species: str = "D",
     ne0: float | None = None, density_peaking: float = 0.0, temperature_peaking: float = 0.0,
-    v_phi_m_s: float = 0.0, co_current: bool = True, cm_energy: bool = False,
+    v_phi_m_s: float = 0.0, co_current: bool = True, cm_energy: bool = False, survival=None,
 ) -> float:
     """Beam-target fusion power [W]: a fast beam ion (given species, D or T)
     slowing down through a stationary (T_i=0) target-ion population of the
@@ -2060,11 +2066,13 @@ def beam_target_fusion_power(
     v_phi_m_s/co_current: optional bulk toroidal rotation correction, passed
     straight through to beam_target_reactivity_spectrum() -- see its
     docstring. Default v_phi_m_s=0.0 is byte-identical to no rotation.
+    survival: optional (u, P) delayed-orbit-loss survival (births_mean_survival)
+    weighting the slowing-down spectrum.
     """
     energies = np.linspace(1.0e-3, Eb_keV, 601)
     sigma_v = beam_target_reactivity_spectrum(energies, species, v_phi_m_s, co_current, cm_energy)
     if ne0 is None or (density_peaking == 0.0 and temperature_peaking == 0.0):
-        distribution = slowing_down_distribution(Te_keV, nb0, Eb_keV, energies, species)
+        distribution = slowing_down_distribution(Te_keV, nb0, Eb_keV, energies, species, survival)
         reaction_rate = volume_m3 * _trapezoidal_integral(energies, n_target0 * distribution * sigma_v)
         return reaction_rate * E_FUSION_J
 
@@ -2078,7 +2086,7 @@ def beam_target_fusion_power(
         local_te = Te_keV * temperature_factor
         local_tau = thermalization_time(float(local_ne), float(local_te), Eb_keV, species)
         local_nb = nb0 * local_tau / max(reference_tau, 1e-30)
-        distribution = slowing_down_distribution(float(local_te), local_nb, Eb_keV, energies, species)
+        distribution = slowing_down_distribution(float(local_te), local_nb, Eb_keV, energies, species, survival)
         radial_rate[index] = n_target0 * density_factor * _trapezoidal_integral(energies, distribution * sigma_v)
     return volume_m3 * profile_volume_average(radial_rate, rho) * E_FUSION_J
 
@@ -2112,7 +2120,7 @@ def thermal_dd_fusion_power(
 def beam_target_dd_fusion_power(
     nb0: float, nD_target0: float, Te_keV: float, Eb_keV: float, volume_m3: float,
     ne0: float | None = None, density_peaking: float = 0.0, temperature_peaking: float = 0.0,
-    v_phi_m_s: float = 0.0, co_current: bool = True, cm_energy: bool = False,
+    v_phi_m_s: float = 0.0, co_current: bool = True, cm_energy: bool = False, survival=None,
 ) -> tuple[float, float]:
     """Beam-target D-D fusion power [W] and D(d,n)3He rate [1/s]: a fast D ion
     slowing down through a thermal D population. Structure mirrors
@@ -2136,7 +2144,7 @@ def beam_target_dd_fusion_power(
     svp = bosch_hale_dd_cross_section(e_rel_keV, "p", cm_energy) * v
     svn = bosch_hale_dd_cross_section(e_rel_keV, "n", cm_energy) * v
     if ne0 is None or (density_peaking == 0.0 and temperature_peaking == 0.0):
-        f = slowing_down_distribution(Te_keV, nb0, Eb_keV, energies, "D")
+        f = slowing_down_distribution(Te_keV, nb0, Eb_keV, energies, "D", survival)
         Rp = volume_m3 * _trapezoidal_integral(energies, nD_target0 * f * svp)
         Rn = volume_m3 * _trapezoidal_integral(energies, nD_target0 * f * svn)
     else:
@@ -2151,7 +2159,7 @@ def beam_target_dd_fusion_power(
             local_te = Te_keV * tf
             local_tau = thermalization_time(float(local_ne), float(local_te), Eb_keV, "D")
             local_nb = nb0 * local_tau / max(ref_tau, 1e-30)
-            f = slowing_down_distribution(float(local_te), local_nb, Eb_keV, energies, "D")
+            f = slowing_down_distribution(float(local_te), local_nb, Eb_keV, energies, "D", survival)
             radp[i] = nD_target0 * df * _trapezoidal_integral(energies, f * svp)
             radn[i] = nD_target0 * df * _trapezoidal_integral(energies, f * svn)
         Rp = volume_m3 * profile_volume_average(radp, rho)
@@ -2364,6 +2372,153 @@ def beam_target_dd_power_density_profile(
 # time), instead of a single 0-D n_b0 spread like tau_s alone.
 # ---------------------------------------------------------------------------
 
+# ---------------------------------------------------------------------------
+# Delayed orbit loss by pitch-angle scattering (2026-10-20, optional:
+# TokamakConfig.delayed_loss_factor, default 0 = off). The prompt-loss rules
+# above use the BIRTH pitch. While a fast ion slows down, pitch-angle
+# scattering (strong below E_c) moves it to other pitches; it is lost only if
+# the new pitch puts it on an unconfined orbit AT ITS RADIUS AND CURRENT
+# ENERGY. Reduced local model (no radial fast-ion transport):
+#   G(u)      = [u^3 (1+u_c^3)/(u^3+u_c^3)]^(beta/3)   pitch memory (l = 1
+#               Legendre decay of the Cordey slowing-down distribution, the
+#               same factor as the NBCD model), u = v/v_b
+#   L(rho, E) = isotropic-pitch average of the orbit model's own loss rule
+#   Lambda(u) = max over u' >= u of min(1, k (1 - G(u')) L(rho, E_b u'^2))
+#               (cumulative: an ion once lost stays lost)
+#   P(u)      = 1 - Lambda(u)                     survival probability
+# k = delayed_loss_factor: 1 = orbit physics only; > 1 stands in for TF
+# ripple / anomalous (MHD) losses, which this model does not compute.
+# In the core, where orbits are narrow, L ~ 0 and nothing is lost.
+# ---------------------------------------------------------------------------
+
+DELAYED_LOSS_U = (1.0, 0.8, 0.6, 0.45, 0.3, 0.15)   # u = v/v_b where L(rho, E) is evaluated
+DELAYED_LOSS_NY = 64                                 # slowing-down time samples
+
+
+def pitch_scattering_beta(Zeff: float, mix_H: float, mix_D: float, mix_T: float, species: str) -> float:
+    """beta = Z_eff / Zbar, Zbar = sum_j n_j Z_j^2 (m_b/m_j) / n_e: pitch-angle
+    scattering relative to the ion drag on a fast ion of `species` (the same
+    definition as hotjass.current; thermal ions + carbon-like impurity, fast
+    ions not counted)."""
+    ne1, nc1 = compute_charge_neutrality(1.0, Zeff)
+    Ab = beam_mass_number(species)
+    zbar = (mix_H * Ab + mix_D * Ab / 2.0 + mix_T * Ab / 3.0) / ne1 + nc1 * Z_IMPURITY ** 2 * Ab / 12.0 / ne1
+    return max(Zeff, 1.0) / max(zbar, 1.0e-6)
+
+
+def isotropic_orbit_loss_probability(
+    rho: np.ndarray, E_keV: float, species: str, geometry: "TokamakGeometry", Bt_T: float, Ip_MA: float,
+    orbit_model: str, q0: float = 1.0, n_xi: int = 16, n_theta: int = 8,
+) -> np.ndarray:
+    """L(rho, E): orbit-loss probability (0..1) of a fast ion of energy E at
+    normalised radius rho whose pitch has been randomised (uniform in
+    xi = v_par/v on [-1, 1]) -- each orbit model's own per-birth loss rule
+    averaged over pitch: ST pitch-resolved / mean-shift via the orbit widths
+    at E (_signed_pitch_loss), P_phi via pphi_orbit_loss_probability on n_theta
+    points of the flux surface, large-aspect via the q* rho_Li shift (only the
+    counter-moving half is shifted outward)."""
+    rho = np.asarray(rho, dtype=float)
+    a, R0, kappa = geometry.minor_radius, geometry.major_radius, geometry.elongation
+    Bt, Ip = abs(float(Bt_T)), abs(float(Ip_MA))
+    xg, wg = np.polynomial.legendre.leggauss(int(n_xi))
+    wg = wg / wg.sum()
+    if orbit_model in ("st_meanshift", "st_pitch"):
+        widths = st_orbit_widths(E_keV, Bt, Ip, R0, a, kappa, geometry.triangularity, species)
+        variant = "pitch" if orbit_model == "st_pitch" else "meanshift"
+        lost = sum(w * _signed_pitch_loss(rho, np.full_like(rho, x), a, R0, widths, variant)
+                   for x, w in zip(xg, wg))
+    elif orbit_model == "st_pphi":
+        th = (np.arange(int(n_theta)) + 0.5) * 2.0 * math.pi / int(n_theta)
+        shape = (len(rho), len(th), len(xg))
+        R = np.broadcast_to(R0 + rho[:, None, None] * a * np.cos(th)[None, :, None], shape)
+        Z = np.broadcast_to(kappa * rho[:, None, None] * a * np.sin(th)[None, :, None], shape)
+        xi = np.broadcast_to(xg[None, None, :], shape)
+        P = pphi_orbit_loss_probability(R, Z, xi, E_keV, species, R0, a, kappa, Bt, Ip, q0,
+                                        larmor_radius_m(E_keV, Bt, species))
+        lost = (P * wg[None, None, :]).sum(axis=2).mean(axis=1)
+    else:
+        dr = passing_orbit_width(E_keV, Bt, Ip, R0, a, kappa, species)
+        lost = 0.5 * ((rho + dr / a) > 1.0)
+    return np.clip(np.asarray(lost, dtype=float), 0.0, 1.0)
+
+
+_LI_TABLE: tuple | None = None
+
+
+def _ion_heating_fraction_array(x: np.ndarray) -> np.ndarray:
+    """ion_heating_fraction() on an array (log-x interpolation of a table)."""
+    global _LI_TABLE
+    if _LI_TABLE is None:
+        lx = np.linspace(-4.0, 4.0, 161)
+        _LI_TABLE = (lx, np.array([ion_heating_fraction(float(v)) for v in 10.0 ** lx]))
+    lx, li = _LI_TABLE
+    return np.interp(np.log10(np.maximum(np.asarray(x, dtype=float), 1.0e-4)), lx, li)
+
+
+def delayed_loss_survival(
+    loss_table: np.ndarray, Eb_keV: float, Te_keV: np.ndarray, species: str, beta: float, factor: float,
+) -> dict:
+    """Survival of one beam's fast ions against delayed (pitch-scattering)
+    orbit loss on a radial grid (see the section comment above).
+
+    loss_table: L(rho, E_b u^2) of shape (n_rho, len(DELAYED_LOSS_U)), from
+    isotropic_orbit_loss_probability (independent of T_e). Te_keV: local T_e
+    on the same radial grid. Sampled uniformly in slowing-down time (y =
+    ln(u^3 + u_c^3), dt = tau_se dy / 3), so averages over the grid are time
+    averages. Returns arrays over rho:
+        u, P        (n_rho, NY) speed u = v/v_b (ascending) and survival P(u)
+        tau_ratio   tau_eff / tau_S = time-averaged survival
+        f_lost_N    fraction of the ions lost before thermalising
+        eps_e/eps_i energy lost (as a fraction of E_b) that the ion would
+                    have given to electrons / ions below its loss point
+        e_ratio     mean energy of the survivors / mean energy without loss
+    """
+    L_tab = np.asarray(loss_table, dtype=float)
+    te = np.maximum(np.asarray(Te_keV, dtype=float), 1.0e-4)
+    Ec = critical_energy_keV(te, species)
+    c = (Ec / max(Eb_keV, 1.0e-9)) ** 1.5
+    t = np.linspace(0.0, 1.0, DELAYED_LOSS_NY)
+    y = np.log(c)[:, None] + t[None, :] * np.log1p(1.0 / c)[:, None]
+    u3 = np.maximum(np.exp(y) - c[:, None], 0.0)
+    u = np.cbrt(u3)
+    G = (u3 * (1.0 + c[:, None]) / (u3 + c[:, None])) ** (beta / 3.0)
+    uL = np.asarray(DELAYED_LOSS_U, dtype=float)[::-1]
+    L = np.array([np.interp(ur, uL, row[::-1]) for ur, row in zip(u, L_tab)])
+    D = np.clip(factor * (1.0 - G) * L, 0.0, 1.0)
+    lam = np.maximum.accumulate(D[:, ::-1], axis=1)[:, ::-1]     # time runs from u = 1 down to 0
+    P = 1.0 - lam
+    tau_ratio = np.trapezoid(P, t, axis=1)
+    f_lost_N = lam[:, 0]
+    dlam = lam[:, :-1] - lam[:, 1:]                               # lost between neighbouring samples
+    um2 = 0.5 * (u[:, :-1] ** 2 + u[:, 1:] ** 2)
+    li = _ion_heating_fraction_array(um2 * Eb_keV / Ec[:, None])
+    eps_i = np.sum(dlam * um2 * li, axis=1)
+    eps_e = np.sum(dlam * um2 * (1.0 - li), axis=1)
+    e_surv = np.trapezoid(P * u ** 2, t, axis=1) / np.maximum(tau_ratio, 1.0e-12)
+    e_ratio = e_surv / np.maximum(np.trapezoid(u ** 2, t, axis=1), 1.0e-12)
+    return dict(u=u, P=P, tau_ratio=tau_ratio, f_lost_N=f_lost_N, eps_e=eps_e, eps_i=eps_i, e_ratio=e_ratio)
+
+
+def births_mean_survival(rho: np.ndarray, births: np.ndarray, surv: dict) -> tuple:
+    """Birth- and volume-weighted mean survival (u, P(u)) of one beam over the
+    radius, from delayed_loss_survival -- the flat 0-D slowing-down spectrum."""
+    u = np.linspace(0.0, 1.0, 101)
+    w = np.asarray(births, dtype=float) * np.asarray(rho, dtype=float)
+    P = np.array([np.interp(u, ur, pr) for ur, pr in zip(surv["u"], surv["P"])])
+    if w.sum() <= 0.0:
+        return u, np.ones_like(u)
+    return u, (w[:, None] * P).sum(axis=0) / w.sum()
+
+
+def _survival_on_energies(survival, energies_keV: np.ndarray, Eb_keV: float) -> np.ndarray:
+    """Survival P(E) for slowing_down_distribution from one radial row (u, P)
+    of delayed_loss_survival (None -> 1)."""
+    if survival is None:
+        return np.ones_like(np.asarray(energies_keV, dtype=float))
+    u_row, p_row = survival
+    return np.interp(np.sqrt(np.clip(np.asarray(energies_keV, dtype=float) / Eb_keV, 0.0, 1.0)), u_row, p_row)
+
+
 def orbit_cutoff_rho(
     Eb_keV: float, species: str, Bt_T: float, Ip_MA: float, R0_m: float, minor_radius_m: float,
     elongation: float, triangularity: float, orbit_model: str, co_current: bool = True,
@@ -2534,7 +2689,7 @@ def thermal_dd_fusion_power_from_profiles(rho, nD, Ti_keV, volume_m3):
 
 def beam_target_fusion_power_from_profiles(rho, nb, n_target, Te_keV, Eb_keV, species, volume_m3,
                                            v_phi_m_s: float = 0.0, co_current: bool = True,
-                                           cm_energy: bool = False):
+                                           cm_energy: bool = False, survival=None):
     """Beam-target D-T fusion power [W] and power density [W/m^3] from radial
     arrays of the fast-ion density nb(rho) (this beam), the target density
     (the OTHER of D/T) and T_e(rho) (shapes the local slowing-down
@@ -2546,14 +2701,15 @@ def beam_target_fusion_power_from_profiles(rho, nb, n_target, Te_keV, Eb_keV, sp
     for i, (nbi, nti, tei) in enumerate(zip(nb, n_target, Te_keV)):
         if nbi <= 0.0 or nti <= 0.0 or tei <= 1.0e-4:
             continue
-        f = slowing_down_distribution(float(tei), float(nbi), Eb_keV, energies, species)
+        f = slowing_down_distribution(float(tei), float(nbi), Eb_keV, energies, species,
+                                      None if survival is None else survival[i])
         dens[i] = nti * _trapezoidal_integral(energies, f * sigma_v) * E_FUSION_J
     return volume_m3 * profile_volume_average(dens, rho), dens
 
 
 def beam_target_dd_fusion_power_from_profiles(rho, nb, nD_target, Te_keV, Eb_keV, volume_m3,
                                               v_phi_m_s: float = 0.0, co_current: bool = True,
-                                              cm_energy: bool = False):
+                                              cm_energy: bool = False, survival=None):
     """Beam-target D-D fusion power [W], D(d,n)3He rate [1/s] and power
     density [W/m^3] from radial arrays (fast D on thermal D)."""
     energies = np.linspace(1.0e-3, Eb_keV, 601)
@@ -2568,7 +2724,8 @@ def beam_target_dd_fusion_power_from_profiles(rho, nb, nD_target, Te_keV, Eb_keV
     for i, (nbi, ndi, tei) in enumerate(zip(nb, nD_target, Te_keV)):
         if nbi <= 0.0 or ndi <= 0.0 or tei <= 1.0e-4:
             continue
-        f = slowing_down_distribution(float(tei), float(nbi), Eb_keV, energies, "D")
+        f = slowing_down_distribution(float(tei), float(nbi), Eb_keV, energies, "D",
+                                      None if survival is None else survival[i])
         rp = ndi * _trapezoidal_integral(energies, f * svp)
         rn = ndi * _trapezoidal_integral(energies, f * svn)
         rate_n[i] = rn
