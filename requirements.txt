@@ -1,3 +1,5 @@
 customtkinter>=5.2.2
 matplotlib>=3.8.0
 numpy>=1.26.0
+# The physics (moved to its own repository), pinned:
+hotjass @ git+https://github.com/EDlougach/hotjass@v0.9.0

@@ -4,6 +4,10 @@ Hot Ion Jassby model.
 
 This repository contains a lightweight desktop application for plasma and neutral beam injection (NBI) parameter studies using a compact HotJass-inspired workflow.
 
+The physics lives in its own package, [`hotjass`](https://github.com/EDlougach/hotjass)
+(models, User Manual, validation tests), installed by `requirements.txt` at a
+pinned version. It is shared with the [HOT-Jass web app](https://github.com/EDlougach/HOT-JASS).
+
 ## Features
 
 - Five-tab CustomTkinter interface
@@ -15,9 +19,10 @@ This repository contains a lightweight desktop application for plasma and neutra
 ## Project structure
 
 - `hi_jass_app.py` – desktop GUI entry point
-- `hotjass_core.py` – numerical model and parameter definitions
-- `requirements.txt` – Python dependencies
-- `User_Manual.md` – user guide and two-beam calculation definitions
+- `requirements.txt` – Python dependencies, including the pinned `hotjass` physics package
+
+To work on the physics together with this app, clone `hotjass` next to this
+folder and install it in editable mode: `.venv/bin/pip install -e ../hotjass`.
 
 ## Quick start
 
@@ -42,8 +47,9 @@ run_hi_jass.bat
 
 The GUI must be run in a normal Windows desktop session, not a headless terminal.
 
-See [User_Manual.md](User_Manual.md) for the two-beam slowing-down model, effective
-fast-ion quantities, density scans, and notation used by the application.
+See the [User Manual](https://github.com/EDlougach/hotjass/blob/main/User_Manual.md) for the
+two-beam slowing-down model, effective fast-ion quantities, density scans, and notation used
+by the application.
 
 ## GitHub setup
 
